@@ -139,19 +139,13 @@ class UpdateService:
         override = bootstrap.code_override_dir()
 
         if progress:
-            progress("正在下载更新补丁…", 0.0)
+            progress("正在下载更新补丁…", None)
+        # The patch is small (hundreds of KB); read it in one shot. A bounded
+        # read(n) loop can truncate the redirected CDN response, corrupting the zip.
         with urlopen(self.patch_zip_url(), timeout=60) as resp:
-            total = int(resp.headers.get("Content-Length") or 0)
-            done = 0
-            with open(zip_path, "wb") as fh:
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    done += len(chunk)
-                    if progress and total:
-                        progress(f"正在下载更新补丁… {int(done / total * 100)}%", done / total)
+            data = resp.read()
+        with open(zip_path, "wb") as fh:
+            fh.write(data)
 
         if progress:
             progress("正在应用补丁…", None)
