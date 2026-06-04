@@ -30,6 +30,7 @@ class AppDetailPage(BasePage):
         self.current_similar = []
         self.current_icon_bytes: bytes | None = None
         self.current_screenshot_bytes: list[bytes | None] = []
+        self._detail_gen = 0
         defaults = self.get_default_settings()
 
         toolbar_card, toolbar_layout = self.create_card()
@@ -298,10 +299,12 @@ class AppDetailPage(BasePage):
             return
         country = self.country_input.text().strip() or "us"
         lang = self.lang_input.text().strip() or "en"
+        self._detail_gen += 1
+        gen = self._detail_gen
         self.run_task(
             "正在获取应用详情...",
-            lambda: self._load_detail_bundle(app_id, country, lang),
-            self._on_detail_finished,
+            lambda: self._load_detail_core(app_id, country, lang),
+            lambda payload: self._on_detail_finished(payload, gen),
         )
 
     def fetch_similar(self) -> None:
@@ -329,14 +332,15 @@ class AppDetailPage(BasePage):
             auto_fetch=True,
         )
 
-    def _on_detail_finished(self, payload) -> None:
+    def _on_detail_finished(self, payload, gen) -> None:
+        if gen != self._detail_gen:
+            return  # a newer fetch superseded this one
         detail = payload["detail"]
-        similar = payload["similar"]
         history = payload["history"]
         self.current_detail = detail
-        self.current_similar = similar
-        self.current_icon_bytes = payload["icon_bytes"]
-        self.current_screenshot_bytes = payload["screenshots"]
+        self.current_similar = []
+        self.current_icon_bytes = None
+        self.current_screenshot_bytes = []
         self.name_label.setText(detail.title or detail.app_id)
         self.meta_label.setText(
             f"{detail.app_id} · {detail.developer or '-'} · {detail.category or '-'}"
@@ -345,14 +349,7 @@ class AppDetailPage(BasePage):
             f"{detail.price or '免费'} · {'含内购' if detail.has_iap else '无内购'} · "
             f"Android {detail.android_version or '-'}"
         )
-        self.icon_label.setPixmap(
-            pixmap_from_bytes(
-                self.current_icon_bytes,
-                width=96,
-                height=96,
-                fallback_text=detail.title or "ICON",
-            )
-        )
+        self.icon_label.setPixmap(placeholder_pixmap(detail.title or "ICON"))
         self.metric_values["rating"].setText(f"{detail.rating:.2f}" if detail.rating else "-")
         self.metric_values["ratings_count"].setText(
             f"{detail.ratings_count:,}" if detail.ratings_count else "-"
@@ -379,8 +376,6 @@ class AppDetailPage(BasePage):
         score = self.monetization_service.score(detail)
         self.score_label.setText(f"{score['score']} / 100")
         self.score_note.setText("；".join(score["signals"][:3]) or score["note"])
-        self._on_similar_finished(similar)
-        self._render_screenshots(self.current_screenshot_bytes)
         self.description.setPlainText(
             "\n\n".join(filter(None, [detail.summary, detail.description, detail.changelog]))
         )
@@ -390,6 +385,42 @@ class AppDetailPage(BasePage):
         self.installs_chart.set_series(
             labels, [item.real_installs or item.min_installs or 0 for item in history]
         )
+        # Detail is shown — now stream in screenshots + similar apps in the background
+        # so they don't block entering the page.
+        self.similar_table.set_rows([])
+        self._render_screenshots([])
+        self._load_images_async(detail, gen)
+        self._load_similar_async(detail.app_id, payload["country"], payload["lang"], gen)
+
+    def _load_images_async(self, detail, gen: int) -> None:
+        urls = [detail.icon_url, *(detail.screenshots or [])[:3]]
+        self.run_background(
+            lambda: fetch_images(urls, timeout=6.0, thumbnail_size=320),
+            lambda images: self._apply_images(gen, detail, images),
+        )
+
+    def _apply_images(self, gen: int, detail, images) -> None:
+        if gen != self._detail_gen:
+            return
+        self.current_icon_bytes = images[0] if images else None
+        self.current_screenshot_bytes = images[1:] if images else []
+        self.icon_label.setPixmap(
+            pixmap_from_bytes(
+                self.current_icon_bytes, width=96, height=96, fallback_text=detail.title or "ICON"
+            )
+        )
+        self._render_screenshots(self.current_screenshot_bytes)
+
+    def _load_similar_async(self, app_id: str, country: str, lang: str, gen: int) -> None:
+        self.run_background(
+            lambda: self.google_play_service.similar(app_id, country=country, lang=lang, limit=10),
+            lambda similar: self._apply_similar(gen, similar),
+        )
+
+    def _apply_similar(self, gen: int, similar) -> None:
+        if gen != self._detail_gen:
+            return
+        self._on_similar_finished(similar)
 
     def _on_similar_finished(self, similar) -> None:
         self.current_similar = similar
@@ -446,19 +477,13 @@ class AppDetailPage(BasePage):
         if target_url:
             QDesktopServices.openUrl(QUrl(target_url))
 
-    def _load_detail_bundle(self, app_id: str, country: str, lang: str) -> dict:
+    def _load_detail_core(self, app_id: str, country: str, lang: str) -> dict:
+        # Only the detail itself + local history — the slow `similar` (~12s) and the
+        # screenshots (~6s) are loaded asynchronously AFTER this shows, so entering the
+        # detail page no longer waits on them serially.
         detail = self.google_play_service.app_detail(app_id, country=country, lang=lang)
-        similar = self.google_play_service.similar(app_id, country=country, lang=lang, limit=10)
         history = self.tracking_service.get_history(app_id, country=country, lang=lang)
-        image_urls = [detail.icon_url, *(detail.screenshots or [])[:3]]
-        images = fetch_images(image_urls, timeout=6.0, thumbnail_size=320)
-        return {
-            "detail": detail,
-            "similar": similar,
-            "history": history,
-            "icon_bytes": images[0],
-            "screenshots": images[1:],
-        }
+        return {"detail": detail, "history": history, "country": country, "lang": lang}
 
     def _after_snapshot_saved(self, detail) -> None:
         self.current_detail = detail
