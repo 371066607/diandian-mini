@@ -28,39 +28,47 @@ pytest          # 全部测试
 ruff check .    # 静态检查
 ```
 
+## 下载即用
+
+到 [Releases](https://github.com/371066607/diandian-mini/releases) 下载对应平台整合包，解压双击即用（无需装 Python）：
+
+- **macOS**：`macos` 标签下的 `DiandianMini-macos.zip` → 解压双击 `DiandianMini.app`
+  - 首次打开若提示「无法验证开发者」，右键 App 选「打开」，或终端 `xattr -cr DiandianMini.app`
+- **Windows**：`windows` 标签下的 `DiandianMini-windows.zip` → 解压双击 `DiandianMini.exe`
+
 ## 打包
 
 本地打包成 macOS 应用（生成 `dist/DiandianMini.app`）：
 
 ```bash
-sh scripts/build_macos.sh
+sh scripts/build_macos.sh   # 自动生成 code_version.txt 并用 DiandianMini.spec 打包
 ```
 
-或手动：
+## 版本与数据目录
 
-```bash
-pyinstaller --noconfirm --windowed --name DiandianMini main.py
-```
+- **版本号**用 commit 时间戳整数，构建时写入 `code_version.txt` 一起打进包；显示为 `年.月.日.时分`。
+- **打包版的数据**（SQLite 库、日志）放在 app 之外的用户目录
+  （macOS `~/Library/Application Support/DiandianMini`，Windows `%LOCALAPPDATA%\DiandianMini`），
+  这样更新覆盖 app 也不会丢数据。开发态仍用项目 `data/`。
 
 ## 更新功能
 
-应用内置「检查更新」：
+- **开发态（有 `.git`）**：检查更新 = `git fetch` 比对，提示并可一键 `git pull` + 重启。
+- **打包版**：查 `code` 标签 Release 的 `codever`，有新版则**热更新**——只下几百 KB 的
+  `app-code.zip` 解压到用户目录 `app_override`（启动时优先加载）→ 自动重启，**登录态与数据都保留**，
+  不用重下整包。
+- 启动后静默检查 + 设置页「检查更新」按钮。
 
-- **启动时**会静默查询本仓库的 GitHub Releases，若有新版本则在右下角轻提示。
-- **设置页**有「检查更新」按钮，可手动检查并获取下载链接。
+## 发布流程（GitHub Actions）
 
-版本号在 `app/constants.py:APP_VERSION`，更新检查的目标仓库在 `GITHUB_REPO`。
+三个 workflow（`.github/workflows/`）：
 
-## 发布新版本
+| workflow | 触发 | 产物 |
+|---|---|---|
+| `publish-code-patch` | 手动（改了 Python 代码后跑这个） | `code` 标签：`app-code.zip` 热更新补丁 |
+| `build-macos` | 手动 / 推 `v*` tag | `macos` 标签：完整 `.app` 整合包 |
+| `build-windows` | 手动 / 推 `v*` tag | `windows` 标签：完整 `.exe` 整合包 |
 
-打 tag 即可由 GitHub Actions 自动构建 macOS / Windows 安装包并发布到 Releases：
-
-```bash
-# 1. 改 app/constants.py 里的 APP_VERSION，例如 1.1.0
-# 2. 提交后打 tag 并推送
-git tag v1.1.0
-git push origin v1.1.0
-```
-
-`.github/workflows/release.yml` 会在 `v*` tag 推送时构建并把安装包附到对应 Release；
-用户端的「检查更新」随即就能检测到新版本。
+日常只改 Python 代码 → 跑 `publish-code-patch`，用户端「检查更新」即可热更新；
+依赖/打包配置变更时才重跑 `build-macos` / `build-windows` 出整包。整合包发布前会跑冒烟自检
+（`--smoke-test`，确认打出来的二进制能正常启动）。

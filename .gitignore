@@ -5,10 +5,14 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# PyInstaller build output
+# PyInstaller build output (DiandianMini.spec IS committed)
 build/
 dist/
-*.spec
+
+# build-generated version stamp + code-patch artifacts
+code_version.txt
+app-code.zip
+app-code-stage/
 
 # Per-user runtime data (local SQLite DB + logs are not source)
 data/

@@ -1,0 +1,40 @@
+name: publish-code-patch
+
+# Publishes a small code patch (a few hundred KB) to the `code` release for the
+# in-app hot-update. Use this after changing Python code — no need to rebuild the
+# full ~60MB bundle (only rebuild that when dependencies change).
+on:
+  workflow_dispatch:
+    inputs:
+      changelog:
+        description: "本次更新内容（给用户看，多条用 ; 分隔；留空=优化与修复）"
+        required: false
+        default: ""
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: 打包代码补丁并发布到 `code` 标签
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(git show -s --format=%ct HEAD)
+          printf '%s' "$ver" > code_version.txt
+          stage=app-code-stage
+          rm -rf "$stage"; mkdir -p "$stage"
+          cp -R app "$stage/app"
+          cp main.py bootstrap.py code_version.txt "$stage/"
+          find "$stage" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+          (cd "$stage" && zip -rq ../app-code.zip .)
+          echo "patch size: $(stat -c%s app-code.zip) bytes, codever=$ver"
+          d=$(git show -s --date=format:'%Y.%m.%d.%H%M' --format=%cd HEAD)
+          cl="${{ github.event.inputs.changelog }}"
+          [ -z "$cl" ] && cl="优化与修复"
+          notes=$(printf 'codever:%s\nchangelog:%s\n\n（v%s 代码补丁，客户端检查更新会自动热更新）' "$ver" "$cl" "$d")
+          gh release create code app-code.zip --title "代码补丁 · v$d" --notes "$notes" 2>/dev/null || true
+          gh release upload code app-code.zip --clobber
+          gh release edit code --title "代码补丁 · v$d" --notes "$notes"

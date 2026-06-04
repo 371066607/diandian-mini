@@ -1,0 +1,40 @@
+name: build-macos
+
+# Full macOS integrated package (double-click to run). Publishes to the `macos`
+# release tag, so the download link is always the latest. Triggered manually or by a
+# version tag. For routine Python-only changes use publish-code-patch instead.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Stamp code_version.txt (commit timestamp)
+        run: git show -s --format=%ct HEAD > code_version.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Build .app
+        run: pyinstaller --noconfirm --clean DiandianMini.spec
+      - name: Smoke self-check (bundled binary boots)
+        run: ./dist/DiandianMini.app/Contents/MacOS/DiandianMini --smoke-test
+      - name: Zip bundle
+        run: cd dist && zip -ry DiandianMini-macos.zip DiandianMini.app
+      - name: Publish to `macos` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create macos --title "macOS 整合包" --notes "最新 macOS 整合包（解压双击即用）" 2>/dev/null || true
+          gh release upload macos dist/DiandianMini-macos.zip --clobber

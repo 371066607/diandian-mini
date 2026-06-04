@@ -1,5 +1,4 @@
 APP_TITLE = "点点数据 Mini - Google Play 情报工具"
-APP_VERSION = "1.0.0"
 # owner/name of the GitHub repo the in-app update checker queries for new releases
 GITHUB_REPO = "371066607/diandian-mini"
 WINDOW_WIDTH = 1440

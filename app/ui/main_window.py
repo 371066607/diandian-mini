@@ -158,8 +158,8 @@ class MainWindow(QMainWindow):
         QThreadPool.globalInstance().start(worker)
 
     def _on_startup_update(self, result) -> None:
-        if getattr(result, "has_update", False) and getattr(result, "latest_version", None):
-            self.show_toast(f"发现新版本 {result.latest_version}，可在设置页查看更新")
+        if getattr(result, "mode", "") == "patch" and getattr(result, "can_patch", False):
+            self.show_toast(f"发现新版本 {result.latest_label}，可在设置页一键更新")
 
     def build_stylesheet(self) -> str:
         return """

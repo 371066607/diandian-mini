@@ -80,6 +80,18 @@ class FakeGooglePlayService:
         pass
 
 
+class FakeUpdateService:
+    """No-network stand-in so the smoke test never hits git/GitHub at startup."""
+
+    def current_label(self):
+        return "测试版"
+
+    def check(self):
+        from app.services.update_service import UpdateResult
+
+        return UpdateResult(mode="patch", up_to_date=True)
+
+
 def _build_services(db):
     settings_service = SettingsService(db)
     settings_service.ensure_defaults()
@@ -103,6 +115,7 @@ def _build_services(db):
         "alert_service": alert_service,
         "tracking_service": tracking_service,
         "scheduler": None,
+        "update_service": FakeUpdateService(),
     }
 
 

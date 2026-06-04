@@ -1,4 +1,11 @@
+# The hot-patch launcher must run before any `app.*` import so a downloaded code
+# patch is loaded ahead of the bundled code — hence app imports come after the call.
+# ruff: noqa: E402
 from __future__ import annotations
+
+import bootstrap
+
+bootstrap.apply_code_override()
 
 import argparse
 import sys
