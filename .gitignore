@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Per-user runtime data (local SQLite DB + logs are not source)
+data/
+output/
+
+# OS / editor noise
+.DS_Store
+
+# local render / verification artifacts
+_*.png
