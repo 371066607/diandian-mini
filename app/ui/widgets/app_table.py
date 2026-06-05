@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
 from app.utils.image_loader import pixmap_from_bytes
@@ -35,9 +35,12 @@ class _SortableTableItem(QTableWidgetItem):
 
 
 class AppTableWidget(QTableWidget):
-    def __init__(self, columns: list[tuple[str, str]], parent=None):
+    def __init__(self, columns: list[tuple[str, str]], parent=None, row_tint=None):
         super().__init__(parent)
         self.columns = columns
+        # Optional ``row_tint(row) -> hex_color | None`` to colour a whole row's text
+        # (e.g. high-severity alerts in red). Generic, so it stays reusable across tables.
+        self._row_tint = row_tint
         self.setColumnCount(len(columns))
         self.setHorizontalHeaderLabels([label for label, _ in columns])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -68,6 +71,8 @@ class AppTableWidget(QTableWidget):
         self.setSortingEnabled(False)
         self.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
+            tint = self._row_tint(row) if self._row_tint is not None else None
+            tint_color = QColor(tint) if tint else None
             for column_index, (_, key) in enumerate(self.columns):
                 if key == "icon":
                     item = self._create_icon_item(row)
@@ -79,6 +84,8 @@ class AppTableWidget(QTableWidget):
                 # remember the row's original index so a selection still maps back to
                 # the right record after the visible rows have been re-sorted
                 item.setData(Qt.ItemDataRole.UserRole, row_index)
+                if tint_color is not None:
+                    item.setForeground(tint_color)
                 self.setItem(row_index, column_index, item)
         self.setSortingEnabled(True)
 

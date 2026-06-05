@@ -10,7 +10,7 @@ class ChartService:
         self.repository = ChartRepository()
 
     def fetch(self, chart_type: str, category: str | None, country: str, lang: str, limit: int):
-        return self.google_play_service.chart(
+        return self.google_play_service.list_analyze(
             chart_type=chart_type,
             category=category,
             country=country,

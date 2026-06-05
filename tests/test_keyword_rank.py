@@ -33,11 +33,11 @@ def test_keyword_save_result_roundtrip(tmp_path):
     database.create_all()
     service = KeywordService(FakeGooglePlayService(), database=database)
 
-    result = service.rank("vpn", "com.b")
-    service.save_result(result)
+    result = service.rank("vpn", "com.b")  # rank() already persists once (today)
+    service.save_result(result)  # same calendar day -> per-day dedup updates, no new row
     history = service.history("vpn", "com.b", "us", "en")
 
-    assert len(history) == 2
+    assert len(history) == 1
     assert history[-1].rank == 2
 
 

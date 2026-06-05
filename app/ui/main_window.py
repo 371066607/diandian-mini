@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import QThreadPool, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QStackedWidget,
+    QStyle,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -15,10 +17,13 @@ from PySide6.QtWidgets import (
 from app.utils.worker import Worker
 
 from app.constants import APP_TITLE, SIDEBAR_ITEMS, WINDOW_HEIGHT, WINDOW_WIDTH
+from app.ui.alert_labels import alert_severity_label
 from app.ui.pages.app_detail_page import AppDetailPage
+from app.ui.pages.alerts_page import AlertsPage
 from app.ui.pages.app_search_page import AppSearchPage
 from app.ui.pages.charts_page import ChartsPage
 from app.ui.pages.dashboard_page import DashboardPage
+from app.ui.pages.history_page import HistoryPage
 from app.ui.pages.keywords_page import KeywordsPage
 from app.ui.pages.reviews_page import ReviewsPage
 from app.ui.pages.settings_page import SettingsPage
@@ -28,6 +33,11 @@ from app.ui.widgets.toast import Toast
 
 
 class MainWindow(QMainWindow):
+    # Emitted by ``notify`` (called from background sync threads) and delivered on the
+    # UI thread via Qt's queued connection — the ONLY safe way to touch widgets from the
+    # scheduler / worker threads.
+    new_alerts_signal = Signal(list)
+
     def __init__(self, database, services, logger):
         super().__init__()
         self.database = database
@@ -36,6 +46,8 @@ class MainWindow(QMainWindow):
         self.page_indices: dict[str, int] = {}
         self.page_objects: dict[str, QWidget] = {}
         self.nav_buttons: dict[str, QPushButton] = {}
+        self.nav_labels: dict[str, str] = dict(SIDEBAR_ITEMS)
+        self._tray: QSystemTrayIcon | None = None
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -64,7 +76,10 @@ class MainWindow(QMainWindow):
         self.loading_overlay = LoadingOverlay(root)
         self.toast = Toast(root)
         self.build_pages()
+        self.new_alerts_signal.connect(self._on_new_alerts)
+        self._setup_tray()
         self.navigate_to("dashboard")
+        self.refresh_alert_badge()
         self.statusBar().showMessage("Google Play / 本地 SQLite")
         self.check_for_updates_quietly()
 
@@ -107,6 +122,8 @@ class MainWindow(QMainWindow):
             "charts": ChartsPage(self.services, self, self.logger),
             "keywords": KeywordsPage(self.services, self, self.logger),
             "tracking": TrackingPage(self.services, self, self.logger),
+            "history": HistoryPage(self.services, self, self.logger),
+            "alerts": AlertsPage(self.services, self, self.logger),
             "settings": SettingsPage(self.services, self, self.logger),
         }
         for key, widget in pages.items():
@@ -120,11 +137,63 @@ class MainWindow(QMainWindow):
         page = self.page_objects[page_key]
         if hasattr(page, "on_activated"):
             page.on_activated()
+        # Reading/marking alerts changes the unread count; keep the sidebar badge fresh.
+        self.refresh_alert_badge()
+
+    def _setup_tray(self) -> None:
+        """Create the system-tray icon if the platform supports it; degrade silently
+        otherwise (the unread badge still works)."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = self.windowIcon()
+        if icon.isNull():
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+        self._tray = QSystemTrayIcon(icon, self)
+        self._tray.setToolTip(APP_TITLE)
+        # Clicking the tray icon / its bubble jumps to the alert center.
+        self._tray.activated.connect(lambda _reason: self.navigate_to("alerts"))
+        self._tray.messageClicked.connect(lambda: self.navigate_to("alerts"))
+        self._tray.show()
+
+    def notify(self, alerts) -> None:
+        """Thread-safe entry point handed to TrackingService. Marshals the new alerts
+        onto the UI thread via the queued signal — never touches widgets directly."""
+        self.new_alerts_signal.emit(list(alerts))
+
+    def _on_new_alerts(self, alerts) -> None:
+        # Runs on the UI thread (queued delivery). Refresh the badge and pop one bubble.
+        self.refresh_alert_badge()
+        if not alerts or self._tray is None:
+            return
+        top = alerts[0]
+        if len(alerts) == 1:
+            heading = f"新提醒 · {alert_severity_label(top.severity)}"
+            body = top.message
+        else:
+            heading = f"{len(alerts)} 条新提醒"
+            body = f"{top.message} 等 {len(alerts)} 条"
+        self._tray.showMessage(heading, body, QSystemTrayIcon.MessageIcon.Information, 8000)
+
+    def refresh_alert_badge(self) -> None:
+        button = self.nav_buttons.get("alerts")
+        if button is None:
+            return
+        try:
+            count = self.services["alert_service"].unread_count()
+        except Exception:  # pragma: no cover - defensive; badge must never crash nav
+            count = 0
+        base = self.nav_labels.get("alerts", "提醒")
+        button.setText(f"{base} ({count})" if count else base)
 
     def open_app_detail(self, app_id: str) -> None:
         self.navigate_to("app_detail")
         detail_page = self.page_objects["app_detail"]
         detail_page.load_app(app_id)
+
+    def open_history(self, app_id: str, country: str = "us", lang: str = "en") -> None:
+        self.navigate_to("history")
+        history_page = self.page_objects["history"]
+        history_page.load_app(app_id, country=country, lang=lang)
 
     def open_reviews(
         self,

@@ -55,7 +55,7 @@ class GooglePlayService:
     def __init__(self, request_delay_seconds: float = 1.0) -> None:
         self.request_delay_seconds = max(0.0, request_delay_seconds)
         try:
-            from google_play_scraper import Sort, app, reviews, search
+            from google_play_scraper import Sort, app, permissions, reviews, search
             from google_play_scraper.constants.element import ElementSpecs
             from google_play_scraper.constants.regex import Regex
             from google_play_scraper.features.app import parse_dom
@@ -69,6 +69,13 @@ class GooglePlayService:
         self._app_parse_dom = parse_dom
         self._search = search
         self._reviews = reviews
+        self._permissions = permissions
+
+        try:
+            from gplay_scraper import GPlayScraper
+            self._gplay_scraper = GPlayScraper()
+        except ImportError:  # pragma: no cover - optional dependency
+            self._gplay_scraper = None
 
     def configure(self, *, request_delay_seconds: float | None = None) -> None:
         """Update runtime request tuning (called when settings change)."""
@@ -117,6 +124,16 @@ class GooglePlayService:
         country: str = "us",
         lang: str = "en",
     ) -> AppDetail:
+        # Primary path: gplay_scraper (TLS-bypass client, 57-field response).
+        if self._gplay_scraper is not None:
+            try:
+                raw = self._gplay_scraper.app_analyze(app_id=app_id, lang=lang, country=country)
+                if raw:
+                    return self._map_detail(raw)
+            except Exception:
+                pass
+
+        # Fallback: google_play_scraper with DOM enrichment.
         url = self._build_store_url(app_id, country=country, lang=lang)
         dom = None
         try:
@@ -183,8 +200,8 @@ class GooglePlayService:
         country: str = "us",
         lang: str = "en",
         sort: str = "newest",
-        limit: int = 100,
-    ) -> list[ReviewItem]:
+        continuation_token=None,
+    ) -> tuple[list[ReviewItem], object]:
         sort_mapping = {
             "newest": self._Sort.NEWEST,
             "rating": self._Sort.RATING,
@@ -192,19 +209,38 @@ class GooglePlayService:
             "most_relevant": self._Sort.MOST_RELEVANT,
         }
         try:
-            raw_items, _ = self._run_with_retry(
+            raw_items, next_token = self._run_with_retry(
                 self._reviews,
                 app_id,
                 max_attempts=3,
                 country=country,
                 lang=lang,
                 sort=sort_mapping.get(sort, self._Sort.NEWEST),
-                count=limit,
+                count=20,
+                continuation_token=continuation_token,
             )
         except Exception as exc:
             raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
 
-        return [self._map_review(app_id, item) for item in raw_items]
+        return [self._map_review(app_id, item) for item in raw_items], next_token
+
+    def permissions(
+        self,
+        app_id: str,
+        country: str = "us",
+        lang: str = "en",
+    ) -> dict[str, list[str]]:
+        try:
+            result = self._run_with_retry(
+                self._permissions,
+                app_id,
+                max_attempts=3,
+                lang=lang,
+                country=country,
+            )
+        except Exception as exc:
+            raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
+        return result
 
     def chart(
         self,
@@ -245,6 +281,64 @@ class GooglePlayService:
         if not items:
             raise ServiceError(EMPTY_RESULT_MESSAGE)
         return items[:limit]
+
+    def list_analyze(
+        self,
+        chart_type: str,
+        category: str | None = None,
+        country: str = "us",
+        lang: str = "en",
+        limit: int = 100,
+    ) -> list[ChartItem]:
+        if self._gplay_scraper is None:
+            return self.chart(chart_type=chart_type, category=category, country=country, lang=lang, limit=limit)
+        normalized_type, _ = self._normalize_chart_type(chart_type)
+        collection = normalized_type.upper()  # top_free -> TOP_FREE
+        normalized_category = self._normalize_chart_category(category)
+        fetch_limit = max(1, min(limit, 500))
+        try:
+            raw_items = self._gplay_scraper.list_analyze(
+                collection=collection,
+                category=normalized_category,
+                count=fetch_limit,
+                lang=lang,
+                country=country,
+            )
+        except Exception as exc:
+            raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
+        if not raw_items:
+            raise ServiceError(EMPTY_RESULT_MESSAGE)
+        items: list[ChartItem] = []
+        for index, raw in enumerate(raw_items[:limit], start=1):
+            app_id = raw.get("appId")
+            if not app_id:
+                continue
+            items.append(
+                ChartItem(
+                    rank=index,
+                    chart_type=normalized_type,
+                    category=raw.get("genre") or normalized_category,
+                    country=country,
+                    lang=lang,
+                    app_id=app_id,
+                    title=raw.get("title"),
+                    developer=raw.get("developer"),
+                    rating=raw.get("score"),
+                    score_text=raw.get("scoreText"),
+                    installs=raw.get("installs"),
+                    price=raw.get("price"),
+                    free=raw.get("free"),
+                    currency=raw.get("currency"),
+                    icon_url=raw.get("icon"),
+                    store_url=raw.get("url"),
+                    screenshots=raw.get("screenshots") or [],
+                    description=raw.get("description"),
+                    raw={"source": raw},
+                )
+            )
+        if not items:
+            raise ServiceError(EMPTY_RESULT_MESSAGE)
+        return items
 
     def _map_summary(self, raw: dict[str, Any]) -> AppSummary:
         summary = normalize_app_summary(raw)

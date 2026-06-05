@@ -32,6 +32,34 @@ def test_normalize_app_summary_supports_aliases():
     assert item.has_iap is True
 
 
+def test_normalize_app_summary_captures_search_fields():
+    # Fields the gplay-scraper search API documents: summary, scoreText, currency.
+    item = normalize_app_summary(
+        {
+            "appId": "com.demo.app",
+            "title": "Demo",
+            "summary": "A simple, reliable demo app.",
+            "score": 4.2,
+            "scoreText": "4.2★",
+            "price": 1.99,
+            "currency": "USD",
+            "free": False,
+        }
+    )
+
+    assert item.summary == "A simple, reliable demo app."
+    assert item.score_text == "4.2★"
+    assert item.currency == "USD"
+
+
+def test_normalize_app_summary_derives_score_text_when_missing():
+    # The python google-play-scraper omits scoreText for search results; we derive it.
+    item = normalize_app_summary({"appId": "com.demo.app", "score": 4.802954})
+
+    assert item.score_text == "4.8"
+    assert item.currency is None
+
+
 def test_normalize_app_detail_carries_screenshots_and_changes():
     detail = normalize_app_detail(
         {
@@ -76,6 +104,64 @@ def test_normalize_app_detail_captures_extended_fields():
     assert detail.developer_website == "https://example.com"
     assert detail.privacy_policy == "https://example.com/privacy"
     assert detail.header_image == "https://example.com/header.png"
+
+
+def test_normalize_app_detail_captures_57_field_extras():
+    detail = normalize_app_detail(
+        {
+            "appId": "com.whatsapp",
+            "title": "WhatsApp",
+            "genreId": "COMMUNICATION",
+            "categories": [{"name": "Communication", "id": "COMMUNICATION"}],
+            "video": "https://example.com/v.mp4",
+            "videoImage": "https://example.com/v.png",
+            "adSupported": False,
+            "contentRatingDescription": "Everyone",
+            "sale": False,
+            "originalPrice": 4.99,
+            "developerAddress": "1 Hacker Way",
+        }
+    )
+
+    assert detail.genre_id == "COMMUNICATION"
+    assert detail.categories == ["Communication"]
+    assert detail.video == "https://example.com/v.mp4"
+    assert detail.video_image == "https://example.com/v.png"
+    assert detail.ad_supported is False
+    assert detail.content_rating_description == "Everyone"
+    assert detail.sale is False
+    assert detail.original_price == 4.99
+    assert detail.developer_address == "1 Hacker Way"
+    # available defaults to True when the detail was fetched and no flag is present
+    assert detail.available is True
+    # app_bundle falls back to the package id when the library omits it
+    assert detail.app_bundle == "com.whatsapp"
+    # library-only-absent fields are present but empty/None
+    assert detail.permissions == {}
+    assert detail.data_safety == []
+    assert detail.publisher_country is None
+
+
+def test_normalize_app_detail_derives_install_rates_from_age():
+    from datetime import datetime, timedelta
+
+    age = 400
+    released = (datetime.now() - timedelta(days=age)).strftime("%Y-%m-%d")
+    detail = normalize_app_detail(
+        {
+            "appId": "com.demo",
+            "title": "Demo",
+            "released": released,
+            "realInstalls": age * 1000,
+            "minInstalls": age * 100,
+        }
+    )
+
+    assert detail.app_age_days == age
+    assert detail.real_daily_installs == 1000
+    assert detail.daily_installs == 1000
+    assert detail.real_monthly_installs == 30000
+    assert detail.min_daily_installs == 100
 
 
 def test_normalize_review_handles_common_fields():

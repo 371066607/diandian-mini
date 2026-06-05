@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Float, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -30,6 +30,9 @@ class AppModel(Base):
 
 class AppSnapshotModel(Base):
     __tablename__ = "app_snapshots"
+    __table_args__ = (
+        Index("ix_app_snapshots_lookup", "app_id", "country", "lang", "captured_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
@@ -60,6 +63,38 @@ class AppSnapshotModel(Base):
     changelog: Mapped[str | None] = mapped_column(Text)
     icon_url: Mapped[str | None] = mapped_column(Text)
     screenshots_json: Mapped[str | None] = mapped_column(Text)
+    # --- Extended monetization / monitoring fields (AppDetail parity) ---
+    contains_ads: Mapped[int | None] = mapped_column(Integer)
+    ad_supported: Mapped[int | None] = mapped_column(Integer)
+    daily_installs: Mapped[int | None] = mapped_column(Integer)
+    min_daily_installs: Mapped[int | None] = mapped_column(Integer)
+    real_daily_installs: Mapped[int | None] = mapped_column(Integer)
+    monthly_installs: Mapped[int | None] = mapped_column(Integer)
+    min_monthly_installs: Mapped[int | None] = mapped_column(Integer)
+    real_monthly_installs: Mapped[int | None] = mapped_column(Integer)
+    app_age_days: Mapped[int | None] = mapped_column(Integer)
+    genre_id: Mapped[str | None] = mapped_column(String)
+    developer_id: Mapped[str | None] = mapped_column(String)
+    currency: Mapped[str | None] = mapped_column(String)
+    sale: Mapped[int | None] = mapped_column(Integer)
+    original_price: Mapped[float | None] = mapped_column(Float)
+    developer_email: Mapped[str | None] = mapped_column(String)
+    developer_website: Mapped[str | None] = mapped_column(Text)
+    developer_address: Mapped[str | None] = mapped_column(Text)
+    developer_phone: Mapped[str | None] = mapped_column(String)
+    publisher_country: Mapped[str | None] = mapped_column(String)
+    privacy_policy: Mapped[str | None] = mapped_column(Text)
+    header_image: Mapped[str | None] = mapped_column(Text)
+    video: Mapped[str | None] = mapped_column(Text)
+    content_rating_description: Mapped[str | None] = mapped_column(Text)
+    available: Mapped[int | None] = mapped_column(Integer)
+    max_android_api: Mapped[int | None] = mapped_column(Integer)
+    min_android_api: Mapped[int | None] = mapped_column(Integer)
+    app_bundle: Mapped[str | None] = mapped_column(String)
+    histogram_json: Mapped[str | None] = mapped_column(Text)
+    categories_json: Mapped[str | None] = mapped_column(Text)
+    permissions_json: Mapped[str | None] = mapped_column(Text)
+    data_safety_json: Mapped[str | None] = mapped_column(Text)
     raw_json: Mapped[str | None] = mapped_column(Text)
 
 
@@ -105,11 +140,49 @@ class ChartSnapshotModel(Base):
 
 class KeywordRankModel(Base):
     __tablename__ = "keyword_ranks"
+    __table_args__ = (
+        Index(
+            "ix_keyword_ranks_lookup",
+            "keyword",
+            "app_id",
+            "country",
+            "lang",
+            "captured_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
     keyword: Mapped[str] = mapped_column(String, nullable=False)
     app_id: Mapped[str] = mapped_column(String, nullable=False)
+    country: Mapped[str] = mapped_column(String, default="us")
+    lang: Mapped[str] = mapped_column(String, default="en")
+    rank: Mapped[int | None] = mapped_column(Integer)
+    found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checked_limit: Mapped[int | None] = mapped_column(Integer)
+    captured_at: Mapped[str] = mapped_column(String, nullable=False)
+    raw_json: Mapped[str | None] = mapped_column(Text)
+
+
+class ChartRankSnapshotModel(Base):
+    __tablename__ = "chart_rank_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_chart_ranks_lookup",
+            "app_id",
+            "collection",
+            "category",
+            "country",
+            "lang",
+            "captured_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
+    app_id: Mapped[str] = mapped_column(String, nullable=False)
+    collection: Mapped[str] = mapped_column(String, nullable=False)
+    category: Mapped[str | None] = mapped_column(String)
     country: Mapped[str] = mapped_column(String, default="us")
     lang: Mapped[str] = mapped_column(String, default="en")
     rank: Mapped[int | None] = mapped_column(Integer)
@@ -130,8 +203,11 @@ class TrackedAppModel(Base):
     country: Mapped[str] = mapped_column(String, default="us")
     lang: Mapped[str] = mapped_column(String, default="en")
     frequency: Mapped[str] = mapped_column(String, default="daily")
+    tag: Mapped[str | None] = mapped_column(String)
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_synced_at: Mapped[str | None] = mapped_column(String)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failed_at: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
@@ -149,12 +225,42 @@ class TrackedKeywordModel(Base):
     frequency: Mapped[str] = mapped_column(String, default="daily")
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_synced_at: Mapped[str | None] = mapped_column(String)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failed_at: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class TrackedChartAppModel(Base):
+    __tablename__ = "tracked_chart_apps"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform", "app_id", "collection", "category", "country", "lang"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
+    app_id: Mapped[str] = mapped_column(String, nullable=False)
+    collection: Mapped[str] = mapped_column(String, nullable=False)
+    category: Mapped[str | None] = mapped_column(String)
+    country: Mapped[str] = mapped_column(String, default="us")
+    lang: Mapped[str] = mapped_column(String, default="en")
+    frequency: Mapped[str] = mapped_column(String, default="daily")
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_synced_at: Mapped[str | None] = mapped_column(String)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_failed_at: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class AlertModel(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        Index("ix_alerts_app_created", "app_id", "created_at"),
+        Index("ix_alerts_is_read", "is_read"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(String, nullable=False)

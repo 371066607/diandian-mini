@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QVBoxLayout,
+)
 
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.app_table import AppTableWidget
@@ -28,6 +36,7 @@ class KeywordsPage(BasePage):
         self.fetch_button = self.create_primary_button("查询排名")
         self.save_button = self.create_secondary_button("保存排名")
         self.track_button = self.create_secondary_button("加入监控")
+        self.bulk_track_button = self.create_secondary_button("批量添加关键词")
 
         row = QHBoxLayout()
         for widget in [
@@ -39,6 +48,7 @@ class KeywordsPage(BasePage):
             self.fetch_button,
             self.save_button,
             self.track_button,
+            self.bulk_track_button,
         ]:
             row.addWidget(widget)
         controls_layout.addLayout(row)
@@ -64,6 +74,7 @@ class KeywordsPage(BasePage):
         self.fetch_button.clicked.connect(self.fetch_rank)
         self.save_button.clicked.connect(self.save_rank)
         self.track_button.clicked.connect(self.add_tracking)
+        self.bulk_track_button.clicked.connect(self.bulk_add_tracking)
         self.keyword_input.returnPressed.connect(self.fetch_rank)
         self.app_id_input.returnPressed.connect(self.fetch_rank)
 
@@ -143,6 +154,58 @@ class KeywordsPage(BasePage):
             ),
             lambda _: self.show_status("已加入关键词监控"),
         )
+
+    def bulk_add_tracking(self) -> None:
+        app_id = self.app_id_input.text().strip()
+        country = self.country_input.text().strip() or "us"
+        lang = self.lang_input.text().strip() or "en"
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("批量添加关键词")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("目标包名"))
+        app_id_field = QLineEdit(app_id)
+        app_id_field.setPlaceholderText("com.whatsapp")
+        layout.addWidget(app_id_field)
+        layout.addWidget(QLabel("每行一个关键词"))
+        editor = QPlainTextEdit()
+        editor.setMinimumSize(360, 200)
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target = app_id_field.text().strip()
+        if not target:
+            self.show_error("请填写目标包名。")
+            return
+        keywords = [line.strip() for line in editor.toPlainText().splitlines() if line.strip()]
+        if not keywords:
+            self.show_error("请至少输入一个关键词。")
+            return
+        if len(keywords) > 200:
+            self.show_error("一次最多添加 200 个关键词。")
+            return
+        self.run_task(
+            "正在批量添加关键词...",
+            lambda: self.tracking_service.add_keywords_bulk(keywords, target, country, lang),
+            self._on_bulk_keywords_added,
+        )
+
+    def _on_bulk_keywords_added(self, result: dict) -> None:
+        msg = (
+            f"新增 {result['added']} 个，已存在 {result['existing']} 个，"
+            f"失败 {len(result['failed'])} 个。"
+        )
+        if result["failed"]:
+            sample = "、".join(item["keyword"] for item in result["failed"][:3])
+            msg += f" 失败例：{sample}"
+        self.show_status(msg)
 
     def _refresh_history_chart(self) -> None:
         if self.current_result is None:

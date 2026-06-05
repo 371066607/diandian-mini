@@ -63,8 +63,20 @@ class KeywordService:
         with self.database.session() as session:
             return self.repository.latest(session, keyword, app_id, country, lang)
 
-    def save_result(self, result: KeywordRankResult) -> None:
+    def previous_distinct_rank(
+        self, keyword: str, app_id: str, country: str = "us", lang: str = "en"
+    ):
+        """The most recent rank from a *prior* calendar day — the alert-diff baseline that
+        a same-day re-sync can't mask."""
+        if self.database is None:
+            return None
+        with self.database.session() as session:
+            return self.repository.previous_distinct_day(session, keyword, app_id, country, lang)
+
+    def save_result(self, result: KeywordRankResult) -> bool:
+        """Persist a rank result with per-day dedup. Returns True if it was the first sync
+        of the day (a new row), False if it overwrote an existing same-day row."""
         if self.database is None:
             raise RuntimeError("当前 KeywordService 未配置数据库，无法保存结果。")
         with self.database.session() as session:
-            self.repository.save(session, result)
+            return self.repository.upsert_for_day(session, result)

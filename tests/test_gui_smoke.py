@@ -26,7 +26,9 @@ from app.schemas.app_schema import AppDetail, AppSummary
 from app.schemas.chart_schema import ChartItem
 from app.schemas.review_schema import ReviewItem
 from app.services.alert_service import AlertService
+from app.services.chart_rank_service import ChartRankService
 from app.services.chart_service import ChartService
+from app.services.export_service import ExportService
 from app.services.keyword_service import KeywordService
 from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
@@ -63,10 +65,11 @@ class FakeGooglePlayService:
     def similar(self, app_id, country="us", lang="en", limit=20):
         return [AppSummary(app_id="com.signal", title="Signal", icon_url=None)]
 
-    def reviews(self, app_id, country="us", lang="en", sort="newest", limit=100):
-        return [
+    def reviews(self, app_id, country="us", lang="en", sort="newest", continuation_token=None):
+        items = [
             ReviewItem(app_id=app_id, review_id=f"r{i}", content="c", rating=5) for i in range(3)
         ]
+        return items, None  # (items, next continuation token) — no further pages
 
     def chart(self, chart_type, category, country, lang, limit):
         return [
@@ -75,6 +78,9 @@ class FakeGooglePlayService:
             )
             for i in range(3)
         ]
+
+    def list_analyze(self, chart_type, category, country, lang, limit):
+        return self.chart(chart_type, category, country, lang, limit)
 
     def configure(self, **kwargs):
         pass
@@ -97,6 +103,7 @@ def _build_services(db):
     settings_service.ensure_defaults()
     gp = FakeGooglePlayService()
     keyword_service = KeywordService(gp, database=db)
+    chart_rank_service = ChartRankService(gp, database=db)
     alert_service = AlertService(db)
     tracking_service = TrackingService(
         database=db,
@@ -104,11 +111,13 @@ def _build_services(db):
         keyword_service=keyword_service,
         alert_service=alert_service,
         settings_service=settings_service,
+        chart_rank_service=chart_rank_service,
     )
     return {
         "settings_service": settings_service,
         "google_play_service": gp,
         "keyword_service": keyword_service,
+        "chart_rank_service": chart_rank_service,
         "review_service": ReviewService(db, gp),
         "chart_service": ChartService(db, gp),
         "monetization_service": MonetizationService(),
@@ -116,6 +125,7 @@ def _build_services(db):
         "tracking_service": tracking_service,
         "scheduler": None,
         "update_service": FakeUpdateService(),
+        "export_service": ExportService(db),
     }
 
 
@@ -188,7 +198,7 @@ def test_gui_button_workflows_persist_to_db(tmp_path, monkeypatch):
     _wait_idle(app, reviews_page)
     assert _count(db, ReviewModel) == 3
 
-    # --- keywords: query computes rank and saves; explicit save adds history ---
+    # --- keywords: query computes rank and persists (one row per day) ---
     win.navigate_to("keywords")
     keywords_page = win.page_objects["keywords"]
     keywords_page.keyword_input.setText("messenger")
@@ -197,10 +207,12 @@ def test_gui_button_workflows_persist_to_db(tmp_path, monkeypatch):
     _wait_idle(app, keywords_page)
     assert keywords_page.current_result is not None
     assert keywords_page.current_result.rank == 2
+    assert _count(db, KeywordRankModel) >= 1  # fetch persisted today's rank
     k0 = _count(db, KeywordRankModel)
     keywords_page.save_button.click()
     _wait_idle(app, keywords_page)
-    assert _count(db, KeywordRankModel) == k0 + 1
+    # per-day dedup: an explicit same-day save updates today's row, never adds one
+    assert _count(db, KeywordRankModel) == k0
 
     # --- charts: fetch fills table, save persists snapshot rows ---
     win.navigate_to("charts")
@@ -220,13 +232,62 @@ def test_gui_button_workflows_persist_to_db(tmp_path, monkeypatch):
     tracking_page.add_app_button.click()
     _wait_idle(app, tracking_page)
     assert any(a.app_id == "com.whatsapp" for a in tracking_page.apps)
-    s0 = _count(db, AppSnapshotModel)
+    # com.whatsapp already has today's snapshot (saved on the detail page above), so the
+    # per-day-dedup sync-all UPDATES that row rather than adding one — assert the sync
+    # actually ran via last_synced_at instead of a row-count bump.
     tracking_page.sync_all_button.click()
     _wait_idle(app, tracking_page)
-    assert _count(db, AppSnapshotModel) > s0
+    synced = [a for a in services["tracking_service"].list_apps() if a.app_id == "com.whatsapp"]
+    assert synced and synced[0].last_synced_at is not None
+
+    # manual-ops buttons exist; "同步到期项" runs the due-only sync without error
+    assert tracking_page.sync_due_button is not None
+    assert tracking_page.cleanup_button is not None
+    tracking_page.sync_due_button.click()
+    _wait_idle(app, tracking_page)
+
+    # --- tagging: set-tag button and filter dropdown exist and work ---
+    assert tracking_page.set_tag_button is not None
+    assert tracking_page.tag_filter_combo is not None
+    # Select the com.whatsapp app row, type a tag, and apply it.
+    tracking_page._set_active_table("app")
+    tracking_page.apps_table.selectRow(0)
+    tracking_page.tag_input.setText("游戏")
+    tracking_page.set_tag_button.click()
+    _wait_idle(app, tracking_page)
+    tagged = [a for a in services["tracking_service"].list_apps() if a.app_id == "com.whatsapp"]
+    assert tagged and tagged[0].tag == "游戏"
+    # The table shows the tag and the filter dropdown now offers it.
+    tag_rows = tracking_page._collect_tracking_data()["apps_rows"]
+    assert any(r["app_id"] == "com.whatsapp" and r["tag"] == "游戏" for r in tag_rows)
+    assert "游戏" in [
+        tracking_page.tag_filter_combo.itemText(i)
+        for i in range(tracking_page.tag_filter_combo.count())
+    ]
+    # Filtering to a non-existent tag hides all rows; back to 全部 shows them again.
+    visible_all = tracking_page.apps_table.rowCount()
+    assert visible_all >= 1
+    tracking_page.tag_filter_combo.setCurrentText("游戏")
+    assert tracking_page.apps_table.rowCount() == 1
+    tracking_page.tag_filter_combo.setCurrentText("全部")
+    assert tracking_page.apps_table.rowCount() == visible_all
 
     # --- keyword monitoring surfaces the latest rank ---
     services["tracking_service"].add_keyword("messenger", "com.whatsapp", "us", "en")
     services["tracking_service"].sync_keyword_now("messenger", "com.whatsapp", "us", "en")
     keyword_rows = tracking_page._collect_tracking_data()["keywords_rows"]
     assert any(r["keyword"] == "messenger" and r["rank"] == "#2" for r in keyword_rows)
+
+    # --- chart monitoring: add control + table exist; add then sync shows the rank ---
+    assert tracking_page.chart_table is not None
+    assert tracking_page.add_chart_button is not None
+    # Fake list_analyze ranks com.x0..com.x2 at #1..#3 -> com.x1 is #2.
+    tracking_page.chart_app_id_input.setText("com.x1")
+    tracking_page.chart_collection_combo.setCurrentText("top_free")
+    tracking_page.chart_category_input.setText("APPLICATION")
+    tracking_page.add_chart_button.click()
+    _wait_idle(app, tracking_page)
+    assert any(c.app_id == "com.x1" for c in tracking_page.chart_apps)
+    services["tracking_service"].sync_chart_now("com.x1", "top_free", "APPLICATION", "us", "en")
+    chart_rows = tracking_page._collect_tracking_data()["chart_rows"]
+    assert any(r["app_id"] == "com.x1" and r["rank"] == "#2" for r in chart_rows)

@@ -41,7 +41,7 @@ def test_create_snapshot_alerts_emits_expected_rules(tmp_path):
     with database.session() as session:
         alerts = repository.list_recent(session, limit=10)
 
-    assert created == 5
+    assert len(created) == 5
     assert {item.type for item in alerts} == {
         "rating_drop",
         "ratings_growth",

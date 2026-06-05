@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 DEFAULT_SYNC_TIME = "09:00"
+
+# Per-item auto-sync cadence. The scheduler fires once daily, so these gate how often a
+# tracked item actually re-syncs on each fire. "manual" never auto-syncs (None interval).
+# The daily interval is < 24h to tolerate scheduler drift / a slightly-early daily run.
+FREQUENCY_HOURS: dict[str, float | None] = {"daily": 20, "weekly": 164, "manual": None}
+SUPPORTED_FREQUENCIES = ("daily", "weekly", "manual")
 
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def is_sync_due(last_synced_at: str | None, frequency: str | None, now: datetime | None = None) -> bool:
+    """Whether a tracked item is due for an auto-sync given its cadence and last sync.
+
+    Unknown frequencies fall back to daily; an item never synced (or with an unparseable
+    timestamp) is always due; "manual" is never auto-due. Never raises."""
+    interval = FREQUENCY_HOURS.get((frequency or "daily").lower(), FREQUENCY_HOURS["daily"])
+    if interval is None:
+        return False
+    if not last_synced_at:
+        return True
+    try:
+        last = datetime.fromisoformat(last_synced_at)
+    except (ValueError, TypeError):
+        return True
+    return (now or datetime.now()) - last >= timedelta(hours=interval)
 
 
 def format_datetime(value: datetime | None) -> str:

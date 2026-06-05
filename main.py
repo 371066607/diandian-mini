@@ -16,8 +16,11 @@ from app.db.migrations import migrate
 from app.jobs.scheduler import AppScheduler
 from app.logging_config import setup_logging
 from app.services.alert_service import AlertService
+from app.services.chart_rank_service import ChartRankService
 from app.services.chart_service import ChartService
+from app.services.export_service import ExportService
 from app.services.google_play_service import GooglePlayService
+from app.services.history_retention_service import HistoryRetentionService
 from app.services.keyword_service import KeywordService
 from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
@@ -37,29 +40,43 @@ def build_services(database: Database) -> dict[str, object]:
     )
     keyword_service = KeywordService(google_play_service, database=database)
     monetization_service = MonetizationService()
-    alert_service = AlertService(database)
+    alert_service = AlertService(database, settings_service=settings_service)
+    review_service = ReviewService(database=database, google_play_service=google_play_service)
+    chart_rank_service = ChartRankService(google_play_service, database=database)
     tracking_service = TrackingService(
         database=database,
         google_play_service=google_play_service,
         keyword_service=keyword_service,
         alert_service=alert_service,
         settings_service=settings_service,
+        review_service=review_service,
+        chart_rank_service=chart_rank_service,
     )
-    review_service = ReviewService(database=database, google_play_service=google_play_service)
     chart_service = ChartService(database=database, google_play_service=google_play_service)
+    history_retention_service = HistoryRetentionService(
+        database, settings_service=settings_service
+    )
+    # The scheduler invokes ``sync_tracked_job(tracking_service)`` (its ``args`` are fixed
+    # and scheduler.py is not edited here), so the daily cleanup is reached by attaching the
+    # retention service to tracking_service; sync_tracked_job picks it up via getattr.
+    tracking_service.retention_service = history_retention_service
     scheduler = AppScheduler(settings_service=settings_service, tracking_service=tracking_service)
     update_service = UpdateService()
+    export_service = ExportService(database)
     return {
         "settings_service": settings_service,
         "google_play_service": google_play_service,
         "keyword_service": keyword_service,
+        "chart_rank_service": chart_rank_service,
         "monetization_service": monetization_service,
         "tracking_service": tracking_service,
         "review_service": review_service,
         "chart_service": chart_service,
         "alert_service": alert_service,
+        "history_retention_service": history_retention_service,
         "scheduler": scheduler,
         "update_service": update_service,
+        "export_service": export_service,
     }
 
 
@@ -89,6 +106,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("点点数据 Mini")
     window = MainWindow(database=database, services=services, logger=logger)
+    # Wire background-sync alerts to the tray/badge. Done here (not in build_services) so
+    # the service layer never imports the UI; headless/smoke runs leave the notifier None.
+    services["tracking_service"].set_notifier(window.notify)
     window.show()
 
     try:

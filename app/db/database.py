@@ -15,6 +15,9 @@ class Database:
             f"sqlite:///{self.database_path}",
             echo=False,
             future=True,
+            # parallel sync now issues concurrent writes; let a writer wait for the
+            # SQLite lock instead of failing immediately with "database is locked".
+            connect_args={"timeout": 30},
         )
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
 

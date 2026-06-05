@@ -6,8 +6,6 @@ from PySide6.QtWidgets import QHBoxLayout
 
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.review_table import ReviewTableWidget
-from app.utils.normalize import safe_int
-
 
 class ReviewsPage(BasePage):
     def __init__(self, services, window_api, logger):
@@ -15,19 +13,20 @@ class ReviewsPage(BasePage):
         self.review_service = services["review_service"]
         self.all_reviews = []
         self.current_reviews = []
+        self._continuation_token = None
         defaults = self.get_default_settings()
 
         controls_card, controls_layout = self.create_card()
         self.app_id_input = self.create_input("app_id: com.whatsapp")
         self.sort_input = self.create_input("sort: newest", width=150)
         self.sort_input.setText("newest")
-        self.limit_input = self.create_input("limit: 100", width=120)
-        self.limit_input.setText(defaults["default_limit"])
         self.country_input = self.create_input("country: us", width=120)
         self.country_input.setText(defaults["default_country"])
         self.lang_input = self.create_input("lang: en", width=120)
         self.lang_input.setText(defaults["default_lang"])
         self.fetch_button = self.create_primary_button("获取评论")
+        self.load_more_button = self.create_secondary_button("加载更多")
+        self.load_more_button.setEnabled(False)
         self.save_button = self.create_secondary_button("保存评论")
         self.rating_filter_input = self.create_input("筛选: 1-2星", width=180)
         self.text_filter_input = self.create_input("搜索评论内容", width=220)
@@ -36,10 +35,10 @@ class ReviewsPage(BasePage):
         for widget in [
             self.app_id_input,
             self.sort_input,
-            self.limit_input,
             self.country_input,
             self.lang_input,
             self.fetch_button,
+            self.load_more_button,
             self.save_button,
         ]:
             top_row.addWidget(widget)
@@ -58,6 +57,7 @@ class ReviewsPage(BasePage):
         self.root_layout.addWidget(table_card)
 
         self.fetch_button.clicked.connect(self.fetch_reviews)
+        self.load_more_button.clicked.connect(self.load_more)
         self.save_button.clicked.connect(self.save_reviews)
         self.app_id_input.returnPressed.connect(self.fetch_reviews)
         self.rating_filter_input.textChanged.connect(self.apply_filters)
@@ -85,17 +85,45 @@ class ReviewsPage(BasePage):
         country = self.country_input.text().strip() or "us"
         lang = self.lang_input.text().strip() or "en"
         sort = self.sort_input.text().strip() or "newest"
-        limit = safe_int(self.limit_input.text(), 100)
+        self.all_reviews = []
+        self._continuation_token = None
+        self.load_more_button.setEnabled(False)
         self.run_task(
             "正在抓取评论...",
-            lambda: self.review_service.fetch(app_id, country, lang, sort, limit),
+            lambda: self.review_service.fetch(app_id, country, lang, sort),
             self._on_reviews_finished,
         )
 
-    def _on_reviews_finished(self, items) -> None:
+    def load_more(self) -> None:
+        app_id = self.app_id_input.text().strip()
+        if not app_id or self._continuation_token is None:
+            return
+        country = self.country_input.text().strip() or "us"
+        lang = self.lang_input.text().strip() or "en"
+        sort = self.sort_input.text().strip() or "newest"
+        token = self._continuation_token
+        self.load_more_button.setEnabled(False)
+        self.run_task(
+            "正在加载更多评论...",
+            lambda: self.review_service.fetch(app_id, country, lang, sort, token),
+            self._on_more_finished,
+        )
+
+    def _on_reviews_finished(self, result) -> None:
+        items, token = result
+        self._continuation_token = token
         self.all_reviews = items
         self.apply_filters()
+        self.load_more_button.setEnabled(len(items) > 0)
         self.show_status(f"已获取 {len(items)} 条评论")
+
+    def _on_more_finished(self, result) -> None:
+        items, token = result
+        self._continuation_token = token
+        self.all_reviews.extend(items)
+        self.apply_filters()
+        self.load_more_button.setEnabled(len(items) > 0)
+        self.show_status(f"共 {len(self.all_reviews)} 条评论")
 
     def apply_filters(self) -> None:
         rating_filter = self._parse_rating_filter(self.rating_filter_input.text().strip())

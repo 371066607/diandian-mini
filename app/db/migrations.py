@@ -9,6 +9,27 @@ from app.db.models import Base
 
 logger = logging.getLogger(__name__)
 
+# Indexes to ensure on every startup. ``create_all`` only attaches these to *newly*
+# created tables, so an older database whose tables already exist never gets them.
+# Each entry is (index_name, table_name, (columns...)) and is created idempotently
+# with ``CREATE INDEX IF NOT EXISTS`` below. Keep in sync with the ``Index`` defs in
+# app/db/models.py.
+TIME_SERIES_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("ix_app_snapshots_lookup", "app_snapshots", ("app_id", "country", "lang", "captured_at")),
+    (
+        "ix_keyword_ranks_lookup",
+        "keyword_ranks",
+        ("keyword", "app_id", "country", "lang", "captured_at"),
+    ),
+    (
+        "ix_chart_ranks_lookup",
+        "chart_rank_snapshots",
+        ("app_id", "collection", "category", "country", "lang", "captured_at"),
+    ),
+    ("ix_alerts_app_created", "alerts", ("app_id", "created_at")),
+    ("ix_alerts_is_read", "alerts", ("is_read",)),
+)
+
 
 def _sqlite_type(column) -> str:
     column_type = column.type
@@ -47,3 +68,15 @@ def migrate(database: Database) -> None:
                 logger.info("migrate: added column %s.%s", table.name, column.name)
             except Exception:
                 logger.exception("migrate: failed to add column %s.%s", table.name, column.name)
+
+    # Ensure time-series / lookup indexes exist on pre-existing tables (create_all only
+    # attaches indexes to tables it freshly creates). Idempotent and best-effort: each in
+    # its own transaction, failures logged not raised — same tolerance as the column adds.
+    for index_name, table_name, columns in TIME_SERIES_INDEXES:
+        cols = ", ".join(f'"{col}"' for col in columns)
+        ddl = f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}" ({cols})'
+        try:
+            with database.engine.begin() as connection:
+                connection.execute(text(ddl))
+        except Exception:
+            logger.exception("migrate: failed to create index %s on %s", index_name, table_name)
