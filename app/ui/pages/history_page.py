@@ -3,7 +3,6 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
-    QHBoxLayout,
     QLabel,
 )
 
@@ -86,14 +85,15 @@ class HistoryPage(BasePage):
         self.refresh_button = self.create_secondary_button("刷新")
         self.export_button = self.create_secondary_button("导出当前 CSV")
 
-        row = QHBoxLayout()
-        row.setSpacing(12)
-        row.addWidget(QLabel("应用"))
-        row.addWidget(self.app_combo)
-        row.addWidget(self.scope_label)
-        row.addStretch()
-        row.addWidget(self.refresh_button)
-        row.addWidget(self.export_button)
+        row = self.create_actions_row(
+            [
+                QLabel("应用"),
+                self.app_combo,
+                self.scope_label,
+                self.refresh_button,
+                self.export_button,
+            ]
+        )
         toolbar_layout.addLayout(row)
         self.root_layout.addWidget(toolbar_card)
 

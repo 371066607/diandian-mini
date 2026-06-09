@@ -3,15 +3,16 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from app.ui.widgets.message_box import show_error, show_info
+from app.ui.widgets.flow_layout import FlowLayout
 from app.utils.worker import Worker
 
 
@@ -54,16 +55,23 @@ class BasePage(QWidget):
         line_edit = QLineEdit()
         line_edit.setPlaceholderText(placeholder)
         if width:
-            line_edit.setFixedWidth(width)
+            line_edit.setMinimumWidth(width)
+            line_edit.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        else:
+            line_edit.setMinimumWidth(180)
+            line_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         return line_edit
 
     def create_primary_button(self, text: str) -> QPushButton:
         button = QPushButton(text)
         button.setObjectName("PrimaryButton")
+        button.setMinimumHeight(38)
         return button
 
     def create_secondary_button(self, text: str) -> QPushButton:
-        return QPushButton(text)
+        button = QPushButton(text)
+        button.setMinimumHeight(38)
+        return button
 
     def run_task(self, loading_text: str, fn, on_success) -> None:
         worker = Worker(fn)
@@ -137,11 +145,9 @@ class BasePage(QWidget):
             self.show_info(message)
 
     def create_actions_row(self, widgets: list[QWidget]):
-        row = QHBoxLayout()
-        row.setSpacing(12)
+        row = FlowLayout(spacing=10)
         for widget in widgets:
             row.addWidget(widget)
-        row.addStretch()
         return row
 
     def create_stat_value(self, text: str) -> QLabel:

@@ -686,7 +686,7 @@ class GooglePlayService:
             except Exception as exc:
                 last_error = exc
                 if attempt < max_attempts - 1:
-                    time.sleep(self.request_delay_seconds + attempt)
+                    time.sleep(self.request_delay_seconds * (2 ** attempt))
                     continue
                 raise
         raise last_error

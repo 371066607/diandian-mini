@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import resolve_database_path
@@ -15,10 +15,25 @@ class Database:
             f"sqlite:///{self.database_path}",
             echo=False,
             future=True,
-            # parallel sync now issues concurrent writes; let a writer wait for the
-            # SQLite lock instead of failing immediately with "database is locked".
+            # Parallel sync issues concurrent writes; let writers wait for the lock.
             connect_args={"timeout": 30},
         )
+
+        @event.listens_for(self.engine, "connect")
+        def _set_pragmas(dbapi_conn, _record):
+            cur = dbapi_conn.cursor()
+            # WAL lets readers and one writer proceed simultaneously (vs. the default
+            # DELETE journal which blocks reads while writing).
+            cur.execute("PRAGMA journal_mode=WAL")
+            # NORMAL skips the final sync-to-disk that FULL requires; safe for a local
+            # tool where OS-level crash recovery is acceptable.
+            cur.execute("PRAGMA synchronous=NORMAL")
+            # 32 MB in-process page cache — keeps hot snapshot/alert rows off disk.
+            cur.execute("PRAGMA cache_size=-32768")
+            # Spill temp tables to RAM instead of a disk file.
+            cur.execute("PRAGMA temp_store=MEMORY")
+            cur.close()
+
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
 
     def create_all(self) -> None:

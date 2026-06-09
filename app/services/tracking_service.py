@@ -220,21 +220,33 @@ class TrackingService:
     def monitor_overview(self) -> list[MonitorHealth]:
         """Assemble a per-app health summary for every enabled monitored app.
 
-        Built inside a single DB session — one snapshot-history read and one alert
-        read per app. Returns an empty list when nothing is monitored.
+        Previously issued 3 DB queries per app (history + latest-alert + unread-count).
+        Now uses three bulk queries regardless of the number of monitored apps:
+          1. snapshot_repository.latest_two_bulk — up to 2 snapshots per app
+          2. alert_repository.latest_by_app       — most-recent alert per app
+          3. alert_repository.unread_count_bulk   — unread counts per app
         """
         escalate_after = self._escalate_after()
         results: list[MonitorHealth] = []
         with self.database.session() as session:
             apps = self.tracking_repository.list_apps(session)
-            for item in apps:
-                if not item.enabled:
-                    continue
-                history = self.snapshot_repository.get_history(
-                    session, item.app_id, item.country, item.lang
-                )
-                latest = history[-1] if history else None
-                prev = history[-2] if len(history) >= 2 else None
+            enabled = [item for item in apps if item.enabled]
+            if not enabled:
+                return []
+
+            app_keys = [(item.app_id, item.country, item.lang) for item in enabled]
+            app_ids = [item.app_id for item in enabled]
+
+            # --- Three bulk queries (not N×3) ---
+            history_map = self.snapshot_repository.latest_two_bulk(session, app_keys)
+            latest_alert_map = self.alert_repository.latest_by_app(session, app_ids)
+            unread_map = self.alert_repository.unread_count_bulk(session, app_ids)
+
+            for item in enabled:
+                key = (item.app_id, item.country, item.lang)
+                two = history_map.get(key, [])
+                latest = two[-1] if two else None
+                prev = two[-2] if len(two) >= 2 else None
 
                 latest_rating = latest.rating if latest is not None else None
                 latest_installs = latest.installs if latest is not None else None
@@ -250,21 +262,15 @@ class TrackingService:
                 )
                 installs_trend = self._installs_trend(prev, latest)
 
-                last_alert_model = self.alert_repository.list_filtered(
-                    session, app_id=item.app_id, limit=1
-                )
                 last_alert = None
-                if last_alert_model:
-                    a = last_alert_model[0]
-                    # Raw type/severity are kept here so the service stays UI-agnostic;
-                    # the card resolves the Chinese label and severity color via
-                    # app.ui.alert_labels.
+                a = latest_alert_map.get(item.app_id)
+                if a is not None:
                     last_alert = {
                         "type": a.type,
                         "severity": a.severity,
                         "created_at": a.created_at,
                     }
-                unread = self.alert_repository.unread_count(session, app_id=item.app_id)
+                unread = unread_map.get(item.app_id, 0)
 
                 failures = item.consecutive_failures or 0
                 if failures <= 0:
@@ -565,7 +571,7 @@ class TrackingService:
 
         # Fetch every app's detail in parallel (network-bound); the brief DB writes are
         # serialized by SQLite's busy timeout.
-        with ThreadPoolExecutor(max_workers=min(6, len(apps))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(apps))) as executor:
             count = sum(executor.map(sync_one, apps))
         if own:
             self._dispatch_notifications(sink)
@@ -696,7 +702,7 @@ class TrackingService:
                 )
                 return False
 
-        with ThreadPoolExecutor(max_workers=min(6, len(keywords))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(keywords))) as executor:
             count = sum(executor.map(sync_one, keywords))
         if own:
             self._dispatch_notifications(sink)
@@ -890,7 +896,7 @@ class TrackingService:
                 )
                 return False
 
-        with ThreadPoolExecutor(max_workers=min(6, len(charts))) as executor:
+        with ThreadPoolExecutor(max_workers=min(3, len(charts))) as executor:
             count = sum(executor.map(sync_one, charts))
         if own:
             self._dispatch_notifications(sink)

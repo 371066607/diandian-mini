@@ -63,6 +63,15 @@ class KeywordService:
         with self.database.session() as session:
             return self.repository.latest(session, keyword, app_id, country, lang)
 
+    def latest_rank_bulk(self, tracked_keywords) -> dict:
+        """Return {(keyword, app_id, country, lang): rank_snapshot} for every tracked
+        keyword — one DB query instead of one per keyword."""
+        if self.database is None or not tracked_keywords:
+            return {}
+        keys = [(kw.keyword, kw.app_id, kw.country, kw.lang) for kw in tracked_keywords]
+        with self.database.session() as session:
+            return self.repository.latest_bulk(session, keys)
+
     def previous_distinct_rank(
         self, keyword: str, app_id: str, country: str = "us", lang: str = "en"
     ):

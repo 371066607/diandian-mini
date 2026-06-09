@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout
-
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.app_table import AppTableWidget
 from app.utils.image_loader import fetch_images
@@ -30,18 +28,18 @@ class ChartsPage(BasePage):
         self.save_button = self.create_secondary_button("保存榜单快照")
         self.detail_button = self.create_secondary_button("打开详情")
 
-        row = QHBoxLayout()
-        for widget in [
-            self.chart_type_input,
-            self.category_input,
-            self.country_input,
-            self.lang_input,
-            self.limit_input,
-            self.fetch_button,
-            self.save_button,
-            self.detail_button,
-        ]:
-            row.addWidget(widget)
+        row = self.create_actions_row(
+            [
+                self.chart_type_input,
+                self.category_input,
+                self.country_input,
+                self.lang_input,
+                self.limit_input,
+                self.fetch_button,
+                self.save_button,
+                self.detail_button,
+            ]
+        )
         controls_layout.addLayout(row)
         self.root_layout.addWidget(controls_card)
 

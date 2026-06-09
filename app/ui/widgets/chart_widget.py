@@ -18,7 +18,7 @@ rcParams["axes.unicode_minus"] = False
 class ChartWidget(QWidget):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
-        self.figure = Figure(figsize=(5, 3), dpi=100)
+        self.figure = Figure(figsize=(5, 2.8), dpi=100, constrained_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -44,5 +44,4 @@ class ChartWidget(QWidget):
         ax.spines["left"].set_color("#CBD5E1")
         ax.spines["bottom"].set_color("#CBD5E1")
         ax.grid(alpha=0.15)
-        self.figure.tight_layout()
         self.canvas.draw_idle()

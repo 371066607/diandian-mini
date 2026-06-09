@@ -4,7 +4,7 @@ from typing import Any
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QIcon
-from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QHeaderView, QMenu, QTableWidget, QTableWidgetItem
 
 from app.utils.image_loader import pixmap_from_bytes
 
@@ -35,34 +35,85 @@ class _SortableTableItem(QTableWidgetItem):
 
 
 class AppTableWidget(QTableWidget):
-    def __init__(self, columns: list[tuple[str, str]], parent=None, row_tint=None):
+    def __init__(
+        self,
+        columns: list[tuple[str, str]],
+        parent=None,
+        row_tint=None,
+        column_widths: list[int | None] | None = None,
+    ):
+        """
+        column_widths: one entry per column.
+          None  → Stretch (share remaining space equally, default)
+          int   → Fixed width in pixels
+          -1    → Interactive (user can drag, initial width from content)
+        """
         super().__init__(parent)
         self.columns = columns
-        # Optional ``row_tint(row) -> hex_color | None`` to colour a whole row's text
-        # (e.g. high-severity alerts in red). Generic, so it stays reusable across tables.
         self._row_tint = row_tint
         self.setColumnCount(len(columns))
         self.setHorizontalHeaderLabels([label for label, _ in columns])
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        header = self.horizontalHeader()
+        if column_widths:
+            has_stretch = any(w is None for w in column_widths)
+            if not has_stretch:
+                # No stretch column → enable horizontal scroll so content isn't crushed.
+                self.setHorizontalScrollBarPolicy(
+                    Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                )
+            for index, width in enumerate(column_widths):
+                if width is None:
+                    header.setSectionResizeMode(index, QHeaderView.ResizeMode.Stretch)
+                elif width == -1:
+                    header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+                    self.setColumnWidth(index, 150)
+                else:
+                    header.setSectionResizeMode(index, QHeaderView.ResizeMode.Fixed)
+                    self.setColumnWidth(index, width)
+        else:
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
         self.verticalHeader().setVisible(False)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.setShowGrid(False)
-        # Clicking a header sorts by that column. Start with no sort indicator so the
-        # default order is the order rows are provided in (relevance / rank / recency)
-        # until the user explicitly picks a column.
         self.setSortingEnabled(True)
-        self.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
-        self.horizontalHeader().setSortIndicatorShown(True)
+        header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        header.setSortIndicatorShown(True)
         self.setIconSize(QSize(36, 36))
         self.verticalHeader().setDefaultSectionSize(52)
         self._icon_column_indexes = [
             index for index, (_, key) in enumerate(columns) if key == "icon"
         ]
         for index in self._icon_column_indexes:
-            self.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(index, QHeaderView.ResizeMode.Fixed)
             self.setColumnWidth(index, 64)
+
+        self._context_actions: list = []
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def set_context_actions(self, actions: list) -> None:
+        """Set right-click menu items: list of (label, callback) or "---" for separators."""
+        self._context_actions = actions
+
+    def _show_context_menu(self, pos) -> None:
+        if not self._context_actions:
+            return
+        row = self.rowAt(pos.y())
+        if row < 0:
+            return
+        self.selectRow(row)
+        menu = QMenu(self)
+        for item in self._context_actions:
+            if item == "---":
+                menu.addSeparator()
+            else:
+                label, callback = item
+                menu.addAction(label, callback)
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def set_rows(self, rows: list[Any]) -> None:
         # Disable sorting while filling so insertion isn't reordered mid-build; turning

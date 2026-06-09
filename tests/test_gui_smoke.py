@@ -240,10 +240,9 @@ def test_gui_button_workflows_persist_to_db(tmp_path, monkeypatch):
     synced = [a for a in services["tracking_service"].list_apps() if a.app_id == "com.whatsapp"]
     assert synced and synced[0].last_synced_at is not None
 
-    # manual-ops buttons exist; "同步到期项" runs the due-only sync without error
-    assert tracking_page.sync_due_button is not None
-    assert tracking_page.cleanup_button is not None
-    tracking_page.sync_due_button.click()
+    # "更多▾" button replaces the old separate sync_due/cleanup buttons; call methods directly
+    assert tracking_page.more_button is not None
+    tracking_page.sync_due()
     _wait_idle(app, tracking_page)
 
     # --- tagging: set-tag button and filter dropdown exist and work ---

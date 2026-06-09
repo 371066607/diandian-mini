@@ -38,19 +38,19 @@ class KeywordsPage(BasePage):
         self.track_button = self.create_secondary_button("加入监控")
         self.bulk_track_button = self.create_secondary_button("批量添加关键词")
 
-        row = QHBoxLayout()
-        for widget in [
-            self.keyword_input,
-            self.app_id_input,
-            self.country_input,
-            self.lang_input,
-            self.limit_input,
-            self.fetch_button,
-            self.save_button,
-            self.track_button,
-            self.bulk_track_button,
-        ]:
-            row.addWidget(widget)
+        row = self.create_actions_row(
+            [
+                self.keyword_input,
+                self.app_id_input,
+                self.country_input,
+                self.lang_input,
+                self.limit_input,
+                self.fetch_button,
+                self.save_button,
+                self.track_button,
+                self.bulk_track_button,
+            ]
+        )
         controls_layout.addLayout(row)
         self.root_layout.addWidget(controls_card)
 

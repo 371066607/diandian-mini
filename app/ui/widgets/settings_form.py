@@ -25,6 +25,7 @@ from app.utils.time_utils import DEFAULT_SYNC_TIME, is_valid_time_of_day, parse_
 def _section_label(text: str) -> QLabel:
     """A bold sub-heading used to break the form into readable groups."""
     label = QLabel(text)
+    label.setObjectName("SectionLabel")
     font = label.font()
     font.setBold(True)
     label.setFont(font)
@@ -53,6 +54,7 @@ class SettingsFormWidget(QWidget):
 
     def __init__(self, services: dict[str, object], on_saved=None, parent=None):
         super().__init__(parent)
+        self.setObjectName("SettingsForm")
         self.services = services
         self.settings_service = services["settings_service"]
         self.on_saved = on_saved

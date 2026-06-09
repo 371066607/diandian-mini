@@ -4,6 +4,13 @@ name: publish-code-patch
 # in-app hot-update. Use this after changing Python code — no need to rebuild the
 # full ~60MB bundle (only rebuild that when dependencies change).
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "main.py"
+      - "bootstrap.py"
   workflow_dispatch:
     inputs:
       changelog:

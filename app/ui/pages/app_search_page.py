@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout
-
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.app_table import AppTableWidget
 from app.utils.image_loader import fetch_images
@@ -29,17 +27,17 @@ class AppSearchPage(BasePage):
         self.detail_button = self.create_secondary_button("打开详情")
         self.track_button = self.create_secondary_button("加入监控")
 
-        row = QHBoxLayout()
-        for widget in [
-            self.keyword_input,
-            self.country_input,
-            self.lang_input,
-            self.limit_input,
-            self.search_button,
-            self.detail_button,
-            self.track_button,
-        ]:
-            row.addWidget(widget)
+        row = self.create_actions_row(
+            [
+                self.keyword_input,
+                self.country_input,
+                self.lang_input,
+                self.limit_input,
+                self.search_button,
+                self.detail_button,
+                self.track_button,
+            ]
+        )
         controls_layout.addLayout(row)
         self.root_layout.addWidget(controls_card)
 
@@ -65,6 +63,10 @@ class AppSearchPage(BasePage):
         self.track_button.clicked.connect(self.add_tracking)
         self.keyword_input.returnPressed.connect(self.search_apps)
         self.table.itemDoubleClicked.connect(lambda *_: self.open_detail())
+        self.table.set_context_actions([
+            ("打开详情", self.open_detail),
+            ("加入监控", self.add_tracking),
+        ])
 
     def search_apps(self) -> None:
         keyword = self.keyword_input.text().strip()

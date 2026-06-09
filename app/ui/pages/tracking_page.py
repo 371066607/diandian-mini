@@ -7,9 +7,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPlainTextEdit,
+    QScrollArea,
     QVBoxLayout,
 )
 
@@ -48,27 +51,28 @@ class TrackingPage(BasePage):
         self.lang_input = self.create_input("en", width=90)
         self.frequency_combo = QComboBox()
         self.frequency_combo.addItems(FREQUENCY_OPTIONS.keys())
-        self.frequency_combo.setFixedWidth(90)
+        self.frequency_combo.setMinimumWidth(90)
         self.add_app_button = self.create_secondary_button("添加 App 监控")
         self.bulk_import_button = self.create_secondary_button("批量导入")
         self.tag_input = self.create_input("标签", width=120)
         self.set_tag_button = self.create_secondary_button("设置标签")
         self.tag_filter_combo = QComboBox()
         self.tag_filter_combo.addItem("全部")
-        self.tag_filter_combo.setFixedWidth(120)
-        add_row = QHBoxLayout()
-        add_row.setSpacing(12)
-        add_row.addWidget(self.app_id_input)
-        add_row.addWidget(self.country_input)
-        add_row.addWidget(self.lang_input)
-        add_row.addWidget(self.frequency_combo)
-        add_row.addWidget(self.add_app_button)
-        add_row.addWidget(self.bulk_import_button)
-        add_row.addWidget(self.tag_input)
-        add_row.addWidget(self.set_tag_button)
-        add_row.addWidget(QLabel("标签筛选"))
-        add_row.addWidget(self.tag_filter_combo)
-        add_row.addStretch()
+        self.tag_filter_combo.setMinimumWidth(120)
+        add_row = self.create_actions_row(
+            [
+                self.app_id_input,
+                self.country_input,
+                self.lang_input,
+                self.frequency_combo,
+                self.add_app_button,
+                self.bulk_import_button,
+                self.tag_input,
+                self.set_tag_button,
+                QLabel("标签筛选"),
+                self.tag_filter_combo,
+            ]
+        )
         action_layout.addLayout(add_row)
 
         # --- Chart-monitor add controls (reuses country/lang above) ---
@@ -77,42 +81,72 @@ class TrackingPage(BasePage):
         self.chart_collection_combo.addItems(
             ["top_free", "top_paid", "top_grossing"]
         )
-        self.chart_collection_combo.setFixedWidth(120)
+        self.chart_collection_combo.setMinimumWidth(120)
         self.chart_category_input = self.create_input("APPLICATION", width=140)
         self.add_chart_button = self.create_secondary_button("添加榜单监控")
         self.remove_chart_button = self.create_secondary_button("删除榜单监控")
-        chart_row = QHBoxLayout()
-        chart_row.setSpacing(12)
-        chart_row.addWidget(QLabel("榜单监控"))
-        chart_row.addWidget(self.chart_app_id_input)
-        chart_row.addWidget(self.chart_collection_combo)
-        chart_row.addWidget(self.chart_category_input)
-        chart_row.addWidget(self.add_chart_button)
-        chart_row.addWidget(self.remove_chart_button)
-        chart_row.addStretch()
+        chart_row = self.create_actions_row(
+            [
+                QLabel("榜单监控"),
+                self.chart_app_id_input,
+                self.chart_collection_combo,
+                self.chart_category_input,
+                self.add_chart_button,
+                self.remove_chart_button,
+            ]
+        )
         action_layout.addLayout(chart_row)
 
         self.sync_selected_button = self.create_primary_button("同步选中")
         self.sync_all_button = self.create_secondary_button("同步全部")
-        self.sync_due_button = self.create_secondary_button("同步到期项")
-        self.set_frequency_button = self.create_secondary_button("设为所选频率")
         self.remove_button = self.create_secondary_button("删除监控")
         self.toggle_button = self.create_secondary_button("启用/禁用")
-        self.export_button = self.create_secondary_button("导出 CSV")
-        self.cleanup_button = self.create_secondary_button("清理历史")
+        self.more_button = self.create_secondary_button("更多 ▾")
+        self._more_menu = QMenu(self)
+        self._more_menu.addAction("同步到期项", self.sync_due)
+        self._more_menu.addAction("设为所选频率", self.set_selected_frequency)
+        self._more_menu.addAction("导出 CSV", self.export_selected)
+        self._more_menu.addSeparator()
+        self._more_menu.addAction("清理历史", self.cleanup_history)
+        self.more_button.setMenu(self._more_menu)
         buttons_row = self.create_actions_row(
             [
                 self.sync_selected_button,
                 self.sync_all_button,
-                self.sync_due_button,
-                self.set_frequency_button,
                 self.remove_button,
                 self.toggle_button,
-                self.export_button,
-                self.cleanup_button,
+                self.more_button,
             ]
         )
         action_layout.addLayout(buttons_row)
+
+        # --- Tooltips ---
+        self.app_id_input.setToolTip("应用包名，如 com.whatsapp")
+        self.country_input.setToolTip("国家代码，如 us / cn / jp")
+        self.lang_input.setToolTip("语言代码，如 en / zh / ja")
+        self.frequency_combo.setToolTip("自动同步频率：每日 / 每周 / 手动（不自动同步）")
+        self.add_app_button.setToolTip("将上方包名加入监控列表，首次同步会自动拉取应用信息")
+        self.bulk_import_button.setToolTip("粘贴多个包名批量添加，每行一个，最多 200 个")
+        self.tag_input.setToolTip("给选中的应用打标签，便于分组筛选（留空可清除标签）")
+        self.set_tag_button.setToolTip("将标签框中的文字设置到当前选中的 App 上")
+        self.tag_filter_combo.setToolTip("按标签筛选 App 监控列表，选「全部」显示所有")
+
+        self.chart_app_id_input.setToolTip("要监控榜单排名的应用包名")
+        self.chart_collection_combo.setToolTip(
+            "榜单类型：top_free = 免费榜  top_paid = 付费榜  top_grossing = 畅销榜"
+        )
+        self.chart_category_input.setToolTip(
+            "Google Play 分类代码，如 APPLICATION（全品类）、GAME、GAME_ACTION 等"
+        )
+        self.add_chart_button.setToolTip("添加该应用到榜单监控，定期记录其在指定榜单的排名变化")
+        self.remove_chart_button.setToolTip("删除当前选中的榜单监控条目")
+
+        self.sync_selected_button.setToolTip("立即同步当前选中的应用或关键词，不受频率限制")
+        self.sync_all_button.setToolTip("立即同步全部监控项（应用 + 关键词 + 榜单），无论是否到期")
+        self.remove_button.setToolTip("删除选中的监控（历史数据保留，不影响其他监控）")
+        self.toggle_button.setToolTip("暂停或恢复选中监控的自动同步（禁用后不会自动拉取数据）")
+        self.more_button.setToolTip("同步到期项 / 设置频率 / 导出 CSV / 清理历史")
+
         self.root_layout.addWidget(action_card)
 
         content_row = QHBoxLayout()
@@ -134,6 +168,7 @@ class TrackingPage(BasePage):
                 ("状态", "enabled"),
             ],
             row_tint=self._fail_tint,
+            column_widths=[None, None, 52, 58, 108, 108, 68, 70, 52],
         )
         upper_layout.addWidget(self.apps_table)
         left_column.addWidget(upper_card)
@@ -152,6 +187,7 @@ class TrackingPage(BasePage):
                 ("状态", "enabled"),
             ],
             row_tint=self._fail_tint,
+            column_widths=[None, None, 60, 52, 58, 108, 108, 68, 52],
         )
         lower_layout.addWidget(self.keywords_table)
         left_column.addWidget(lower_card)
@@ -168,14 +204,20 @@ class TrackingPage(BasePage):
                 ("状态", "enabled"),
             ],
             row_tint=self._fail_tint,
+            column_widths=[None, 110, None, 52, 72, 108, 52],
         )
         chart_card_layout.addWidget(self.chart_table)
         left_column.addWidget(chart_card)
 
         settings_card, settings_layout = self.create_card("设置")
         self.settings_form = SettingsFormWidget(services, on_saved=self.refresh)
-        settings_layout.addWidget(self.settings_form)
-        settings_card.setFixedWidth(430)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setWidget(self.settings_form)
+        settings_layout.addWidget(_scroll)
+        settings_card.setMinimumWidth(360)
+        settings_card.setMaximumWidth(460)
 
         content_row.addLayout(left_column, 3)
         content_row.addWidget(settings_card, 2)
@@ -188,17 +230,44 @@ class TrackingPage(BasePage):
         self.app_id_input.returnPressed.connect(self.add_app_tracking)
         self.sync_selected_button.clicked.connect(self.sync_selected)
         self.sync_all_button.clicked.connect(self.sync_all)
-        self.sync_due_button.clicked.connect(self.sync_due)
-        self.set_frequency_button.clicked.connect(self.set_selected_frequency)
         self.remove_button.clicked.connect(self.remove_selected)
         self.toggle_button.clicked.connect(self.toggle_selected)
-        self.export_button.clicked.connect(self.export_selected)
-        self.cleanup_button.clicked.connect(self.cleanup_history)
         self.add_chart_button.clicked.connect(self.add_chart_tracking)
         self.remove_chart_button.clicked.connect(self.remove_selected_chart)
         self.apps_table.itemSelectionChanged.connect(lambda: self._set_active_table("app"))
         self.keywords_table.itemSelectionChanged.connect(lambda: self._set_active_table("keyword"))
         self.chart_table.itemSelectionChanged.connect(lambda: self._set_active_table("chart"))
+
+        self.apps_table.set_context_actions([
+            ("同步选中", self.sync_selected),
+            ("启用 / 禁用", self.toggle_selected),
+            "---",
+            ("查看详情", self._ctx_open_app_detail),
+            ("查看历史", self._ctx_open_app_history),
+            "---",
+            ("删除监控", self.remove_selected),
+        ])
+        self.keywords_table.set_context_actions([
+            ("同步选中", self.sync_selected),
+            ("启用 / 禁用", self.toggle_selected),
+            "---",
+            ("删除监控", self.remove_selected),
+        ])
+        self.chart_table.set_context_actions([
+            ("启用 / 禁用", self.toggle_selected),
+            "---",
+            ("删除榜单监控", self.remove_selected_chart),
+        ])
+
+    def _ctx_open_app_detail(self) -> None:
+        row = self.apps_table.current_row_data(self.apps)
+        if row:
+            self.window_api.open_app_detail(row.app_id)
+
+    def _ctx_open_app_history(self) -> None:
+        row = self.apps_table.current_row_data(self.apps)
+        if row:
+            self.window_api.open_history(row.app_id, row.country, row.lang)
 
     def on_activated(self) -> None:
         self.settings_form.load()
@@ -212,6 +281,10 @@ class TrackingPage(BasePage):
         keywords = self.tracking_service.list_keywords()
         chart_apps = self.tracking_service.list_chart_apps()
         settings = self.settings_service.get_all()
+
+        # Batch-load all latest keyword ranks in one query (replaces N per-row calls).
+        kw_rank_map = self.keyword_service.latest_rank_bulk(keywords)
+
         return {
             "apps": apps,
             "keywords": keywords,
@@ -223,7 +296,7 @@ class TrackingPage(BasePage):
                     "category": item.category or "-",
                     "country": item.country,
                     "rank": self._chart_rank_label(item),
-                    "last_synced_at": item.last_synced_at or "未同步",
+                    "last_synced_at": self._fmt_dt(item.last_synced_at),
                     "consecutive_failures": self._fail_label(item),
                     "_fail_count": item.consecutive_failures or 0,
                     "enabled": "启用" if item.enabled else "禁用",
@@ -238,7 +311,7 @@ class TrackingPage(BasePage):
                     "app_id": item.app_id,
                     "country": item.country,
                     "frequency": FREQUENCY_LABELS.get(item.frequency, item.frequency),
-                    "last_synced_at": item.last_synced_at or "未同步",
+                    "last_synced_at": self._fmt_dt(item.last_synced_at),
                     "next_sync": self._next_sync_label(item.last_synced_at, item.frequency),
                     "consecutive_failures": self._fail_label(item),
                     "_fail_count": item.consecutive_failures or 0,
@@ -251,10 +324,10 @@ class TrackingPage(BasePage):
                 {
                     "keyword": item.keyword,
                     "app_id": item.app_id,
-                    "rank": self._rank_label(item),
+                    "rank": self._rank_label_bulk(item, kw_rank_map),
                     "country": item.country,
                     "frequency": FREQUENCY_LABELS.get(item.frequency, item.frequency),
-                    "last_synced_at": item.last_synced_at or "未同步",
+                    "last_synced_at": self._fmt_dt(item.last_synced_at),
                     "next_sync": self._next_sync_label(item.last_synced_at, item.frequency),
                     "consecutive_failures": self._fail_label(item),
                     "_fail_count": item.consecutive_failures or 0,
@@ -263,6 +336,17 @@ class TrackingPage(BasePage):
                 for item in keywords
             ],
         }
+
+    @staticmethod
+    def _fmt_dt(iso_str: str | None) -> str:
+        """Shorten an ISO datetime to 'MM-DD HH:MM' so it fits in narrow table cells."""
+        if not iso_str:
+            return "未同步"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            return dt.strftime("%m-%d %H:%M")
+        except (ValueError, TypeError):
+            return iso_str[:10] if len(iso_str) >= 10 else iso_str
 
     @staticmethod
     def _fail_label(item) -> str:
@@ -278,6 +362,16 @@ class TrackingPage(BasePage):
         snapshot = self.keyword_service.latest_rank(
             item.keyword, item.app_id, item.country, item.lang
         )
+        if snapshot is None:
+            return "未同步"
+        if not snapshot.found or snapshot.rank is None:
+            return "未命中"
+        return f"#{snapshot.rank}"
+
+    @staticmethod
+    def _rank_label_bulk(item, rank_map: dict) -> str:
+        """Look up the rank from a pre-fetched bulk map — no per-row DB query."""
+        snapshot = rank_map.get((item.keyword, item.app_id, item.country, item.lang))
         if snapshot is None:
             return "未同步"
         if not snapshot.found or snapshot.rank is None:

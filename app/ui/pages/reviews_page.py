@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import re
 
-from PySide6.QtWidgets import QHBoxLayout
-
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.review_table import ReviewTableWidget
+
 
 class ReviewsPage(BasePage):
     def __init__(self, services, window_api, logger):
@@ -31,23 +30,25 @@ class ReviewsPage(BasePage):
         self.rating_filter_input = self.create_input("筛选: 1-2星", width=180)
         self.text_filter_input = self.create_input("搜索评论内容", width=220)
 
-        top_row = QHBoxLayout()
-        for widget in [
-            self.app_id_input,
-            self.sort_input,
-            self.country_input,
-            self.lang_input,
-            self.fetch_button,
-            self.load_more_button,
-            self.save_button,
-        ]:
-            top_row.addWidget(widget)
+        top_row = self.create_actions_row(
+            [
+                self.app_id_input,
+                self.sort_input,
+                self.country_input,
+                self.lang_input,
+                self.fetch_button,
+                self.load_more_button,
+                self.save_button,
+            ]
+        )
         controls_layout.addLayout(top_row)
 
-        filter_row = QHBoxLayout()
-        filter_row.addWidget(self.rating_filter_input)
-        filter_row.addWidget(self.text_filter_input)
-        filter_row.addStretch()
+        filter_row = self.create_actions_row(
+            [
+                self.rating_filter_input,
+                self.text_filter_input,
+            ]
+        )
         controls_layout.addLayout(filter_row)
         self.root_layout.addWidget(controls_card)
 

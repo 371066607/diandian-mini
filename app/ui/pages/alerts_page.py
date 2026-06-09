@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QComboBox, QHBoxLayout
+from PySide6.QtWidgets import QComboBox
 
 from app.ui.alert_labels import (
     ALERT_SEVERITY_COLORS,
@@ -24,9 +24,6 @@ class AlertsPage(BasePage):
         self._rows: list[dict] = []
 
         filter_card, filter_layout = self.create_card("筛选")
-        filters_row = QHBoxLayout()
-        filters_row.setSpacing(12)
-
         # App dropdown ("全部 App" + each app_id). Filled in on_activated so the list
         # reflects whatever apps currently have alerts.
         self.app_filter = QComboBox()
@@ -50,21 +47,23 @@ class AlertsPage(BasePage):
         self.read_filter.addItems(_READ_FILTERS.keys())
         self.read_filter.currentTextChanged.connect(lambda _: self.refresh())
 
-        filters_row.addWidget(self.app_filter)
-        filters_row.addWidget(self.type_filter)
-        filters_row.addWidget(self.severity_filter)
-        filters_row.addWidget(self.read_filter)
-
         refresh_button = self.create_secondary_button("刷新")
         refresh_button.clicked.connect(self.refresh)
         mark_selected_button = self.create_secondary_button("标记选中已读")
         mark_selected_button.clicked.connect(self.mark_selected_read)
         mark_all_button = self.create_secondary_button("标记全部已读")
         mark_all_button.clicked.connect(self.mark_all_read)
-        filters_row.addWidget(refresh_button)
-        filters_row.addWidget(mark_selected_button)
-        filters_row.addWidget(mark_all_button)
-        filters_row.addStretch()
+        filters_row = self.create_actions_row(
+            [
+                self.app_filter,
+                self.type_filter,
+                self.severity_filter,
+                self.read_filter,
+                refresh_button,
+                mark_selected_button,
+                mark_all_button,
+            ]
+        )
 
         filter_layout.addLayout(filters_row)
         self.root_layout.addWidget(filter_card)

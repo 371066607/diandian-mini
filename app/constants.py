@@ -5,16 +5,16 @@ WINDOW_WIDTH = 1440
 WINDOW_HEIGHT = 900
 
 SIDEBAR_ITEMS = [
-    ("dashboard", "首页"),
-    ("app_search", "应用搜索"),
-    ("app_detail", "应用详情"),
-    ("reviews", "评论"),
-    ("charts", "榜单"),
-    ("keywords", "关键词"),
-    ("tracking", "监控"),
-    ("history", "历史"),
-    ("alerts", "提醒"),
-    ("settings", "设置"),
+    ("dashboard", "🏠  首页"),
+    ("app_search", "🔍  搜索"),
+    ("app_detail", "📱  应用详情"),
+    ("reviews", "💬  评论"),
+    ("charts", "📊  榜单"),
+    ("keywords", "🔑  关键词"),
+    ("tracking", "👁  监控"),
+    ("history", "📈  历史"),
+    ("alerts", "🔔  提醒"),
+    ("settings", "⚙️  设置"),
 ]
 
 DEFAULT_SETTINGS = {

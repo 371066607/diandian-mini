@@ -26,3 +26,6 @@ _*.png
 
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
+
+# Claude Code local-only settings
+.claude/settings.local.json

@@ -41,6 +41,7 @@ class DashboardPage(BasePage):
             ("alerts", "未读提醒", "0"),
             ("last_sync", "最后同步", "-"),
         ]
+        stats_columns = 5
         for index, (key, title, value) in enumerate(stats):
             card, layout = self.create_card(title)
             number = self.create_stat_value(value)
@@ -50,7 +51,7 @@ class DashboardPage(BasePage):
             layout.addWidget(sub)
             self.stat_labels[key] = number
             self.stat_sub_labels[key] = sub
-            stats_grid.addWidget(card, index // 4, index % 4)
+            stats_grid.addWidget(card, index // stats_columns, index % stats_columns)
         self.root_layout.addLayout(stats_grid)
 
         charts_row = QHBoxLayout()
@@ -174,11 +175,11 @@ class DashboardPage(BasePage):
             "tracked_keywords_count": len(tracked_keywords),
             "snapshots": snapshots,
             "unread": unread,
-            "latest_sync": self._latest_sync_time(tracked_apps, tracked_keywords) or "-",
-            "snapshots_sub": recent_snapshots[-1].captured_at
+            "latest_sync": self._short_time(self._latest_sync_time(tracked_apps, tracked_keywords)) if self._latest_sync_time(tracked_apps, tracked_keywords) else "-",
+            "snapshots_sub": self._short_time(recent_snapshots[-1].captured_at)
             if recent_snapshots
             else "SQLite 本地数据",
-            "latest_keyword_sync": latest_keyword_sync or "等待首次同步",
+            "latest_keyword_sync": self._short_time(latest_keyword_sync) if latest_keyword_sync else "等待首次同步",
             "alerts_sub": "评分 / 版本 / 排名变化" if unread else "暂无未读提醒",
             "alerts_rows": alerts_rows,
             "monitor_health": monitor_health,

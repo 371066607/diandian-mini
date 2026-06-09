@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import desc, func, select, text, update
+from sqlalchemy import and_, bindparam, desc, func, select, text, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.db.models import (
@@ -46,6 +46,47 @@ class AlertRepository:
         if app_id is not None:
             stmt = stmt.where(AlertModel.app_id == app_id)
         return session.scalar(stmt) or 0
+
+    def unread_count_bulk(self, session, app_ids: list[str]) -> dict[str, int]:
+        """Return {app_id: unread_count} for every app in *app_ids* — one query instead
+        of one per app.  Missing keys mean zero unread alerts."""
+        if not app_ids:
+            return {}
+        rows = session.execute(
+            select(AlertModel.app_id, func.count().label("cnt"))
+            .where(AlertModel.app_id.in_(app_ids), AlertModel.is_read == 0)
+            .group_by(AlertModel.app_id)
+        ).all()
+        return {row.app_id: row.cnt for row in rows}
+
+    def latest_by_app(self, session, app_ids: list[str]) -> dict[str, AlertModel]:
+        """Return the single most-recent alert for each app_id — one query."""
+        if not app_ids:
+            return {}
+        # Subquery: max created_at per app_id
+        sub = (
+            select(
+                AlertModel.app_id.label("aid"),
+                func.max(AlertModel.created_at).label("max_at"),
+            )
+            .where(AlertModel.app_id.in_(app_ids))
+            .group_by(AlertModel.app_id)
+            .alias("_latest_dates")
+        )
+        stmt = select(AlertModel).join(
+            sub,
+            and_(
+                AlertModel.app_id == sub.c.aid,
+                AlertModel.created_at == sub.c.max_at,
+            ),
+        )
+        rows = session.execute(stmt).scalars().all()
+        result: dict[str, AlertModel] = {}
+        for row in rows:
+            # keep highest id when two alerts share the same timestamp
+            if row.app_id not in result or row.id > result[row.app_id].id:
+                result[row.app_id] = row
+        return result
 
     def list_recent(
         self, session, limit: int = 10, severity: str | None = None
@@ -285,6 +326,42 @@ class SnapshotRepository:
             .order_by(AppSnapshotModel.captured_at.asc())
         )
         return session.execute(stmt).scalars().all()
+
+    def latest_two_bulk(
+        self,
+        session,
+        app_keys: list[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], list[AppSnapshotModel]]:
+        """Return up to 2 most-recent snapshots per (app_id, country, lang) — one query.
+
+        The index ix_app_snapshots_lookup covers (app_id, country, lang, captured_at),
+        so the single IN + ORDER BY is index-only and scales to hundreds of apps.
+        Rows arrive oldest-first; we keep a rolling window of 2 per key in Python.
+        """
+        if not app_keys:
+            return {}
+        keys_set = set(app_keys)
+        app_ids = list({a for a, _c, _l in app_keys})
+        stmt = (
+            select(AppSnapshotModel)
+            .where(AppSnapshotModel.app_id.in_(app_ids))
+            .order_by(
+                AppSnapshotModel.app_id,
+                AppSnapshotModel.country,
+                AppSnapshotModel.lang,
+                AppSnapshotModel.captured_at.asc(),
+            )
+        )
+        result: dict[tuple, list] = {}
+        for row in session.execute(stmt).scalars():
+            key = (row.app_id, row.country, row.lang)
+            if key not in keys_set:
+                continue
+            buf = result.setdefault(key, [])
+            buf.append(row)
+            if len(buf) > 2:
+                buf.pop(0)
+        return result
 
     def latest(
         self,
@@ -567,6 +644,60 @@ class KeywordRankRepository:
             .limit(1)
         )
         return session.execute(stmt).scalars().first()
+
+    def latest_bulk(
+        self,
+        session,
+        keys: list[tuple[str, str, str, str]],  # (keyword, app_id, country, lang)
+    ) -> dict[tuple[str, str, str, str], KeywordRankModel]:
+        """Return the most-recent rank row for each key — one query instead of N.
+
+        Uses a window function (ROW_NUMBER) so we get exactly one row per partition
+        without a correlated subquery.  SQLite has supported ROW_NUMBER since 3.25
+        (Python 3.12 ships with ≥ 3.45).
+        """
+        if not keys:
+            return {}
+        keys_set = set(keys)
+        # Collect distinct app_ids to narrow the table scan
+        app_ids = list({app_id for _kw, app_id, _c, _l in keys})
+        # ``expanding=True`` lets SQLAlchemy expand the list into individual '?, ?, …'
+        # placeholders that SQLite understands (raw tuple binding raises OperationalError).
+        stmt = text(
+            """
+            SELECT id, keyword, app_id, country, lang, platform, rank, found,
+                   checked_limit, captured_at
+            FROM (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY keyword, app_id, country, lang
+                        ORDER BY captured_at DESC
+                    ) AS _rn
+                FROM keyword_ranks
+                WHERE app_id IN :app_ids
+            ) WHERE _rn = 1
+            """
+        ).bindparams(bindparam("app_ids", expanding=True))
+        rows = session.execute(stmt, {"app_ids": app_ids}).mappings().all()
+        result: dict[tuple, KeywordRankModel] = {}
+        for row in rows:
+            key = (row["keyword"], row["app_id"], row["country"], row["lang"])
+            if key not in keys_set:
+                continue
+            # Re-hydrate as ORM objects so callers can use .rank / .found normally
+            obj = KeywordRankModel(
+                id=row["id"],
+                keyword=row["keyword"],
+                app_id=row["app_id"],
+                country=row["country"],
+                lang=row["lang"],
+                rank=row["rank"],
+                found=row["found"],
+                checked_limit=row["checked_limit"],
+                captured_at=row["captured_at"],
+            )
+            result[key] = obj
+        return result
 
     def list_recent(self, session, limit: int = 8) -> list[KeywordRankModel]:
         stmt = select(KeywordRankModel).order_by(desc(KeywordRankModel.captured_at)).limit(limit)

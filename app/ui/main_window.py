@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
-        self.setMinimumSize(1280, 800)
+        self.setMinimumSize(1100, 720)
         self.setStyleSheet(self.build_stylesheet())
 
         root = QWidget()
@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
 
         for key, label in SIDEBAR_ITEMS:
             button = QPushButton(label)
+            button.setObjectName("SidebarButton")
             button.setCheckable(True)
             button.clicked.connect(lambda checked=False, page_key=key: self.navigate_to(page_key))
             layout.addWidget(button)
@@ -235,50 +236,138 @@ class MainWindow(QMainWindow):
         QMainWindow {
             background: #F3F5F9;
         }
+        QWidget {
+            font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+            font-size: 13px;
+        }
         #Sidebar {
-            background: #1E293B;
+            background: #111827;
         }
         #ContentFrame {
-            background: #F6F7FB;
+            background: #F5F7FB;
         }
         QFrame#Card {
             background: white;
             border: 1px solid #E2E8F0;
-            border-radius: 18px;
+            border-radius: 8px;
         }
         QLabel {
             color: #0F172A;
         }
-        QLineEdit, QTextEdit {
+        QLabel#SectionLabel {
+            color: #334155;
+            font-size: 13px;
+            font-weight: 700;
+            padding-top: 4px;
+        }
+        QWidget#SettingsForm {
+            background: transparent;
+        }
+        QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTimeEdit {
             background: white;
             color: #0F172A;
             selection-background-color: #DBEAFE;
             selection-color: #0F172A;
             border: 1px solid #CBD5E1;
-            border-radius: 12px;
-            padding: 10px 12px;
+            border-radius: 8px;
+            padding: 8px 10px;
             font-size: 13px;
+            min-height: 20px;
+        }
+        QComboBox {
+            padding-right: 28px;
+        }
+        QComboBox::drop-down, QSpinBox::up-button, QSpinBox::down-button,
+        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
+        QTimeEdit::up-button, QTimeEdit::down-button {
+            width: 22px;
+            border: none;
+            background: transparent;
+        }
+        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus,
+        QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus {
+            border-color: #2563EB;
+        }
+        QScrollArea {
+            border: none;
+            background: transparent;
+        }
+        QScrollArea > QWidget > QWidget {
+            background: transparent;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 10px;
+            margin: 2px;
+        }
+        QScrollBar::handle:vertical {
+            background: #CBD5E1;
+            border-radius: 5px;
+            min-height: 32px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+        QScrollBar:horizontal {
+            background: transparent;
+            height: 10px;
+            margin: 2px;
+        }
+        QScrollBar::handle:horizontal {
+            background: #CBD5E1;
+            border-radius: 5px;
+            min-width: 32px;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0;
         }
         QPushButton {
             background: white;
             border: 1px solid #CBD5E1;
-            border-radius: 12px;
-            padding: 10px 18px;
+            border-radius: 8px;
+            padding: 8px 16px;
             font-size: 13px;
+            font-weight: 600;
             color: #1E293B;
         }
         QPushButton:hover {
             border-color: #94A3B8;
+            background: #F8FAFC;
         }
-        QPushButton:checked {
-            background: #3B82F6;
-            color: white;
-            border-color: #3B82F6;
+        QPushButton:pressed {
+            background: #EEF2FF;
+        }
+        QPushButton:disabled {
+            color: #94A3B8;
+            background: #F8FAFC;
+            border-color: #E2E8F0;
         }
         QPushButton#PrimaryButton {
             background: #2563EB;
             color: white;
             border-color: #2563EB;
+        }
+        QPushButton#PrimaryButton:hover {
+            background: #1D4ED8;
+            border-color: #1D4ED8;
+        }
+        #Sidebar QPushButton#SidebarButton {
+            background: transparent;
+            color: #CBD5E1;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            padding: 9px 12px;
+            text-align: left;
+        }
+        #Sidebar QPushButton#SidebarButton:hover {
+            background: #1F2937;
+            color: white;
+            border-color: #334155;
+        }
+        #Sidebar QPushButton#SidebarButton:checked {
+            background: #3B82F6;
+            color: white;
+            border-color: #3B82F6;
         }
         QTableWidget {
             border: none;
@@ -293,8 +382,13 @@ class MainWindow(QMainWindow):
             background: #F8FAFC;
             border: none;
             border-bottom: 1px solid #E2E8F0;
-            padding: 10px;
+            padding: 9px;
             color: #334155;
             font-weight: 600;
+        }
+        QStatusBar {
+            background: #F8FAFC;
+            color: #475569;
+            border-top: 1px solid #E2E8F0;
         }
         """

@@ -83,6 +83,7 @@ def build_services(database: Database) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--smoke-test", action="store_true", help="初始化数据库和服务后退出")
+    parser.add_argument("--widgets", action="store_true", help="使用旧 Qt Widgets 界面启动")
     args = parser.parse_args()
 
     ensure_runtime_dirs()
@@ -97,22 +98,29 @@ def main() -> int:
         return 0
 
     from PySide6.QtCore import QThreadPool
-    from PySide6.QtWidgets import QApplication
 
-    from app.ui.main_window import MainWindow
+    if args.widgets:
+        from PySide6.QtWidgets import QApplication
+
+        from app.ui.main_window import MainWindow
+    else:
+        from app.ui.qml_app import run_qml_app
 
     services["scheduler"].start()
 
-    app = QApplication(sys.argv)
-    app.setApplicationName("点点数据 Mini")
-    window = MainWindow(database=database, services=services, logger=logger)
-    # Wire background-sync alerts to the tray/badge. Done here (not in build_services) so
-    # the service layer never imports the UI; headless/smoke runs leave the notifier None.
-    services["tracking_service"].set_notifier(window.notify)
-    window.show()
-
     try:
-        exit_code = app.exec()
+        if args.widgets:
+            app = QApplication(sys.argv)
+            app.setApplicationName("点点数据 Mini")
+            window = MainWindow(database=database, services=services, logger=logger)
+            # Wire background-sync alerts to the tray/badge. Done here (not in
+            # build_services) so the service layer never imports the UI; headless/smoke
+            # runs leave the notifier None.
+            services["tracking_service"].set_notifier(window.notify)
+            window.show()
+            exit_code = app.exec()
+        else:
+            exit_code = run_qml_app(database, services, logger, sys.argv)
     finally:
         # Closing the window must stop every background thread/process: shut the
         # scheduler down, drop queued worker tasks, and give running ones a bounded

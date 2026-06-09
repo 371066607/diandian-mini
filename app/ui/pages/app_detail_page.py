@@ -60,28 +60,28 @@ class AppDetailPage(BasePage):
         self.history_button = self.create_secondary_button("查看历史")
         self.export_button = self.create_secondary_button("导出 CSV")
 
-        query_row = QHBoxLayout()
-        query_row.setSpacing(12)
-        query_row.addWidget(self.app_id_input, 1)
-        query_row.addWidget(self.country_input)
-        query_row.addWidget(self.lang_input)
-        query_row.addWidget(self.fetch_button)
+        query_row = self.create_actions_row(
+            [
+                self.app_id_input,
+                self.country_input,
+                self.lang_input,
+                self.fetch_button,
+            ]
+        )
         toolbar_layout.addLayout(query_row)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(12)
-        for widget in [
-            self.save_button,
-            self.track_button,
-            self.similar_button,
-            self.permissions_button,
-            self.reviews_button,
-            self.open_button,
-            self.history_button,
-            self.export_button,
-        ]:
-            action_row.addWidget(widget)
-        action_row.addStretch()
+        action_row = self.create_actions_row(
+            [
+                self.save_button,
+                self.track_button,
+                self.similar_button,
+                self.permissions_button,
+                self.reviews_button,
+                self.open_button,
+                self.history_button,
+                self.export_button,
+            ]
+        )
         toolbar_layout.addLayout(action_row)
         self.root_layout.addWidget(toolbar_card)
 

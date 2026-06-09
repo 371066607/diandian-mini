@@ -7,6 +7,9 @@ import os
 from PyInstaller.utils.hooks import collect_submodules
 
 datas = [("code_version.txt", ".")] if os.path.exists("code_version.txt") else []
+# The QML UI is loaded from the filesystem at runtime (app/ui/qml_app.py), so the
+# .qml sources must ship as data files — collect_submodules only covers .py modules.
+datas += [("app/qml", "app/qml")]
 hiddenimports = collect_submodules("app")
 
 a = Analysis(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea
 
 from app.ui.pages.base_page import BasePage
 from app.ui.widgets.settings_form import SettingsFormWidget
@@ -13,8 +13,12 @@ class SettingsPage(BasePage):
 
         settings_card, settings_layout = self.create_card("全局配置")
         self.settings_form = SettingsFormWidget(services)
-        settings_layout.addWidget(self.settings_form)
-        self.root_layout.addWidget(settings_card)
+        _scroll = QScrollArea()
+        _scroll.setWidgetResizable(True)
+        _scroll.setFrameShape(QFrame.Shape.NoFrame)
+        _scroll.setWidget(self.settings_form)
+        settings_layout.addWidget(_scroll)
+        self.root_layout.addWidget(settings_card, 1)
 
         about_card, about_layout = self.create_card("关于 / 更新")
         self.version_label = QLabel(f"当前版本 {self.update_service.current_label()}")

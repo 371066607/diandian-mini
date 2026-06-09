@@ -194,7 +194,11 @@ class ChartRankSnapshotModel(Base):
 
 class TrackedAppModel(Base):
     __tablename__ = "tracked_apps"
-    __table_args__ = (UniqueConstraint("platform", "app_id", "country", "lang"),)
+    __table_args__ = (
+        UniqueConstraint("platform", "app_id", "country", "lang"),
+        Index("ix_tracked_apps_enabled", "enabled"),
+        Index("ix_tracked_apps_synced", "last_synced_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
@@ -214,7 +218,11 @@ class TrackedAppModel(Base):
 
 class TrackedKeywordModel(Base):
     __tablename__ = "tracked_keywords"
-    __table_args__ = (UniqueConstraint("platform", "app_id", "keyword", "country", "lang"),)
+    __table_args__ = (
+        UniqueConstraint("platform", "app_id", "keyword", "country", "lang"),
+        Index("ix_tracked_keywords_enabled", "enabled"),
+        Index("ix_tracked_keywords_synced", "last_synced_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
