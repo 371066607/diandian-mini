@@ -44,11 +44,27 @@ jobs:
 
       - name: Create DMG
         run: |
-          hdiutil create \
-            -volname "DiandianMini" \
-            -srcfolder dist/DiandianMini.app \
-            -ov -format UDZO \
-            dist/DiandianMini.dmg
+          # `hdiutil: create failed - Resource busy` is a known transient flake on
+          # macOS runners (Spotlight/fsevents briefly holding dist/). Let the bundle
+          # settle, then retry a few times before giving up.
+          sync
+          sleep 3
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create \
+                -volname "DiandianMini" \
+                -srcfolder dist/DiandianMini.app \
+                -ov -format UDZO \
+                dist/DiandianMini.dmg; then
+              echo "DMG created on attempt $attempt"
+              break
+            fi
+            if [ "$attempt" = 5 ]; then
+              echo "hdiutil failed after 5 attempts" >&2
+              exit 1
+            fi
+            echo "hdiutil attempt $attempt hit a transient error, retrying in 8s..."
+            sleep 8
+          done
           echo "DMG size: $(du -sh dist/DiandianMini.dmg | cut -f1)"
 
       - name: Publish DMG to `macos` release
