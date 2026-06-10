@@ -1,10 +1,12 @@
 name: build-windows
 
 # Full Windows integrated package (double-click to run). Publishes to the `windows`
-# release tag. Triggered manually or by a version tag.
+# release tag. Builds on every push to main, and on manual run or a version tag.
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
