@@ -1,9 +1,9 @@
 name: build-macos
 
 # Full macOS app bundle (.dmg). Publishes to the `macos` release tag (stable
-# download URL). Builds on every push to main, and on manual run or a version tag.
-# The `code` hot-patch sync only runs on tag/manual releases — on a plain main
-# push the publish-code-patch workflow owns the `code` release, so they never race.
+# download URL) and simultaneously syncs the `code` hot-patch so existing users
+# get the update automatically without re-downloading the full package.
+# For Python-only changes skip this and use publish-code-patch instead.
 on:
   workflow_dispatch:
     inputs:
@@ -12,8 +12,6 @@ on:
         required: false
         default: ""
   push:
-    branches:
-      - main
     tags:
       - "v*"
 
@@ -69,9 +67,6 @@ jobs:
             dist/DiandianMini.dmg
 
       - name: Sync code hot-patch
-        # Only on tag/manual releases — a plain main push lets publish-code-patch
-        # own the `code` release, avoiding a double-publish race.
-        if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
