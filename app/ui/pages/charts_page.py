@@ -65,15 +65,20 @@ class ChartsPage(BasePage):
         self.limit_input.returnPressed.connect(self.fetch_chart)
         self.table.itemDoubleClicked.connect(lambda *_: self.open_detail())
 
+    def on_platform_changed(self, platform: str) -> None:
+        label = "App Store" if platform == "app_store" else "Google Play"
+        self.update_subtitle(f"{label} Top Free / Paid / Grossing 榜单抓取")
+
     def fetch_chart(self) -> None:
         chart_type = self.chart_type_input.text().strip() or "top_free"
         category = self.category_input.text().strip() or None
         country = self.country_input.text().strip() or "us"
         lang = self.lang_input.text().strip() or "en"
         limit = safe_int(self.limit_input.text(), 100)
+        platform = getattr(self.window_api, "current_platform", "google_play")
         self.run_task(
             "正在获取榜单...",
-            lambda: self.chart_service.fetch(chart_type, category, country, lang, limit),
+            lambda: self.chart_service.fetch(chart_type, category, country, lang, limit, platform=platform),
             self._on_chart_finished,
         )
 

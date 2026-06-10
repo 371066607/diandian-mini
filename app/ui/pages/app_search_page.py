@@ -5,18 +5,43 @@ from app.ui.widgets.app_table import AppTableWidget
 from app.utils.image_loader import fetch_images
 from app.utils.normalize import safe_int
 
+_COLUMNS_GP = [
+    ("图标", "icon"),
+    ("应用名", "title"),
+    ("包名", "app_id"),
+    ("开发者", "developer"),
+    ("评分", "rating"),
+    ("评分数", "ratings_count"),
+    ("安装量", "installs"),
+    ("价格", "price"),
+    ("内购", "has_iap"),
+]
+
+_COLUMNS_AS = [
+    ("图标", "icon"),
+    ("应用名", "title"),
+    ("ID / Bundle", "app_id"),
+    ("开发者", "developer"),
+    ("评分", "rating"),
+    ("评分数", "ratings_count"),
+    ("价格", "price"),
+    ("内购", "has_iap"),
+    ("类别", "category"),
+]
+
 
 class AppSearchPage(BasePage):
     def __init__(self, services, window_api, logger):
         super().__init__(services, window_api, logger, "应用搜索", "按关键词搜索 Google Play 应用")
         self.google_play_service = services["google_play_service"]
+        self.app_store_service = services.get("app_store_service")
         self.tracking_service = services["tracking_service"]
         self.search_results = []
         self._search_gen = 0
         defaults = self.get_default_settings()
 
         controls_card, controls_layout = self.create_card()
-        self.keyword_input = self.create_input("keyword: photo editor")
+        self.keyword_input = self.create_input("关键词: photo editor")
         self.country_input = self.create_input("country: us", width=140)
         self.country_input.setText(defaults["default_country"])
         self.lang_input = self.create_input("lang: en", width=120)
@@ -42,19 +67,7 @@ class AppSearchPage(BasePage):
         self.root_layout.addWidget(controls_card)
 
         result_card, result_layout = self.create_card("搜索结果")
-        self.table = AppTableWidget(
-            [
-                ("图标", "icon"),
-                ("应用名", "title"),
-                ("包名", "app_id"),
-                ("开发者", "developer"),
-                ("评分", "rating"),
-                ("评分数", "ratings_count"),
-                ("安装量", "installs"),
-                ("价格", "price"),
-                ("内购", "has_iap"),
-            ]
-        )
+        self.table = AppTableWidget(_COLUMNS_GP)
         result_layout.addWidget(self.table)
         self.root_layout.addWidget(result_card)
 
@@ -68,6 +81,27 @@ class AppSearchPage(BasePage):
             ("加入监控", self.add_tracking),
         ])
 
+    def _active_service(self):
+        if self.window_api and getattr(self.window_api, "current_platform", "google_play") == "app_store":
+            return self.app_store_service or self.google_play_service
+        return self.google_play_service
+
+    def _is_app_store(self) -> bool:
+        return getattr(self.window_api, "current_platform", "google_play") == "app_store"
+
+    def on_platform_changed(self, platform: str) -> None:
+        if platform == "app_store":
+            self.update_subtitle("按关键词搜索 App Store 应用")
+            self.keyword_input.setPlaceholderText("关键词: photo editor")
+            self.table.reconfigure(_COLUMNS_AS)
+            self.track_button.setVisible(False)
+        else:
+            self.update_subtitle("按关键词搜索 Google Play 应用")
+            self.keyword_input.setPlaceholderText("关键词: photo editor")
+            self.table.reconfigure(_COLUMNS_GP)
+            self.track_button.setVisible(True)
+        self.search_results = []
+
     def search_apps(self) -> None:
         keyword = self.keyword_input.text().strip()
         if not keyword:
@@ -77,17 +111,14 @@ class AppSearchPage(BasePage):
         country = self.country_input.text().strip() or "us"
         lang = self.lang_input.text().strip() or "en"
         limit = safe_int(self.limit_input.text(), 50)
+        svc = self._active_service()
         self.run_task(
             "正在搜索应用...",
-            lambda: self.google_play_service.search(
-                keyword, country=country, lang=lang, limit=limit
-            ),
+            lambda: svc.search(keyword, country=country, lang=lang, limit=limit),
             self._on_search_finished,
         )
 
     def _on_search_finished(self, results) -> None:
-        # Show results the instant the search returns; load icons afterwards in the
-        # background so the table isn't blocked on ~12 slow image round-trips.
         self.search_results = results
         self._search_gen += 1
         self.table.set_rows(results)
@@ -107,7 +138,7 @@ class AppSearchPage(BasePage):
 
     def _apply_icons(self, gen: int, head, icons) -> None:
         if gen != self._search_gen:
-            return  # a newer search superseded this icon load
+            return
         for item, icon in zip(head, icons, strict=True):
             item.raw["_icon_bytes"] = icon
         self.table.set_rows(self.search_results)
@@ -120,6 +151,9 @@ class AppSearchPage(BasePage):
         self.window_api.open_app_detail(row.app_id)
 
     def add_tracking(self) -> None:
+        if self._is_app_store():
+            self.show_error("App Store 暂不支持监控功能。")
+            return
         row = self.table.current_row_data(self.search_results)
         if row is None:
             self.show_error("请先选择一条应用记录。")

@@ -33,11 +33,15 @@ class BasePage(QWidget):
         layout = QVBoxLayout()
         title_label = QLabel(title)
         title_label.setStyleSheet("font-size: 24px; font-weight: 700; color: #0F172A;")
-        subtitle_label = QLabel(subtitle)
-        subtitle_label.setStyleSheet("font-size: 13px; color: #64748B;")
+        self._subtitle_label = QLabel(subtitle)
+        self._subtitle_label.setStyleSheet("font-size: 13px; color: #64748B;")
         layout.addWidget(title_label)
-        layout.addWidget(subtitle_label)
+        layout.addWidget(self._subtitle_label)
         return layout
+
+    def update_subtitle(self, text: str) -> None:
+        if hasattr(self, "_subtitle_label"):
+            self._subtitle_label.setText(text)
 
     def create_card(self, title: str | None = None) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()

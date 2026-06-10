@@ -95,6 +95,24 @@ class AppTableWidget(QTableWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+    def reconfigure(self, columns: list[tuple[str, str]]) -> None:
+        """Replace column definitions and clear all rows. Call before set_rows()."""
+        self.columns = columns
+        self._icon_column_indexes = [
+            i for i, (_, key) in enumerate(columns) if key == "icon"
+        ]
+        self.clear()
+        self.setRowCount(0)
+        self.setColumnCount(len(columns))
+        self.setHorizontalHeaderLabels([label for label, _ in columns])
+        header = self.horizontalHeader()
+        for i in range(len(columns)):
+            if i in self._icon_column_indexes:
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
+                self.setColumnWidth(i, 64)
+            else:
+                header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+
     def set_context_actions(self, actions: list) -> None:
         """Set right-click menu items: list of (label, callback) or "---" for separators."""
         self._context_actions = actions

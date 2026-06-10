@@ -10,11 +10,13 @@ ApplicationWindow {
     height: 900
     minimumWidth: 1100
     minimumHeight: 720
-    title: appTitle
+    title: appTitle.replace("Google Play", platformLabel)
     color: "#F5F7FB"
 
     required property var bridge
     required property string appTitle
+    readonly property bool isAppStore: bridge.platform === "app_store"
+    readonly property string platformLabel: isAppStore ? "App Store" : "Google Play"
     property string currentPage: "dashboard"
     property var navItems: [
         { key: "dashboard", label: "首页", subtitle: "本地监控总览、趋势和提醒" },
@@ -41,7 +43,7 @@ ApplicationWindow {
     }
 
     function pageSubtitle() {
-        return navItems[pageIndex(currentPage)].subtitle
+        return navItems[pageIndex(currentPage)].subtitle.replace("Google Play", platformLabel)
     }
 
     function rows(source, key) {
@@ -52,6 +54,11 @@ ApplicationWindow {
     function textOr(value, fallback) {
         if (value === undefined || value === null || value === "") return fallback
         return value
+    }
+
+    function history(key) {
+        var all = bridge.inputHistory || {}
+        return all[(isAppStore ? "app_store:" : "google_play:") + key] || []
     }
 
     function showToast(message, isError) {
@@ -67,6 +74,15 @@ ApplicationWindow {
         function onStatusMessage(message) { root.showToast(message, false) }
         function onErrorMessage(message) { root.showToast(message, true) }
         function onPageRequested(page) { root.currentPage = page }
+        function onUpdatePrompt(title, message) {
+            updateDialog.heading = title
+            updateDialog.body = message
+            updateDialog.open()
+        }
+        function onUpdateApplied(message) {
+            restartDialog.body = message
+            restartDialog.open()
+        }
     }
 
     // --- design tokens ---
@@ -267,6 +283,102 @@ ApplicationWindow {
         leftPadding: 12
         rightPadding: 12
         font.pixelSize: 13
+    }
+
+    // Text field with a per-platform input-history dropdown. Built on a plain TextField
+    // (NOT ComboBox) so the typed text survives a model change — submitting a search
+    // appends to history, which would otherwise reset a ComboBox's editText to blank.
+    component HistoryField: FocusScope {
+        id: hf
+        property string historyKey: ""
+        property string placeholderText: ""
+        property alias text: hfInput.text
+        signal accepted()
+        height: 38
+        implicitWidth: 180
+        implicitHeight: 38
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 8
+            color: "white"
+            border.color: hfInput.activeFocus ? "#2563EB" : "#CBD5E1"
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
+
+        TextField {
+            id: hfInput
+            anchors.fill: parent
+            leftPadding: 12
+            rightPadding: 30
+            selectByMouse: true
+            color: "#0F172A"
+            selectedTextColor: "#0F172A"
+            selectionColor: "#DBEAFE"
+            placeholderText: hf.placeholderText
+            placeholderTextColor: "#94A3B8"
+            font.pixelSize: 13
+            verticalAlignment: Text.AlignVCenter
+            background: null
+            onAccepted: hf.accepted()
+        }
+
+        // history dropdown toggle (only when this field has remembered values)
+        Label {
+            anchors.right: parent.right
+            anchors.rightMargin: 11
+            anchors.verticalCenter: parent.verticalCenter
+            text: "▾"
+            color: hpopup.visible ? "#2563EB" : "#94A3B8"
+            font.pixelSize: 11
+            visible: root.history(hf.historyKey).length > 0
+            TapHandler {
+                cursorShape: Qt.PointingHandCursor
+                onTapped: hpopup.visible ? hpopup.close() : hpopup.open()
+            }
+        }
+
+        Popup {
+            id: hpopup
+            y: hf.height + 4
+            width: hf.width
+            padding: 6
+            implicitHeight: Math.min(hlist.contentHeight + 12, 240)
+            background: Rectangle {
+                radius: 8
+                color: "white"
+                border.color: "#E2E8F0"
+            }
+            contentItem: ListView {
+                id: hlist
+                clip: true
+                implicitHeight: contentHeight
+                model: root.history(hf.historyKey)
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollIndicator.vertical: ScrollIndicator {}
+                delegate: ItemDelegate {
+                    width: ListView.view ? ListView.view.width : hf.width
+                    height: 32
+                    contentItem: Label {
+                        text: modelData
+                        color: "#1E293B"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 6
+                    }
+                    background: Rectangle {
+                        radius: 6
+                        color: hovered ? "#EFF6FF" : "transparent"
+                    }
+                    onClicked: {
+                        hf.text = modelData
+                        hpopup.close()
+                        hfInput.forceActiveFocus()
+                    }
+                }
+            }
+        }
     }
 
     component QuietCombo: ComboBox {
@@ -599,7 +711,48 @@ ApplicationWindow {
                     font.pixelSize: 18
                     font.weight: Font.Bold
                     Layout.topMargin: 8
-                    Layout.bottomMargin: 20
+                    Layout.bottomMargin: 10
+                }
+
+                // Platform switcher: Google Play <-> App Store
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.bottomMargin: 12
+                    implicitHeight: 36
+                    radius: 9
+                    color: "#1F2937"
+                    border.color: "#374151"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.margins: 3
+                        spacing: 3
+                        Repeater {
+                            model: [
+                                { key: "google_play", label: "Google Play" },
+                                { key: "app_store", label: "App Store" }
+                            ]
+                            Rectangle {
+                                id: platformSegment
+                                property bool active: root.bridge.platform === modelData.key
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                radius: 7
+                                color: active ? "#3B82F6"
+                                              : (segmentHover.hovered ? "#374151" : "transparent")
+                                Behavior on color { ColorAnimation { duration: 140 } }
+                                HoverHandler { id: segmentHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: root.bridge.setPlatform(modelData.key) }
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: modelData.label
+                                    color: platformSegment.active ? "white" : "#94A3B8"
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Repeater {
@@ -649,7 +802,7 @@ ApplicationWindow {
                 Item { Layout.fillHeight: true }
 
                 Label {
-                    text: "Google Play / 本地 SQLite"
+                    text: root.platformLabel + " / 本地 SQLite"
                     color: "#94A3B8"
                     font.pixelSize: 12
                 }
@@ -760,6 +913,88 @@ ApplicationWindow {
         id: toastTimer
         interval: 2600
         onTriggered: toast.opacity = 0
+    }
+
+    // --- update confirm dialog (Yes/No) ---
+    Dialog {
+        id: updateDialog
+        property string heading: "检查更新"
+        property string body: ""
+        anchors.centerIn: parent
+        modal: true
+        padding: 22
+        width: Math.min(460, root.width - 80)
+        header: null
+        Overlay.modal: Rectangle { color: "#660F172A" }
+        background: Rectangle { radius: 12; color: "white"; border.color: "#E2E8F0" }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                text: updateDialog.heading
+                color: "#0F172A"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+            Label {
+                text: updateDialog.body
+                color: "#475569"
+                font.pixelSize: 13
+                lineHeight: 1.35
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Layout.topMargin: 4
+                spacing: 10
+                SecondaryButton {
+                    text: "暂不更新"
+                    implicitWidth: 96
+                    onClicked: { root.bridge.dismissUpdate(); updateDialog.close() }
+                }
+                PrimaryButton {
+                    text: "立即更新"
+                    implicitWidth: 96
+                    onClicked: { updateDialog.close(); root.bridge.confirmUpdate() }
+                }
+            }
+        }
+    }
+
+    // --- post-update restart dialog ---
+    Dialog {
+        id: restartDialog
+        property string body: ""
+        anchors.centerIn: parent
+        modal: true
+        padding: 22
+        width: Math.min(420, root.width - 80)
+        header: null
+        closePolicy: Popup.NoAutoClose
+        Overlay.modal: Rectangle { color: "#660F172A" }
+        background: Rectangle { radius: 12; color: "white"; border.color: "#E2E8F0" }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                text: "更新完成"
+                color: "#0F172A"
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+            Label {
+                text: restartDialog.body
+                color: "#475569"
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            PrimaryButton {
+                text: "立即重启"
+                Layout.alignment: Qt.AlignRight
+                implicitWidth: 110
+                onClicked: { restartDialog.close(); root.bridge.restartApp() }
+            }
+        }
     }
 
     Rectangle {
@@ -915,7 +1150,7 @@ ApplicationWindow {
 
             Card {
                 ToolbarFlow {
-                    Field { id: trackAppId; placeholderText: "com.whatsapp"; width: 240 }
+                    HistoryField { id: trackAppId; historyKey: "app_id"; placeholderText: "com.whatsapp"; width: 240 }
                     Field { id: trackCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: trackLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
                     QuietCombo {
@@ -934,7 +1169,7 @@ ApplicationWindow {
                     SecondaryButton { text: "同步到期项"; onClicked: root.bridge.syncDue() }
                 }
                 ToolbarFlow {
-                    Field { id: chartAppId; placeholderText: "com.whatsapp"; width: 220 }
+                    HistoryField { id: chartAppId; historyKey: "app_id"; placeholderText: "com.whatsapp"; width: 220 }
                     QuietCombo { id: chartCollection; width: 130; model: ["top_free", "top_paid", "top_grossing"] }
                     Field { id: chartCategory; text: "APPLICATION"; width: 140 }
                     SecondaryButton { text: "添加榜单监控"; onClicked: root.bridge.addChartApp(chartAppId.text, chartCollection.currentText, chartCategory.text, trackCountry.text, trackLang.text) }
@@ -1042,8 +1277,23 @@ ApplicationWindow {
                 title: "关于 / 更新"
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: "当前版本  开发版"; color: "#0F172A"; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                    spacing: 10
+                    Label {
+                        text: "当前版本　" + root.bridge.appVersion
+                        color: "#0F172A"
+                        font.weight: Font.DemiBold
+                        Layout.fillWidth: true
+                    }
                     SecondaryButton { text: "刷新设置"; onClicked: root.bridge.refreshSettings() }
+                    PrimaryButton { text: "检查更新"; onClicked: root.bridge.checkUpdates() }
+                }
+                Label {
+                    visible: root.bridge.updateStatus.length > 0
+                    text: root.bridge.updateStatus
+                    color: "#64748B"
+                    font.pixelSize: 13
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
                 }
             }
         }
@@ -1057,13 +1307,13 @@ ApplicationWindow {
             spacing: 18
             Card {
                 ToolbarFlow {
-                    Field { id: searchKeyword; placeholderText: "photo editor"; width: 260 }
+                    HistoryField { id: searchKeyword; historyKey: "search_keyword"; placeholderText: "photo editor"; width: 260; onAccepted: root.bridge.searchApps(text, searchCountry.text, searchLang.text, searchLimit.text) }
                     Field { id: searchCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: searchLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
                     Field { id: searchLimit; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.limit : "", "50"); width: 100 }
                     PrimaryButton { text: "搜索"; onClicked: root.bridge.searchApps(searchKeyword.text, searchCountry.text, searchLang.text, searchLimit.text) }
                     SecondaryButton { text: "打开详情"; onClicked: root.bridge.openSearchResult(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
-                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addSearchResultTracking(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
+                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addSearchResultTracking(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
                 }
             }
             DataTable {
@@ -1074,7 +1324,17 @@ ApplicationWindow {
                 tableHeight: 520
                 rowHeight: 52
                 onActivated: function(rowIndex, rowData) { root.bridge.openSearchResult(rowIndex, searchCountry.text, searchLang.text) }
-                columns: [
+                columns: root.isAppStore ? [
+                    { label: "", key: "iconUrl", width: 52, type: "icon" },
+                    { label: "应用名", key: "title", fill: true },
+                    { label: "App ID", key: "appId", width: 110 },
+                    { label: "开发者", key: "developer", width: 170 },
+                    { label: "评分", key: "rating", width: 56 },
+                    { label: "评分数", key: "ratings", width: 92 },
+                    { label: "价格", key: "price", width: 90 },
+                    { label: "类别", key: "category", width: 110 },
+                    { label: "", key: "hasIap", width: 60, type: "badge", colorKey: "" }
+                ] : [
                     { label: "", key: "iconUrl", width: 52, type: "icon" },
                     { label: "应用名", key: "title", fill: true },
                     { label: "包名", key: "appId", width: 210 },
@@ -1100,14 +1360,14 @@ ApplicationWindow {
 
             Card {
                 ToolbarFlow {
-                    Field { id: detailAppId; placeholderText: "com.whatsapp"; width: 260; onAccepted: root.bridge.fetchAppDetail(text, detailCountry.text, detailLang.text) }
+                    HistoryField { id: detailAppId; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）/ Bundle ID" : "com.whatsapp"; width: 260; onAccepted: root.bridge.fetchAppDetail(text, detailCountry.text, detailLang.text) }
                     Field { id: detailCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: detailLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
                     PrimaryButton { text: "获取详情"; onClicked: root.bridge.fetchAppDetail(detailAppId.text, detailCountry.text, detailLang.text) }
-                    SecondaryButton { text: "保存快照"; onClicked: root.bridge.saveDetailSnapshot(detailCountry.text, detailLang.text) }
-                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addDetailTracking(detailCountry.text, detailLang.text) }
-                    SecondaryButton { text: "获取权限"; onClicked: root.bridge.fetchDetailPermissions() }
-                    SecondaryButton { text: "查看历史"; onClicked: root.bridge.openDetailHistory(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "保存快照"; visible: !root.isAppStore; onClicked: root.bridge.saveDetailSnapshot(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addDetailTracking(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "获取权限"; visible: !root.isAppStore; onClicked: root.bridge.fetchDetailPermissions() }
+                    SecondaryButton { text: "查看历史"; visible: !root.isAppStore; onClicked: root.bridge.openDetailHistory(detailCountry.text, detailLang.text) }
                     SecondaryButton { text: "打开商店"; onClicked: root.bridge.openStore(detailAppId.text || detailPage.d.appId || "", detailCountry.text, detailLang.text) }
                 }
             }
@@ -1139,7 +1399,7 @@ ApplicationWindow {
                         Label {
                             text: detailPage.d.loaded
                                   ? (detailPage.d.appId + " · " + detailPage.d.developer)
-                                  : "输入包名后点击「获取详情」"
+                                  : (root.isAppStore ? "输入 App ID / Bundle ID 后点击「获取详情」" : "输入包名后点击「获取详情」")
                             color: root.cMuted
                             font.pixelSize: 13
                             elide: Text.ElideRight
@@ -1193,6 +1453,7 @@ ApplicationWindow {
                 visible: detailPage.d.loaded === true
                 Card {
                     title: "评分分布"
+                    visible: !root.isAppStore
                     Layout.preferredWidth: 5
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -1252,11 +1513,11 @@ ApplicationWindow {
                 }
             }
 
-            // --- monetization + trend sparklines ---
+            // --- monetization + trend sparklines (GP only: built on install counts + local snapshots) ---
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 18
-                visible: detailPage.d.loaded === true
+                visible: detailPage.d.loaded === true && !root.isAppStore
                 Card {
                     title: "商业化强度"
                     Layout.preferredWidth: 2
@@ -1302,7 +1563,7 @@ ApplicationWindow {
 
             Card {
                 title: "安装量趋势（真实安装数）"
-                visible: detailPage.d.loaded === true
+                visible: detailPage.d.loaded === true && !root.isAppStore
                 SparkLine { values: detailPage.d.installsValues || []; Layout.preferredHeight: 150 }
             }
 
@@ -1404,10 +1665,10 @@ ApplicationWindow {
                 }
             }
 
-            // --- permissions ---
+            // --- permissions (GP only) ---
             Card {
                 title: "权限"
-                visible: detailPage.d.loaded === true
+                visible: detailPage.d.loaded === true && !root.isAppStore
                 Label {
                     visible: detailPage.d.permissionsLoaded !== true
                     text: "点击工具栏「获取权限」按钮加载"
@@ -1444,11 +1705,11 @@ ApplicationWindow {
                 }
             }
 
-            // --- similar apps + recent alerts ---
+            // --- similar apps + recent alerts (GP only: iTunes has no similar API, AS apps aren't tracked) ---
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 18
-                visible: detailPage.d.loaded === true
+                visible: detailPage.d.loaded === true && !root.isAppStore
                 DataTable {
                     id: similarTable
                     title: "相似 App"
@@ -1482,10 +1743,10 @@ ApplicationWindow {
                 }
             }
 
-            // --- recent cached reviews ---
+            // --- recent cached reviews (GP only) ---
             DataTable {
                 title: "最近评论（监控落库）"
-                visible: detailPage.d.loaded === true
+                visible: detailPage.d.loaded === true && !root.isAppStore
                 rows: detailPage.d.recentReviews || []
                 tableHeight: 230
                 emptyText: "暂无落库评论，可在监控同步后查看"
@@ -1507,7 +1768,7 @@ ApplicationWindow {
             Card {
                 ToolbarFlow {
                     Field { id: chartType; text: "top_free"; width: 160 }
-                    Field { id: chartCat; text: ""; placeholderText: "category"; width: 160 }
+                    HistoryField { id: chartCat; historyKey: "chart_category"; placeholderText: root.isAppStore ? "genre（如 6014 = 游戏）" : "category"; width: 160 }
                     Field { id: chartCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: chartLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
                     Field { id: chartLimit; text: "100"; width: 100 }
@@ -1524,7 +1785,15 @@ ApplicationWindow {
                 tableHeight: 540
                 rowHeight: 52
                 onActivated: function(rowIndex, rowData) { root.bridge.openChartResult(rowIndex, chartCountry.text, chartLang.text) }
-                columns: [
+                columns: root.isAppStore ? [
+                    { label: "排名", key: "rank", width: 56 },
+                    { label: "", key: "iconUrl", width: 52, type: "icon" },
+                    { label: "应用名", key: "title", fill: true },
+                    { label: "App ID", key: "appId", width: 120 },
+                    { label: "开发者", key: "developer", width: 180 },
+                    { label: "价格", key: "price", width: 90 },
+                    { label: "类别", key: "category", width: 120 }
+                ] : [
                     { label: "排名", key: "rank", width: 56 },
                     { label: "", key: "iconUrl", width: 52, type: "icon" },
                     { label: "应用名", key: "title", fill: true },
@@ -1545,14 +1814,14 @@ ApplicationWindow {
             spacing: 18
             Card {
                 ToolbarFlow {
-                    Field { id: kwText; placeholderText: "messenger"; width: 220 }
-                    Field { id: kwApp; placeholderText: "com.whatsapp"; width: 240 }
+                    HistoryField { id: kwText; historyKey: "keyword"; placeholderText: "messenger"; width: 220 }
+                    HistoryField { id: kwApp; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 240 }
                     Field { id: kwCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: kwLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
                     Field { id: kwLimit; text: "100"; width: 100 }
                     PrimaryButton { text: "查询排名"; onClicked: root.bridge.fetchKeywordRank(kwText.text, kwApp.text, kwCountry.text, kwLang.text, kwLimit.text) }
                     SecondaryButton { text: "保存排名"; onClicked: root.bridge.saveKeywordRank() }
-                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addKeywordTracking(kwText.text, kwApp.text, kwCountry.text, kwLang.text) }
+                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addKeywordTracking(kwText.text, kwApp.text, kwCountry.text, kwLang.text) }
                 }
             }
             DataTable {
@@ -1562,7 +1831,14 @@ ApplicationWindow {
                 tableHeight: 520
                 rowHeight: 52
                 highlightKey: "hit"
-                columns: [
+                columns: root.isAppStore ? [
+                    { label: "排名", key: "rank", width: 56 },
+                    { label: "", key: "iconUrl", width: 52, type: "icon" },
+                    { label: "应用名", key: "title", fill: true },
+                    { label: "App ID", key: "appId", width: 130 },
+                    { label: "开发者", key: "developer", width: 190 },
+                    { label: "评分", key: "rating", width: 60 }
+                ] : [
                     { label: "排名", key: "rank", width: 56 },
                     { label: "", key: "iconUrl", width: 52, type: "icon" },
                     { label: "应用名", key: "title", fill: true },
@@ -1583,10 +1859,11 @@ ApplicationWindow {
             spacing: 18
             Card {
                 ToolbarFlow {
-                    Field { id: reviewApp; placeholderText: "com.whatsapp"; width: 260 }
+                    HistoryField { id: reviewApp; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 260 }
                     Field { id: reviewCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: reviewLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
-                    Field { id: reviewSort; text: "newest"; width: 140 }
+                    // App Store RSS only supports most-recent ordering
+                    Field { id: reviewSort; text: "newest"; width: 140; enabled: !root.isAppStore }
                     PrimaryButton { text: "获取评论"; onClicked: root.bridge.fetchReviews(reviewApp.text, reviewCountry.text, reviewLang.text, reviewSort.text) }
                     SecondaryButton {
                         text: "加载更多"

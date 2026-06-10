@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -36,6 +37,11 @@ class QmlBridge(QObject):
     statusMessage = Signal(str)
     errorMessage = Signal(str)
     pageRequested = Signal(str)
+    platformChanged = Signal()
+    inputHistoryChanged = Signal()
+    updateStatusChanged = Signal()
+    updatePrompt = Signal(str, str)  # (title, message) -> QML confirm dialog
+    updateApplied = Signal(str)  # (message) -> QML restart dialog
 
     def __init__(self, database, services: dict[str, object], logger, parent=None):
         super().__init__(parent)
@@ -46,6 +52,10 @@ class QmlBridge(QObject):
         self.keyword_rank_repository = KeywordRankRepository()
         self._workers: list[Worker] = []
         self._busy_count = 0
+        self._platform = "google_play"
+        self._input_history: dict[str, list[str]] = self._load_input_history()
+        self._update_status = ""
+        self._pending_update: Any | None = None
         self._dashboard: dict[str, Any] = {}
         self._tracking: dict[str, Any] = {}
         self._settings: dict[str, Any] = {}
@@ -112,6 +122,197 @@ class QmlBridge(QObject):
     def busy(self) -> bool:
         return self._busy_count > 0
 
+    @Property(str, notify=platformChanged)
+    def platform(self) -> str:
+        return self._platform
+
+    @Slot(str)
+    def setPlatform(self, platform: str) -> None:
+        platform = (platform or "").strip()
+        if platform not in ("google_play", "app_store") or platform == self._platform:
+            return
+        self._platform = platform
+        self.platformChanged.emit()
+        self._clear_platform_results()
+        if platform == "app_store":
+            self.statusMessage.emit("已切换到 App Store（iTunes 官方接口）")
+        else:
+            self.statusMessage.emit("已切换到 Google Play")
+
+    def _clear_platform_results(self) -> None:
+        """Drop fetched rows from the previous platform — stale rows carry the other
+        store's app ids, so acting on them (open detail / load more) would mis-route."""
+        self._search_items = []
+        self._search = {"rows": [], "summary": "等待搜索"}
+        self.searchChanged.emit()
+        self._chart_items = []
+        self._chart_context = {}
+        self._charts = {"rows": [], "summary": "等待获取榜单"}
+        self.chartsChanged.emit()
+        self._keyword_result = None
+        self._keywords = {"rows": [], "summary": "等待查询排名"}
+        self.keywordsChanged.emit()
+        self._reviews_items = []
+        self._reviews_token = None
+        self._reviews_context = {}
+        self._reviews = {"rows": [], "summary": "等待抓取评论"}
+        self.reviewsChanged.emit()
+        self._detail_item = None
+        self._detail_gen += 1
+        self._detail = {"loaded": False}
+        self.detailChanged.emit()
+
+    def _active_store(self):
+        """The scraping service matching the currently selected platform."""
+        if self._platform == "app_store":
+            return self.services["app_store_service"]
+        return self.services["google_play_service"]
+
+    @Property("QVariant", notify=inputHistoryChanged)
+    def inputHistory(self) -> dict[str, list[str]]:
+        return self._input_history
+
+    def _load_input_history(self) -> dict[str, list[str]]:
+        try:
+            data = json.loads(self.services["settings_service"].get("input_history") or "{}")
+        except Exception:  # pragma: no cover - corrupt value must never block startup
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(key): [str(v) for v in values if str(v).strip()]
+            for key, values in data.items()
+            if isinstance(values, list)
+        }
+
+    def _remember_input(self, field: str, value: str) -> None:
+        """Push a submitted value to the front of its per-platform history (max 12),
+        persisting the whole map as one JSON settings row."""
+        value = (value or "").strip()
+        if not value:
+            return
+        key = f"{self._platform}:{field}"
+        current = self._input_history.get(key) or []
+        if current and current[0] == value:
+            return
+        self._input_history = {
+            **self._input_history,
+            key: ([value] + [v for v in current if v != value])[:12],
+        }
+        self.inputHistoryChanged.emit()
+        payload = json.dumps(self._input_history, ensure_ascii=False)
+        self._run(
+            lambda: self.services["settings_service"].set_many({"input_history": payload}),
+            lambda _: None,
+            label="正在保存输入历史...",
+            busy=False,
+        )
+
+    # --- updates -------------------------------------------------------------
+
+    @Property(str, constant=True)
+    def appVersion(self) -> str:
+        service = self.services.get("update_service")
+        if service is None:
+            return "开发版"
+        try:
+            return service.current_label()
+        except Exception:  # pragma: no cover - version read must never break the UI
+            return "开发版"
+
+    @Property(str, notify=updateStatusChanged)
+    def updateStatus(self) -> str:
+        return self._update_status
+
+    def _set_update_status(self, text: str) -> None:
+        self._update_status = text
+        self.updateStatusChanged.emit()
+
+    @Slot()
+    def checkUpdates(self) -> None:
+        service = self.services.get("update_service")
+        if service is None:
+            self._set_update_status("更新服务不可用。")
+            return
+        self._set_update_status("正在检查更新...")
+        self._run(service.check, self._on_update_checked, label="正在检查更新...", busy=False)
+
+    def _on_update_checked(self, result) -> None:
+        if getattr(result, "error", None):
+            self._set_update_status(f"检查更新失败：{result.error}")
+            return
+        if result.mode == "git":
+            if result.up_to_date:
+                self._pending_update = None
+                self._set_update_status("已是最新（源码 / 开发版）。")
+                return
+            self._pending_update = result
+            self._set_update_status(f"发现新版本（落后 {result.behind} 个提交）。")
+            self.updatePrompt.emit(
+                "检查更新",
+                f"发现新版本（落后 {result.behind} 个提交）。\n现在 git pull 更新并重启吗？",
+            )
+            return
+        if result.up_to_date or not result.can_patch:
+            self._pending_update = None
+            self._set_update_status(f"已是最新版本（{result.local_label}）。")
+            return
+        self._pending_update = result
+        self._set_update_status(f"发现新版本 {result.latest_label}。")
+        changelog = f"{result.changelog}\n\n" if result.changelog else ""
+        self.updatePrompt.emit(
+            "发现新版本 🎉",
+            f"当前 {result.local_label} → 最新 {result.latest_label}\n\n{changelog}"
+            "只下载几百 KB 代码补丁，完成后自动重启，登录态与数据都保留。\n现在更新吗？",
+        )
+
+    @Slot()
+    def confirmUpdate(self) -> None:
+        result = self._pending_update
+        service = self.services.get("update_service")
+        self._pending_update = None
+        if result is None or service is None:
+            return
+        if result.mode == "git":
+            self._set_update_status("正在更新（git pull）...")
+            self._run(service.git_pull, self._after_git, label="正在更新（git pull）...")
+        else:
+            self._set_update_status("正在下载并应用更新补丁...")
+            self._run(
+                service.download_and_apply_patch,
+                lambda _: self._after_patch(),
+                label="正在下载并应用更新补丁...",
+            )
+
+    @Slot()
+    def dismissUpdate(self) -> None:
+        self._pending_update = None
+
+    def _after_git(self, result) -> None:
+        ok, message = result
+        if ok:
+            self._set_update_status("✅ 更新成功，即将重启。")
+            self.updateApplied.emit("✅ 更新成功，点击「立即重启」生效。")
+        else:
+            self._set_update_status(f"更新失败：{message}")
+
+    def _after_patch(self) -> None:
+        self._set_update_status("✅ 更新已应用，即将重启。")
+        self.updateApplied.emit("✅ 更新已应用，点击「立即重启」生效。")
+
+    @Slot()
+    def restartApp(self) -> None:
+        service = self.services.get("update_service")
+        if service is not None:
+            service.restart()
+
+    def _guard_google_play_only(self, feature: str) -> bool:
+        """True (and an error toast) when the feature is unavailable on App Store."""
+        if self._platform == "app_store":
+            self.errorMessage.emit(f"{feature}目前仅支持 Google Play，请先切回平台。")
+            return True
+        return False
+
     @Slot()
     def refreshAll(self) -> None:
         self.refreshDashboard()
@@ -157,10 +358,13 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str)
     def addApp(self, app_id: str, country: str, lang: str, frequency: str) -> None:
+        if self._guard_google_play_only("App 监控"):
+            return
         app_id = app_id.strip()
         if not app_id:
             self.errorMessage.emit("请输入要监控的包名。")
             return
+        self._remember_input("app_id", app_id)
         country = country.strip() or "us"
         lang = lang.strip() or "en"
         frequency = frequency.strip() or "daily"
@@ -179,10 +383,13 @@ class QmlBridge(QObject):
         country: str,
         lang: str,
     ) -> None:
+        if self._guard_google_play_only("榜单监控"):
+            return
         app_id = app_id.strip()
         if not app_id:
             self.errorMessage.emit("请输入要监控榜单的包名。")
             return
+        self._remember_input("app_id", app_id)
         self._run(
             lambda: self.services["tracking_service"].add_chart_app(
                 app_id,
@@ -276,8 +483,10 @@ class QmlBridge(QObject):
         if not keyword:
             self.errorMessage.emit("请输入搜索关键词。")
             return
+        self._remember_input("search_keyword", keyword)
+        store = self._active_store()
         self._run(
-            lambda: self.services["google_play_service"].search(
+            lambda: store.search(
                 keyword,
                 country=country.strip() or "us",
                 lang=lang.strip() or "en",
@@ -297,6 +506,8 @@ class QmlBridge(QObject):
 
     @Slot(int, str, str)
     def addSearchResultTracking(self, index: int, country: str, lang: str) -> None:
+        if self._guard_google_play_only("App 监控"):
+            return
         item = self._item_at(self._search_items, index, "请先选择一条搜索结果。")
         if item is None:
             return
@@ -316,12 +527,14 @@ class QmlBridge(QObject):
         if not app_id:
             self.errorMessage.emit("请输入包名。")
             return
+        self._remember_input("app_id", app_id)
         self._detail_context = {
             "country": country.strip() or "us",
             "lang": lang.strip() or "en",
         }
+        store = self._active_store()
         self._run(
-            lambda: self.services["google_play_service"].app_detail(
+            lambda: store.app_detail(
                 app_id,
                 country=self._detail_context["country"],
                 lang=self._detail_context["lang"],
@@ -332,6 +545,8 @@ class QmlBridge(QObject):
 
     @Slot()
     def fetchDetailPermissions(self) -> None:
+        if self._guard_google_play_only("权限数据"):
+            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
@@ -348,6 +563,8 @@ class QmlBridge(QObject):
 
     @Slot(str, str)
     def saveDetailSnapshot(self, country: str, lang: str) -> None:
+        if self._guard_google_play_only("快照"):
+            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
@@ -364,6 +581,8 @@ class QmlBridge(QObject):
 
     @Slot(str, str)
     def addDetailTracking(self, country: str, lang: str) -> None:
+        if self._guard_google_play_only("App 监控"):
+            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
@@ -397,10 +616,17 @@ class QmlBridge(QObject):
         if self._detail_item is not None and getattr(self._detail_item, "store_url", None):
             target_url = self._detail_item.store_url or ""
         elif app_id.strip():
-            target_url = (
-                "https://play.google.com/store/apps/details?"
-                f"id={app_id.strip()}&gl={country.strip() or 'us'}&hl={lang.strip() or 'en'}"
-            )
+            ident = app_id.strip()
+            if self._platform == "app_store":
+                if not ident.isdigit():
+                    self.errorMessage.emit("App Store 链接需要数字 App ID，请先获取详情。")
+                    return
+                target_url = f"https://apps.apple.com/{country.strip() or 'us'}/app/id{ident}"
+            else:
+                target_url = (
+                    "https://play.google.com/store/apps/details?"
+                    f"id={ident}&gl={country.strip() or 'us'}&hl={lang.strip() or 'en'}"
+                )
         if not target_url:
             self.errorMessage.emit("请先输入或获取包名。")
             return
@@ -415,7 +641,10 @@ class QmlBridge(QObject):
             "category": category.strip() or None,
             "country": country.strip() or "us",
             "lang": lang.strip() or "en",
+            "platform": self._platform,
         }
+        if self._chart_context["category"]:
+            self._remember_input("chart_category", self._chart_context["category"])
         self._run(
             lambda: self.services["chart_service"].fetch(
                 self._chart_context["chart_type"],
@@ -423,6 +652,7 @@ class QmlBridge(QObject):
                 self._chart_context["country"],
                 self._chart_context["lang"],
                 safe_int(limit, 100),
+                platform=self._chart_context["platform"],
             ),
             self._set_chart_results,
             label="正在获取榜单...",
@@ -466,8 +696,14 @@ class QmlBridge(QObject):
         if not keyword.strip() or not app_id.strip():
             self.errorMessage.emit("请输入关键词和目标包名。")
             return
+        self._remember_input("keyword", keyword.strip())
+        self._remember_input("app_id", app_id.strip())
+        service_key = (
+            "keyword_service_app_store" if self._platform == "app_store" else "keyword_service"
+        )
+        keyword_service = self.services.get(service_key) or self.services["keyword_service"]
         self._run(
-            lambda: self.services["keyword_service"].rank(
+            lambda: keyword_service.rank(
                 keyword.strip(),
                 app_id.strip(),
                 country=country.strip() or "us",
@@ -491,6 +727,8 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str)
     def addKeywordTracking(self, keyword: str, app_id: str, country: str, lang: str) -> None:
+        if self._guard_google_play_only("关键词监控"):
+            return
         keyword = keyword.strip()
         app_id = app_id.strip()
         if not keyword or not app_id:
@@ -499,6 +737,8 @@ class QmlBridge(QObject):
         if "." not in app_id or " " in app_id:
             self.errorMessage.emit("目标请填包名，形如 com.example.app。")
             return
+        self._remember_input("keyword", keyword)
+        self._remember_input("app_id", app_id)
         self._run(
             lambda: self.services["tracking_service"].add_keyword(
                 keyword,
@@ -516,21 +756,18 @@ class QmlBridge(QObject):
         if not app_id:
             self.errorMessage.emit("请输入包名。")
             return
+        self._remember_input("app_id", app_id)
         self._reviews_context = {
             "app_id": app_id,
             "country": country.strip() or "us",
             "lang": lang.strip() or "en",
             "sort": sort.strip() or "newest",
+            "platform": self._platform,
         }
         self._reviews_items = []
         self._reviews_token = None
         self._run(
-            lambda: self.services["review_service"].fetch(
-                app_id,
-                self._reviews_context["country"],
-                self._reviews_context["lang"],
-                self._reviews_context["sort"],
-            ),
+            lambda: self._fetch_reviews_for(self._reviews_context, None),
             self._set_reviews_result,
             label="正在抓取评论...",
         )
@@ -543,11 +780,24 @@ class QmlBridge(QObject):
             self.errorMessage.emit("没有更多评论可加载。")
             return
         self._run(
-            lambda: self.services["review_service"].fetch(
-                ctx["app_id"], ctx["country"], ctx["lang"], ctx.get("sort", "newest"), token
-            ),
+            lambda: self._fetch_reviews_for(ctx, token),
             self._append_reviews_result,
             label="正在加载更多评论...",
+        )
+
+    def _fetch_reviews_for(self, ctx: dict[str, str], token):
+        """Fetch one reviews page from the platform the context was created under,
+        so a mid-flight platform switch can't mix sources."""
+        if ctx.get("platform") == "app_store":
+            return self.services["app_store_service"].reviews(
+                ctx["app_id"],
+                country=ctx["country"],
+                lang=ctx["lang"],
+                sort=ctx.get("sort", "newest"),
+                continuation_token=token,
+            )
+        return self.services["review_service"].fetch(
+            ctx["app_id"], ctx["country"], ctx["lang"], ctx.get("sort", "newest"), token
         )
 
     @Slot(str, str, str)
@@ -840,6 +1090,7 @@ class QmlBridge(QObject):
                 "installs": item.installs or "-",
                 "price": item.price or "免费",
                 "hasIap": "内购" if item.has_iap else "",
+                "category": item.category or "-",
             }
             for item in items
         ]
@@ -850,9 +1101,10 @@ class QmlBridge(QObject):
         self._detail_item = item
         self._detail_gen += 1
         gen = self._detail_gen
+        is_ios = item.platform == "app_store"
         monetization = self.services.get("monetization_service")
         score: dict[str, Any] = {"score": 0, "signals": [], "note": ""}
-        if monetization is not None:
+        if monetization is not None and not is_ios:
             try:
                 score = monetization.score(item)
             except Exception:  # pragma: no cover - defensive; scoring must not break detail
@@ -876,39 +1128,10 @@ class QmlBridge(QObject):
             # --- rating histogram ---
             "histogram": self._histogram_rows(item.histogram),
             # --- developer / links ---
-            "devLinks": [
-                {
-                    "label": "邮箱",
-                    "text": item.developer_email or "",
-                    "url": f"mailto:{item.developer_email}" if item.developer_email else "",
-                },
-                {
-                    "label": "官网",
-                    "text": item.developer_website or "",
-                    "url": item.developer_website or "",
-                },
-                {
-                    "label": "隐私政策",
-                    "text": item.privacy_policy or "",
-                    "url": item.privacy_policy or "",
-                },
-            ],
-            "devPlain": [
-                {"label": "地址", "value": item.developer_address or "-"},
-                {"label": "电话", "value": item.developer_phone or "-"},
-                {"label": "发布国", "value": item.publisher_country or "-"},
-            ],
+            "devLinks": self._detail_dev_links(item, is_ios),
+            "devPlain": self._detail_dev_plain(item, is_ios),
             # --- more info ---
-            "moreInfo": [
-                {"label": "应用包", "value": item.app_bundle or "-"},
-                {"label": "类目 ID", "value": item.genre_id or "-"},
-                {"label": "开发者 ID", "value": item.developer_id or "-"},
-                {"label": "货币", "value": item.currency or "-"},
-                {"label": "最低日均安装", "value": self._fmt_count(item.min_daily_installs)},
-                {"label": "最低月均安装", "value": self._fmt_count(item.min_monthly_installs)},
-                {"label": "预告片", "value": "观看", "url": item.video or ""},
-                {"label": "头图", "value": "查看", "url": item.header_image or ""},
-            ],
+            "moreInfo": self._detail_more_info(item, is_ios),
             "contentRatingDescription": item.content_rating_description or "",
             "dataSafety": self._data_safety_text(item.data_safety),
             # --- monetization ---
@@ -926,15 +1149,18 @@ class QmlBridge(QObject):
             "reviewsValues": [],
             "installsValues": [],
             "similar": [],
-            "similarLoading": True,
+            "similarLoading": not is_ios,
             "recentAlerts": [],
             "recentReviews": [],
             "permissions": [],
             "permissionsLoaded": False,
         }
         self.detailChanged.emit()
-        # Local DB extras (history/alerts/cached reviews) and the slow network
-        # `similar` load AFTER the detail is on screen — mirrors the widgets page.
+        # GP-only follow-ups: local monitoring extras and the slow network `similar`.
+        # iTunes has no similar-apps API, and App Store apps are never tracked locally,
+        # so on iOS the detail is complete as-is (the QML hides those sections too).
+        if is_ios:
+            return
         self._run(
             lambda: self._collect_detail_extras(item),
             lambda extras: self._apply_detail_extras(gen, extras),
@@ -951,7 +1177,71 @@ class QmlBridge(QObject):
             busy=False,
         )
 
+    def _detail_dev_links(self, item, is_ios: bool) -> list[dict[str, str]]:
+        links = [
+            {
+                "label": "官网",
+                "text": item.developer_website or "",
+                "url": item.developer_website or "",
+            },
+        ]
+        if not is_ios:
+            links.insert(
+                0,
+                {
+                    "label": "邮箱",
+                    "text": item.developer_email or "",
+                    "url": f"mailto:{item.developer_email}" if item.developer_email else "",
+                },
+            )
+            links.append(
+                {
+                    "label": "隐私政策",
+                    "text": item.privacy_policy or "",
+                    "url": item.privacy_policy or "",
+                }
+            )
+        return links
+
+    def _detail_dev_plain(self, item, is_ios: bool) -> list[dict[str, str]]:
+        if is_ios:
+            return [
+                {"label": "卖家", "value": item.developer_address or "-"},
+                {"label": "发布国", "value": item.publisher_country or "-"},
+            ]
+        return [
+            {"label": "地址", "value": item.developer_address or "-"},
+            {"label": "电话", "value": item.developer_phone or "-"},
+            {"label": "发布国", "value": item.publisher_country or "-"},
+        ]
+
+    def _detail_more_info(self, item, is_ios: bool) -> list[dict[str, Any]]:
+        if is_ios:
+            return [
+                {"label": "App ID", "value": item.app_id},
+                {"label": "Bundle ID", "value": item.app_bundle or "-"},
+                {"label": "类目 ID", "value": item.genre_id or "-"},
+                {"label": "开发者 ID", "value": item.developer_id or "-"},
+                {"label": "货币", "value": item.currency or "-"},
+                {
+                    "label": "全部类目",
+                    "value": "、".join(item.categories) if item.categories else "-",
+                },
+            ]
+        return [
+            {"label": "应用包", "value": item.app_bundle or "-"},
+            {"label": "类目 ID", "value": item.genre_id or "-"},
+            {"label": "开发者 ID", "value": item.developer_id or "-"},
+            {"label": "货币", "value": item.currency or "-"},
+            {"label": "最低日均安装", "value": self._fmt_count(item.min_daily_installs)},
+            {"label": "最低月均安装", "value": self._fmt_count(item.min_monthly_installs)},
+            {"label": "预告片", "value": "观看", "url": item.video or ""},
+            {"label": "头图", "value": "查看", "url": item.header_image or ""},
+        ]
+
     def _detail_metrics(self, item) -> list[dict[str, Any]]:
+        if item.platform == "app_store":
+            return self._detail_metrics_app_store(item)
         daily = item.real_daily_installs or item.daily_installs
         monthly = item.real_monthly_installs or item.monthly_installs
         ads = item.contains_ads if item.contains_ads is not None else item.ad_supported
@@ -1001,6 +1291,62 @@ class QmlBridge(QObject):
             {"label": "可下载", "value": self._yes_no(item.available)},
         ]
 
+    def _detail_metrics_app_store(self, item) -> list[dict[str, Any]]:
+        """iOS-native chip set — iTunes lookup has no install counts / Android fields,
+        but does carry size, min OS, device & language coverage and per-version rating."""
+        raw = item.raw or {}
+        current_rating = raw.get("averageUserRatingForCurrentVersion")
+        devices = raw.get("supportedDevices") or []
+        languages = raw.get("languageCodesISO2A") or []
+        return [
+            {
+                "label": "评分",
+                "value": f"{item.rating:.2f}" if item.rating else "-",
+                "accent": "blue",
+            },
+            {"label": "评分数", "value": self._fmt_count(item.ratings_count)},
+            {
+                "label": "当前版本评分",
+                "value": f"{current_rating:.2f}" if current_rating else "-",
+            },
+            {
+                "label": "当前版本评分数",
+                "value": self._fmt_count(raw.get("userRatingCountForCurrentVersion")),
+            },
+            {
+                "label": "价格",
+                "value": item.price or ("免费" if item.free else "-"),
+                "accent": "blue",
+            },
+            {"label": "内购", "value": self._yes_no(item.has_iap)},
+            {"label": "大小", "value": self._fmt_size(raw.get("fileSizeBytes"))},
+            {
+                "label": "最低系统",
+                "value": f"iOS {raw['minimumOsVersion']}+" if raw.get("minimumOsVersion") else "-",
+            },
+            {"label": "支持设备", "value": f"{len(devices)} 种" if devices else "-"},
+            {"label": "支持语言", "value": f"{len(languages)} 种" if languages else "-"},
+            {"label": "版本", "value": item.version or "-"},
+            {"label": "发布日期", "value": item.released or "-"},
+            {"label": "最近更新", "value": item.updated or "-"},
+            {
+                "label": "上线天数",
+                "value": f"{item.app_age_days:,} 天" if item.app_age_days else "-",
+            },
+            {"label": "内容分级", "value": item.content_rating or "-"},
+            {"label": "可下载", "value": self._yes_no(item.available)},
+        ]
+
+    @staticmethod
+    def _fmt_size(value) -> str:
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return "-"
+        if size >= 1024**3:
+            return f"{size / 1024**3:.2f} GB"
+        return f"{size / 1024**2:.1f} MB"
+
     @staticmethod
     def _histogram_rows(histogram) -> list[dict[str, Any]]:
         counts = list(histogram or [])
@@ -1023,10 +1369,13 @@ class QmlBridge(QObject):
 
     @staticmethod
     def _price_label(item) -> str:
+        # None means "unknown" (e.g. iTunes has no IAP/ads flags) — say nothing then.
         parts = [item.price or ("免费" if item.free in (True, None) else "-")]
-        parts.append("含内购" if item.has_iap else "无内购")
+        if item.has_iap is not None:
+            parts.append("含内购" if item.has_iap else "无内购")
         ads = item.contains_ads if item.contains_ads is not None else item.ad_supported
-        parts.append("含广告" if ads else "无广告")
+        if ads is not None:
+            parts.append("含广告" if ads else "无广告")
         return " · ".join(parts)
 
     @staticmethod
@@ -1154,6 +1503,8 @@ class QmlBridge(QObject):
                 "developer": item.developer or "-",
                 "rating": item.rating if item.rating is not None else "-",
                 "installs": item.installs or "-",
+                "price": item.price or ("免费" if item.free else "-"),
+                "category": item.category or "-",
             }
             for item in items
         ]

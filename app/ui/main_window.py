@@ -48,6 +48,9 @@ class MainWindow(QMainWindow):
         self.nav_buttons: dict[str, QPushButton] = {}
         self.nav_labels: dict[str, str] = dict(SIDEBAR_ITEMS)
         self._tray: QSystemTrayIcon | None = None
+        self._current_platform: str = "google_play"
+        self._current_page_key: str = "dashboard"
+        self._platform_buttons: dict[str, QPushButton] = {}
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -87,6 +90,10 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self.loading_overlay.resize(self.centralWidget().size())
 
+    @property
+    def current_platform(self) -> str:
+        return self._current_platform
+
     def build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
@@ -98,7 +105,34 @@ class MainWindow(QMainWindow):
         logo = QLabel("点点数据 Mini")
         logo.setStyleSheet("font-size: 18px; font-weight: 800; color: white;")
         layout.addWidget(logo)
-        layout.addSpacing(24)
+        layout.addSpacing(12)
+
+        # Platform switcher — use a QWidget container (addLayout alone doesn't paint on macOS)
+        _btn_ss = (
+            "QPushButton { background: #1E3A5F; color: #94A3B8;"
+            "  border: 1px solid #475569; border-radius: 6px;"
+            "  padding: 5px 2px; font-size: 11px; font-weight: 500; }"
+            "QPushButton:hover { background: #1F4080; color: #CBD5E1; }"
+            "QPushButton:checked { background: #3B82F6; color: white; border-color: #3B82F6; }"
+        )
+        switcher_widget = QWidget()
+        switcher_widget.setFixedHeight(32)
+        switcher_inner = QHBoxLayout(switcher_widget)
+        switcher_inner.setContentsMargins(0, 0, 0, 0)
+        switcher_inner.setSpacing(6)
+        for platform_key, label in [("google_play", "Google"), ("app_store", "App Store")]:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(platform_key == self._current_platform)
+            btn.setFixedHeight(30)
+            btn.setStyleSheet(_btn_ss)
+            btn.clicked.connect(
+                lambda checked=False, k=platform_key: self._switch_platform(k)
+            )
+            switcher_inner.addWidget(btn)
+            self._platform_buttons[platform_key] = btn
+        layout.addWidget(switcher_widget)
+        layout.addSpacing(8)
 
         for key, label in SIDEBAR_ITEMS:
             button = QPushButton(label)
@@ -113,6 +147,19 @@ class MainWindow(QMainWindow):
         footer.setStyleSheet("font-size: 12px; color: #94A3B8;")
         layout.addWidget(footer)
         return sidebar
+
+    def _switch_platform(self, platform: str) -> None:
+        if platform == self._current_platform:
+            return
+        self._current_platform = platform
+        for key, btn in self._platform_buttons.items():
+            btn.setChecked(key == platform)
+        # Refresh the current page so it picks up the new platform
+        page = self.page_objects.get(self._current_page_key)
+        if page and hasattr(page, "on_platform_changed"):
+            page.on_platform_changed(platform)
+        elif page and hasattr(page, "on_activated"):
+            page.on_activated()
 
     def build_pages(self) -> None:
         pages = {
@@ -132,6 +179,7 @@ class MainWindow(QMainWindow):
             self.page_objects[key] = widget
 
     def navigate_to(self, page_key: str) -> None:
+        self._current_page_key = page_key
         self.stack.setCurrentIndex(self.page_indices[page_key])
         for key, button in self.nav_buttons.items():
             button.setChecked(key == page_key)
@@ -350,6 +398,23 @@ class MainWindow(QMainWindow):
         QPushButton#PrimaryButton:hover {
             background: #1D4ED8;
             border-color: #1D4ED8;
+        }
+        #Sidebar QPushButton#PlatformButton {
+            background: transparent;
+            color: #94A3B8;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 5px 4px;
+            font-size: 12px;
+        }
+        #Sidebar QPushButton#PlatformButton:hover {
+            background: #1F2937;
+            color: #CBD5E1;
+        }
+        #Sidebar QPushButton#PlatformButton:checked {
+            background: #3B82F6;
+            color: white;
+            border-color: #3B82F6;
         }
         #Sidebar QPushButton#SidebarButton {
             background: transparent;

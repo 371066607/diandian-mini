@@ -31,6 +31,7 @@ class AppDetailPage(BasePage):
     def __init__(self, services, window_api, logger):
         super().__init__(services, window_api, logger, "应用详情", "包名查询、保存快照、相似竞品和历史趋势")
         self.google_play_service = services["google_play_service"]
+        self.app_store_service = services.get("app_store_service")
         self.tracking_service = services["tracking_service"]
         self.monetization_service = services["monetization_service"]
         self.alert_service = services["alert_service"]
@@ -128,6 +129,13 @@ class AppDetailPage(BasePage):
         metrics_grid.setHorizontalSpacing(12)
         metrics_grid.setVerticalSpacing(12)
         self.metric_values: dict[str, QLabel] = {}
+        self.metric_chips: dict[str, QFrame] = {}
+        # keys marked True are Google Play-only; hidden when on App Store
+        self._gp_only_chips = {
+            "installs", "min_installs", "real_installs",
+            "daily_installs", "monthly_installs", "app_age_days",
+            "android_api", "sale", "iap_price_range", "contains_ads",
+        }
         metric_fields = [
             ("评分", "rating"),
             ("评分数", "ratings_count"),
@@ -155,6 +163,7 @@ class AppDetailPage(BasePage):
         for index, (title, key) in enumerate(metric_fields):
             chip, value = self._build_metric_chip(title)
             self.metric_values[key] = value
+            self.metric_chips[key] = chip
             metrics_grid.addWidget(chip, index // columns, index % columns)
         for col in range(columns):
             metrics_grid.setColumnStretch(col, 1)
@@ -164,6 +173,7 @@ class AppDetailPage(BasePage):
         extra_row = QHBoxLayout()
         extra_row.setSpacing(20)
         dist_card, dist_layout = self.create_card("评分分布")
+        self._histogram_card = dist_card
         self.histogram_bars: dict[int, QProgressBar] = {}
         self.histogram_counts: dict[int, QLabel] = {}
         for star in range(5, 0, -1):
@@ -220,6 +230,7 @@ class AppDetailPage(BasePage):
         info_grid.setHorizontalSpacing(24)
         info_grid.setVerticalSpacing(8)
         self.info_labels: dict[str, QLabel] = {}
+        self._gp_only_info = {"min_daily_installs", "min_monthly_installs", "video"}
         info_fields = [
             ("应用包", "app_bundle"),
             ("类目 ID", "genre_id"),
@@ -483,7 +494,7 @@ class AppDetailPage(BasePage):
         lang = self.lang_input.text().strip() or "en"
         self.run_task(
             "正在获取相似应用...",
-            lambda: self.google_play_service.similar(app_id, country=country, lang=lang, limit=10),
+            lambda: self._active_service().similar(app_id, country=country, lang=lang, limit=10),
             self._on_similar_finished,
         )
 
@@ -698,7 +709,7 @@ class AppDetailPage(BasePage):
 
     def _load_similar_async(self, app_id: str, country: str, lang: str, gen: int) -> None:
         self.run_background(
-            lambda: self.google_play_service.similar(app_id, country=country, lang=lang, limit=10),
+            lambda: self._active_service().similar(app_id, country=country, lang=lang, limit=10),
             lambda similar: self._apply_similar(gen, similar),
         )
 
@@ -820,11 +831,43 @@ class AppDetailPage(BasePage):
         if target_url:
             QDesktopServices.openUrl(QUrl(target_url))
 
+    def _active_service(self):
+        if self.window_api and getattr(self.window_api, "current_platform", "google_play") == "app_store":
+            return self.app_store_service or self.google_play_service
+        return self.google_play_service
+
+    def _is_app_store(self) -> bool:
+        return getattr(self.window_api, "current_platform", "google_play") == "app_store"
+
+    def on_platform_changed(self, platform: str) -> None:
+        is_as = platform == "app_store"
+        # placeholder
+        if is_as:
+            self.app_id_input.setPlaceholderText("iTunes ID: 310633997 或 bundleId")
+            self.update_subtitle("iTunes ID / Bundle ID 查询、截图和历史趋势")
+        else:
+            self.app_id_input.setPlaceholderText("com.whatsapp")
+            self.update_subtitle("包名查询、保存快照、相似竞品和历史趋势")
+        # GP-only action buttons
+        self.similar_button.setVisible(not is_as)
+        self.permissions_button.setVisible(not is_as)
+        self.track_button.setVisible(not is_as)
+        self.save_button.setVisible(not is_as)
+        # GP-only metric chips
+        for key, chip in self.metric_chips.items():
+            chip.setVisible(key not in self._gp_only_chips or not is_as)
+        # GP-only info labels
+        for key, lbl in self.info_labels.items():
+            lbl.setVisible(key not in self._gp_only_info or not is_as)
+        # histogram section is GP-only (AS doesn't return star breakdown)
+        if hasattr(self, "_histogram_card"):
+            self._histogram_card.setVisible(not is_as)
+
     def _load_detail_core(self, app_id: str, country: str, lang: str) -> dict:
         # Only the detail itself + local history — the slow `similar` (~12s) and the
         # screenshots (~6s) are loaded asynchronously AFTER this shows, so entering the
         # detail page no longer waits on them serially.
-        detail = self.google_play_service.app_detail(app_id, country=country, lang=lang)
+        detail = self._active_service().app_detail(app_id, country=country, lang=lang)
         history = self.tracking_service.get_history(app_id, country=country, lang=lang)
         return {"detail": detail, "history": history, "country": country, "lang": lang}
 

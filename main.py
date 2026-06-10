@@ -19,6 +19,7 @@ from app.services.alert_service import AlertService
 from app.services.chart_rank_service import ChartRankService
 from app.services.chart_service import ChartService
 from app.services.export_service import ExportService
+from app.services.app_store_service import AppStoreService
 from app.services.google_play_service import GooglePlayService
 from app.services.history_retention_service import HistoryRetentionService
 from app.services.keyword_service import KeywordService
@@ -38,7 +39,9 @@ def build_services(database: Database) -> dict[str, object]:
     google_play_service = GooglePlayService(
         request_delay_seconds=safe_float(settings.get("request_delay_seconds"), 1.0)
     )
+    app_store_service = AppStoreService()
     keyword_service = KeywordService(google_play_service, database=database)
+    keyword_service_app_store = KeywordService(app_store_service, database=database)
     monetization_service = MonetizationService()
     alert_service = AlertService(database, settings_service=settings_service)
     review_service = ReviewService(database=database, google_play_service=google_play_service)
@@ -52,7 +55,11 @@ def build_services(database: Database) -> dict[str, object]:
         review_service=review_service,
         chart_rank_service=chart_rank_service,
     )
-    chart_service = ChartService(database=database, google_play_service=google_play_service)
+    chart_service = ChartService(
+        database=database,
+        google_play_service=google_play_service,
+        app_store_service=app_store_service,
+    )
     history_retention_service = HistoryRetentionService(
         database, settings_service=settings_service
     )
@@ -66,7 +73,9 @@ def build_services(database: Database) -> dict[str, object]:
     return {
         "settings_service": settings_service,
         "google_play_service": google_play_service,
+        "app_store_service": app_store_service,
         "keyword_service": keyword_service,
+        "keyword_service_app_store": keyword_service_app_store,
         "chart_rank_service": chart_rank_service,
         "monetization_service": monetization_service,
         "tracking_service": tracking_service,
