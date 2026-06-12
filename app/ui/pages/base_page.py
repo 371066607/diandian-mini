@@ -170,6 +170,17 @@ class BasePage(QWidget):
             }
         return settings_service.get_all()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not getattr(self, "_labels_selectable", False):
+            self._labels_selectable = True
+            _sel = (
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            for lbl in self.findChildren(QLabel):
+                lbl.setTextInteractionFlags(lbl.textInteractionFlags() | _sel)
+
     def _cleanup_worker(self, worker: Worker) -> None:
         if worker in self._workers:
             self._workers.remove(worker)
