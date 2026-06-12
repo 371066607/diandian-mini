@@ -543,14 +543,16 @@ class KeywordRankRepository:
         )
 
     def upsert_for_day(self, session, result: KeywordRankResult, now: str | None = None) -> bool:
-        """Keep at most one rank row per calendar day per (keyword, app_id, country, lang):
-        insert today's row or overwrite an existing same-day row. Returns True when a NEW
-        row was inserted (first sync of the day) — mirrors SnapshotRepository.upsert_for_day."""
+        """Keep at most one rank row per calendar day per (platform, keyword, app_id,
+        country, lang): insert today's row or overwrite an existing same-day row. Returns
+        True when a NEW row was inserted (first sync of the day) — mirrors
+        SnapshotRepository.upsert_for_day."""
         stamp = now or result.captured_at or now_iso()
         day = stamp[:10]
         existing = session.execute(
             select(KeywordRankModel)
             .where(
+                KeywordRankModel.platform == result.platform,
                 KeywordRankModel.keyword == result.keyword,
                 KeywordRankModel.app_id == result.app_id,
                 KeywordRankModel.country == result.country,
@@ -585,7 +587,14 @@ class KeywordRankRepository:
         return True
 
     def previous_distinct_day(
-        self, session, keyword: str, app_id: str, country: str, lang: str, before_day: str | None = None
+        self,
+        session,
+        keyword: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        before_day: str | None = None,
+        platform: str = "google_play",
     ) -> KeywordRankModel | None:
         """Most recent rank row from a calendar day BEFORE ``before_day`` (default today),
         used as the alert-diff baseline so a same-day re-sync never self-compares."""
@@ -593,6 +602,7 @@ class KeywordRankRepository:
         stmt = (
             select(KeywordRankModel)
             .where(
+                KeywordRankModel.platform == platform,
                 KeywordRankModel.keyword == keyword,
                 KeywordRankModel.app_id == app_id,
                 KeywordRankModel.country == country,
@@ -611,10 +621,12 @@ class KeywordRankRepository:
         app_id: str,
         country: str,
         lang: str,
+        platform: str = "google_play",
     ) -> list[KeywordRankModel]:
         stmt = (
             select(KeywordRankModel)
             .where(
+                KeywordRankModel.platform == platform,
                 KeywordRankModel.keyword == keyword,
                 KeywordRankModel.app_id == app_id,
                 KeywordRankModel.country == country,
@@ -631,10 +643,12 @@ class KeywordRankRepository:
         app_id: str,
         country: str,
         lang: str,
+        platform: str = "google_play",
     ) -> KeywordRankModel | None:
         stmt = (
             select(KeywordRankModel)
             .where(
+                KeywordRankModel.platform == platform,
                 KeywordRankModel.keyword == keyword,
                 KeywordRankModel.app_id == app_id,
                 KeywordRankModel.country == country,
@@ -648,8 +662,8 @@ class KeywordRankRepository:
     def latest_bulk(
         self,
         session,
-        keys: list[tuple[str, str, str, str]],  # (keyword, app_id, country, lang)
-    ) -> dict[tuple[str, str, str, str], KeywordRankModel]:
+        keys: list[tuple[str, str, str, str, str]],  # (keyword, app_id, country, lang, platform)
+    ) -> dict[tuple[str, str, str, str, str], KeywordRankModel]:
         """Return the most-recent rank row for each key — one query instead of N.
 
         Uses a window function (ROW_NUMBER) so we get exactly one row per partition
@@ -660,7 +674,7 @@ class KeywordRankRepository:
             return {}
         keys_set = set(keys)
         # Collect distinct app_ids to narrow the table scan
-        app_ids = list({app_id for _kw, app_id, _c, _l in keys})
+        app_ids = list({key[1] for key in keys})
         # ``expanding=True`` lets SQLAlchemy expand the list into individual '?, ?, …'
         # placeholders that SQLite understands (raw tuple binding raises OperationalError).
         stmt = text(
@@ -670,7 +684,7 @@ class KeywordRankRepository:
             FROM (
                 SELECT *,
                     ROW_NUMBER() OVER (
-                        PARTITION BY keyword, app_id, country, lang
+                        PARTITION BY keyword, app_id, country, lang, platform
                         ORDER BY captured_at DESC
                     ) AS _rn
                 FROM keyword_ranks
@@ -681,12 +695,19 @@ class KeywordRankRepository:
         rows = session.execute(stmt, {"app_ids": app_ids}).mappings().all()
         result: dict[tuple, KeywordRankModel] = {}
         for row in rows:
-            key = (row["keyword"], row["app_id"], row["country"], row["lang"])
+            key = (
+                row["keyword"],
+                row["app_id"],
+                row["country"],
+                row["lang"],
+                row["platform"] or "google_play",
+            )
             if key not in keys_set:
                 continue
             # Re-hydrate as ORM objects so callers can use .rank / .found normally
             obj = KeywordRankModel(
                 id=row["id"],
+                platform=row["platform"] or "google_play",
                 keyword=row["keyword"],
                 app_id=row["app_id"],
                 country=row["country"],
@@ -1018,10 +1039,11 @@ class TrackingRepository:
         app_id: str,
         country: str,
         lang: str,
+        platform: str = "google_play",
     ) -> TrackedKeywordModel:
         now = now_iso()
         insert_stmt = sqlite_insert(TrackedKeywordModel).values(
-            platform="google_play",
+            platform=platform,
             keyword=keyword,
             app_id=app_id,
             country=country,
@@ -1037,7 +1059,7 @@ class TrackingRepository:
         session.execute(upsert)
         return session.execute(
             select(TrackedKeywordModel).where(
-                TrackedKeywordModel.platform == "google_play",
+                TrackedKeywordModel.platform == platform,
                 TrackedKeywordModel.keyword == keyword,
                 TrackedKeywordModel.app_id == app_id,
                 TrackedKeywordModel.country == country,
@@ -1049,6 +1071,20 @@ class TrackingRepository:
         stmt = select(TrackedKeywordModel).order_by(desc(TrackedKeywordModel.updated_at))
         return session.execute(stmt).scalars().all()
 
+    def _keyword_row(self, session, keyword, app_id, country, lang, platform):
+        """The single monitor row for the full 5-tuple identity. Filtering on platform is
+        load-bearing: the unique key includes it, so the same (keyword, app_id, country,
+        lang) may legitimately exist once per store."""
+        return session.execute(
+            select(TrackedKeywordModel).where(
+                TrackedKeywordModel.platform == platform,
+                TrackedKeywordModel.keyword == keyword,
+                TrackedKeywordModel.app_id == app_id,
+                TrackedKeywordModel.country == country,
+                TrackedKeywordModel.lang == lang,
+            )
+        ).scalar_one_or_none()
+
     def remove_keyword(
         self,
         session,
@@ -1056,15 +1092,9 @@ class TrackingRepository:
         app_id: str,
         country: str,
         lang: str,
+        platform: str = "google_play",
     ) -> int:
-        model = session.execute(
-            select(TrackedKeywordModel).where(
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-        ).scalar_one_or_none()
+        model = self._keyword_row(session, keyword, app_id, country, lang, platform)
         if model is None:
             return 0
         session.delete(model)
@@ -1078,15 +1108,9 @@ class TrackingRepository:
         country: str,
         lang: str,
         value: str,
+        platform: str = "google_play",
     ) -> None:
-        model = session.execute(
-            select(TrackedKeywordModel).where(
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-        ).scalar_one_or_none()
+        model = self._keyword_row(session, keyword, app_id, country, lang, platform)
         if model is None:
             return
         model.last_synced_at = value
@@ -1100,15 +1124,9 @@ class TrackingRepository:
         country: str,
         lang: str,
         enabled: bool,
+        platform: str = "google_play",
     ) -> bool:
-        model = session.execute(
-            select(TrackedKeywordModel).where(
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-        ).scalar_one_or_none()
+        model = self._keyword_row(session, keyword, app_id, country, lang, platform)
         if model is None:
             return enabled
         model.enabled = 1 if enabled else 0
@@ -1123,15 +1141,9 @@ class TrackingRepository:
         country: str,
         lang: str,
         frequency: str,
+        platform: str = "google_play",
     ) -> str:
-        model = session.execute(
-            select(TrackedKeywordModel).where(
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-        ).scalar_one_or_none()
+        model = self._keyword_row(session, keyword, app_id, country, lang, platform)
         if model is None:
             return frequency
         model.frequency = frequency
@@ -1184,11 +1196,19 @@ class TrackingRepository:
         return prior or 0
 
     def record_keyword_failure(
-        self, session, keyword: str, app_id: str, country: str, lang: str, when: str
+        self,
+        session,
+        keyword: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        when: str,
+        platform: str = "google_play",
     ) -> int:
         stmt = (
             update(TrackedKeywordModel)
             .where(
+                TrackedKeywordModel.platform == platform,
                 TrackedKeywordModel.keyword == keyword,
                 TrackedKeywordModel.app_id == app_id,
                 TrackedKeywordModel.country == country,
@@ -1205,10 +1225,17 @@ class TrackingRepository:
         return row[0] if row else 1
 
     def record_keyword_success(
-        self, session, keyword: str, app_id: str, country: str, lang: str
+        self,
+        session,
+        keyword: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        platform: str = "google_play",
     ) -> int:
         prior = session.execute(
             select(func.coalesce(TrackedKeywordModel.consecutive_failures, 0)).where(
+                TrackedKeywordModel.platform == platform,
                 TrackedKeywordModel.keyword == keyword,
                 TrackedKeywordModel.app_id == app_id,
                 TrackedKeywordModel.country == country,
@@ -1219,6 +1246,7 @@ class TrackingRepository:
             session.execute(
                 update(TrackedKeywordModel)
                 .where(
+                    TrackedKeywordModel.platform == platform,
                     TrackedKeywordModel.keyword == keyword,
                     TrackedKeywordModel.app_id == app_id,
                     TrackedKeywordModel.country == country,

@@ -69,6 +69,28 @@ def migrate(database: Database) -> None:
             except Exception:
                 logger.exception("migrate: failed to add column %s.%s", table.name, column.name)
 
+    # Backfill ``platform`` on legacy keyword rows. The additive column add above leaves
+    # NULL on rows that predate the column, but keyword reads/updates now filter on
+    # platform — NULL rows would silently vanish from history and monitors. Everything
+    # written before the column existed was Google Play by definition. Idempotent and
+    # best-effort, same tolerance as the column adds.
+    for table_name in ("tracked_keywords", "keyword_ranks"):
+        ddl = (
+            f'UPDATE "{table_name}" SET platform = \'google_play\' '
+            "WHERE platform IS NULL OR platform = ''"
+        )
+        try:
+            with database.engine.begin() as connection:
+                result = connection.execute(text(ddl))
+                if result.rowcount:
+                    logger.info(
+                        "migrate: backfilled platform on %s rows in %s",
+                        result.rowcount,
+                        table_name,
+                    )
+        except Exception:
+            logger.exception("migrate: platform backfill failed for %s", table_name)
+
     # Ensure time-series / lookup indexes exist on pre-existing tables (create_all only
     # attaches indexes to tables it freshly creates). Idempotent and best-effort: each in
     # its own transaction, failures logged not raised — same tolerance as the column adds.

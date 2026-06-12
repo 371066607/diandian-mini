@@ -11,7 +11,7 @@ from app.constants import DEFAULT_SETTINGS
 from app.db.repositories import KeywordRankRepository, SnapshotRepository
 from app.ui.alert_labels import ALERT_SEVERITY_COLORS, alert_severity_label, alert_type_label
 from app.utils.network import apply_proxy_env
-from app.utils.normalize import safe_float, safe_int
+from app.utils.normalize import normalize_app_id, safe_float, safe_int
 from app.utils.time_utils import (
     DEFAULT_SYNC_TIME,
     FREQUENCY_HOURS,
@@ -42,6 +42,8 @@ class QmlBridge(QObject):
     updateStatusChanged = Signal()
     updatePrompt = Signal(str, str)  # (title, message) -> QML confirm dialog
     updateApplied = Signal(str)  # (message) -> QML restart dialog
+    coverageChanged = Signal()
+    coverageProgress = Signal(str, float)  # (message, fraction 0..1) during a scan
 
     def __init__(self, database, services: dict[str, object], logger, parent=None):
         super().__init__(parent)
@@ -56,6 +58,11 @@ class QmlBridge(QObject):
         self._input_history: dict[str, list[str]] = self._load_input_history()
         self._update_status = ""
         self._pending_update: Any | None = None
+        self._coverage: dict[str, Any] = self._coverage_state()
+        # Candidate pools from finished scans, keyed by (platform, app_id, country, lang)
+        # — a re-scan of the same identity reuses them instead of re-paying the detail +
+        # autocomplete requests (the candidates only derive from slow-moving metadata).
+        self._coverage_pools: dict[tuple, tuple[list[str], str | None]] = {}
         self._dashboard: dict[str, Any] = {}
         self._tracking: dict[str, Any] = {}
         self._settings: dict[str, Any] = {}
@@ -161,6 +168,33 @@ class QmlBridge(QObject):
         self._detail_gen += 1
         self._detail = {"loaded": False}
         self.detailChanged.emit()
+        self._set_coverage()
+        self.coverageProgress.emit("", 0.0)
+
+    @staticmethod
+    def _coverage_state(
+        *,
+        rows: list | None = None,
+        summary: str = "输入 App 包名 / ID 后点「发现覆盖关键词」",
+        running: bool = False,
+        app_id: str = "",
+        country: str = "",
+        lang: str = "",
+    ) -> dict[str, Any]:
+        """The one shape of the coverage payload — every writer goes through here so the
+        QML side can rely on all keys existing."""
+        return {
+            "rows": rows or [],
+            "summary": summary,
+            "running": running,
+            "appId": app_id,
+            "country": country,
+            "lang": lang,
+        }
+
+    def _set_coverage(self, **kwargs) -> None:
+        self._coverage = self._coverage_state(**kwargs)
+        self.coverageChanged.emit()
 
     def _active_store(self):
         """The scraping service matching the currently selected platform."""
@@ -698,10 +732,11 @@ class QmlBridge(QObject):
             return
         self._remember_input("keyword", keyword.strip())
         self._remember_input("app_id", app_id.strip())
-        service_key = (
+        # Strict lookup: a missing platform service must fail loudly, not silently
+        # answer with Google Play data labeled as the other store.
+        keyword_service = self.services[
             "keyword_service_app_store" if self._platform == "app_store" else "keyword_service"
-        )
-        keyword_service = self.services.get(service_key) or self.services["keyword_service"]
+        ]
         self._run(
             lambda: keyword_service.rank(
                 keyword.strip(),
@@ -727,14 +762,17 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str)
     def addKeywordTracking(self, keyword: str, app_id: str, country: str, lang: str) -> None:
-        if self._guard_google_play_only("关键词监控"):
-            return
         keyword = keyword.strip()
         app_id = app_id.strip()
         if not keyword or not app_id:
-            self.errorMessage.emit("请输入关键词和目标包名。")
+            self.errorMessage.emit("请输入关键词和目标 App。")
             return
-        if "." not in app_id or " " in app_id:
+        platform = self._platform
+        if platform == "app_store":
+            if not app_id.isdigit():
+                self.errorMessage.emit("App Store 目标请填数字 App ID，如 587366035。")
+                return
+        elif "." not in app_id or " " in app_id:
             self.errorMessage.emit("目标请填包名，形如 com.example.app。")
             return
         self._remember_input("keyword", keyword)
@@ -745,9 +783,96 @@ class QmlBridge(QObject):
                 app_id,
                 country=country.strip() or "us",
                 lang=lang.strip() or "en",
+                platform=platform,
             ),
             lambda _: self._after_mutation("已加入关键词监控。"),
             label="正在加入关键词监控...",
+        )
+
+    # --- keyword coverage ("what keywords can find my app") ------------------
+
+    @Property("QVariant", notify=coverageChanged)
+    def coverage(self) -> dict[str, Any]:
+        return self._coverage
+
+    @Slot(str, str, str)
+    def discoverCoverage(self, app_id: str, country: str, lang: str) -> None:
+        if self._coverage.get("running"):
+            self.statusMessage.emit("已有覆盖扫描进行中，请等待其完成。")
+            return
+        app_id = app_id.strip()
+        if not app_id:
+            self.errorMessage.emit("请输入要分析的 App 包名 / ID。")
+            return
+        self._remember_input("app_id", app_id)
+        country = country.strip() or "us"
+        lang = lang.strip() or "en"
+        platform = self._platform
+        pool_key = (platform, normalize_app_id(app_id), country, lang)
+        cached_pool = self._coverage_pools.get(pool_key)
+        self._set_coverage(
+            summary="正在分析覆盖关键词，请稍候...",
+            running=True,
+            app_id=app_id,
+            country=country,
+            lang=lang,
+        )
+        # Reset the progress card immediately — otherwise it briefly replays the
+        # previous scan's final "覆盖检测 N/N" text until the worker's first tick.
+        self.coverageProgress.emit("正在生成候选关键词...", 0.0)
+
+        def work():
+            try:
+                candidates, canonical = cached_pool or (None, None)
+                result = self.services["keyword_coverage_service"].analyze_coverage(
+                    platform,
+                    app_id,
+                    country=country,
+                    lang=lang,
+                    limit=50,
+                    candidates=candidates,
+                    canonical_app_id=canonical,
+                    progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
+                )
+                return ("ok", result)
+            except Exception as exc:  # surface a clean message, never leave it "running"
+                return ("error", str(exc))
+
+        # busy=False: a coverage scan runs ~1-2 min, so use inline progress (the
+        # CoveragePage shows a bar) instead of blocking the whole UI with the overlay.
+        self._run(work, self._on_coverage_done, label="正在分析覆盖关键词...", busy=False)
+
+    def _on_coverage_done(self, payload) -> None:
+        status, value = payload
+        previous = self._coverage
+        if status == "error":
+            self._set_coverage(
+                summary=f"分析失败：{value}",
+                app_id=previous.get("appId", ""),
+                country=previous.get("country", ""),
+                lang=previous.get("lang", ""),
+            )
+            self.errorMessage.emit(f"覆盖分析失败：{value}")
+            return
+        pool_key = (
+            value.platform,
+            normalize_app_id(value.app_id),
+            value.country,
+            value.lang,
+        )
+        self._coverage_pools[pool_key] = (value.candidates, value.canonical_app_id)
+        rows = [{"keyword": c["keyword"], "rank": c["rank"]} for c in value.covered]
+        self._set_coverage(
+            rows=rows,
+            summary=(
+                f"共扫描 {value.candidate_count} 个候选词，命中 {len(rows)} 个覆盖关键词"
+                f"（排名 ≤ {value.checked_limit}）"
+            ),
+            # Prefer the store's canonical id: it is what "加入监控" must be keyed on
+            # (an App Store Bundle-ID input resolves to the numeric trackId here).
+            app_id=value.canonical_app_id or value.app_id,
+            country=value.country,
+            lang=value.lang,
         )
 
     @Slot(str, str, str, str)
@@ -1629,7 +1754,14 @@ class QmlBridge(QObject):
         return (last + timedelta(hours=interval)).strftime("%m-%d %H:%M")
 
     def _keyword_rank_label(self, item) -> str:
-        keyword_service = self.services.get("keyword_service")
+        # Rank snapshots are platform-scoped — read via the service matching the ROW's
+        # platform (the tracked list mixes both stores), not the UI's current toggle.
+        key = (
+            "keyword_service_app_store"
+            if item.platform == "app_store"
+            else "keyword_service"
+        )
+        keyword_service = self.services.get(key)
         if keyword_service is None:
             return "未同步"
         snapshot = keyword_service.latest_rank(item.keyword, item.app_id, item.country, item.lang)

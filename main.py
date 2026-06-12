@@ -22,6 +22,7 @@ from app.services.export_service import ExportService
 from app.services.app_store_service import AppStoreService
 from app.services.google_play_service import GooglePlayService
 from app.services.history_retention_service import HistoryRetentionService
+from app.services.keyword_coverage_service import KeywordCoverageService
 from app.services.keyword_service import KeywordService
 from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
@@ -41,7 +42,12 @@ def build_services(database: Database) -> dict[str, object]:
     )
     app_store_service = AppStoreService()
     keyword_service = KeywordService(google_play_service, database=database)
-    keyword_service_app_store = KeywordService(app_store_service, database=database)
+    keyword_service_app_store = KeywordService(
+        app_store_service, database=database, platform="app_store"
+    )
+    keyword_coverage_service = KeywordCoverageService(
+        google_play_service, app_store_service=app_store_service
+    )
     monetization_service = MonetizationService()
     alert_service = AlertService(database, settings_service=settings_service)
     review_service = ReviewService(database=database, google_play_service=google_play_service)
@@ -50,6 +56,7 @@ def build_services(database: Database) -> dict[str, object]:
         database=database,
         google_play_service=google_play_service,
         keyword_service=keyword_service,
+        keyword_service_app_store=keyword_service_app_store,
         alert_service=alert_service,
         settings_service=settings_service,
         review_service=review_service,
@@ -76,6 +83,7 @@ def build_services(database: Database) -> dict[str, object]:
         "app_store_service": app_store_service,
         "keyword_service": keyword_service,
         "keyword_service_app_store": keyword_service_app_store,
+        "keyword_coverage_service": keyword_coverage_service,
         "chart_rank_service": chart_rank_service,
         "monetization_service": monetization_service,
         "tracking_service": tracking_service,

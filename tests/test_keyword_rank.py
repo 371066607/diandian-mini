@@ -28,6 +28,22 @@ def test_keyword_rank_not_found():
     assert result.rank is None
 
 
+def test_keyword_rank_matches_app_id_case_insensitively():
+    """Regression: rank() used exact ==, so real mixed-case package ids (e.g. com.Slack)
+    never matched a lowercase query while the coverage page said they ranked."""
+
+    class MixedCaseService:
+        def search(self, keyword, country="us", lang="en", limit=50):
+            return [
+                AppSummary(app_id="com.other", title="O"),
+                AppSummary(app_id="com.Slack", title="Slack"),
+            ]
+
+    result = KeywordService(MixedCaseService()).rank("chat", "com.slack")
+    assert result.found is True
+    assert result.rank == 2
+
+
 def test_keyword_save_result_roundtrip(tmp_path):
     database = Database(str(tmp_path / "keyword.sqlite3"))
     database.create_all()

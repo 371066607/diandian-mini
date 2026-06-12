@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import re
 import shutil
-import subprocess
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +10,8 @@ from urllib.request import Request, urlopen
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
+
+from app.utils import proc
 
 # Bounded in-memory cache so the same icon/screenshot isn't re-downloaded every time
 # a list is shown — capped by total bytes AND entry count (LRU eviction) so it can't
@@ -102,7 +103,7 @@ def _download_image_bytes(url: str, timeout: float) -> bytes | None:
         if not curl_path:
             return None
         try:
-            completed = subprocess.run(
+            completed = proc.run(
                 [
                     curl_path,
                     "-fsSL",

@@ -358,20 +358,12 @@ class TrackingPage(BasePage):
         # A monitor that's currently failing turns red so it's impossible to miss.
         return "#DC2626" if row.get("_fail_count", 0) > 0 else None
 
-    def _rank_label(self, item) -> str:
-        snapshot = self.keyword_service.latest_rank(
-            item.keyword, item.app_id, item.country, item.lang
-        )
-        if snapshot is None:
-            return "未同步"
-        if not snapshot.found or snapshot.rank is None:
-            return "未命中"
-        return f"#{snapshot.rank}"
-
     @staticmethod
     def _rank_label_bulk(item, rank_map: dict) -> str:
         """Look up the rank from a pre-fetched bulk map — no per-row DB query."""
-        snapshot = rank_map.get((item.keyword, item.app_id, item.country, item.lang))
+        snapshot = rank_map.get(
+            (item.keyword, item.app_id, item.country, item.lang, item.platform)
+        )
         if snapshot is None:
             return "未同步"
         if not snapshot.found or snapshot.rank is None:
@@ -611,7 +603,8 @@ class TrackingPage(BasePage):
         self.run_task(
             "正在设置同步频率...",
             lambda: self.tracking_service.set_keyword_frequency(
-                row.keyword, row.app_id, row.country, row.lang, frequency
+                row.keyword, row.app_id, row.country, row.lang, frequency,
+                platform=row.platform,
             ),
             lambda _: (self.show_status(f"同步频率已设为「{label}」。"), self.refresh()),
         )
@@ -637,6 +630,7 @@ class TrackingPage(BasePage):
                 row.app_id,
                 row.country,
                 row.lang,
+                platform=row.platform,
             ),
             lambda result: (
                 self.show_status(
@@ -722,6 +716,7 @@ class TrackingPage(BasePage):
                 row.app_id,
                 row.country,
                 row.lang,
+                platform=row.platform,
             ),
             lambda _: (self.show_status("已删除关键词监控。"), self.refresh()),
         )
@@ -750,6 +745,7 @@ class TrackingPage(BasePage):
                 row.app_id,
                 row.country,
                 row.lang,
+                platform=row.platform,
             ),
             lambda enabled: (
                 self.show_status(f"关键词监控已{'启用' if enabled else '禁用'}。"),

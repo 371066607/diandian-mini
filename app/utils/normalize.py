@@ -38,6 +38,26 @@ def dump_json(value: Any) -> str:
     return json.dumps(value or {}, ensure_ascii=False, default=str)
 
 
+def normalize_app_id(value: Any) -> str:
+    """Comparison form of a store app id (GP package name / iTunes id): stripped and
+    lowercased. Only for matching — never persist or fetch with the lowercased form,
+    Google Play package ids are case-sensitive (e.g. ``com.Slack``)."""
+    return str(value or "").strip().lower()
+
+
+def locate_rank(results, app_id) -> int | None:
+    """1-based position of ``app_id`` in a list of AppSummary-likes, or None when absent.
+    The single definition of "this app's rank in these search results", shared by
+    KeywordService.rank and KeywordCoverageService so the two pages can't disagree."""
+    target = normalize_app_id(app_id)
+    if not target:
+        return None
+    for index, item in enumerate(results, 1):
+        if normalize_app_id(getattr(item, "app_id", None)) == target:
+            return index
+    return None
+
+
 def normalize_app_summary(raw: dict) -> AppSummary:
     app_id = _get_first(raw, "appId", "app_id")
     min_installs = _to_int(_get_first(raw, "minInstalls", "min_installs"))

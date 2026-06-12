@@ -83,7 +83,11 @@ class AppSearchPage(BasePage):
 
     def _active_service(self):
         if self.window_api and getattr(self.window_api, "current_platform", "google_play") == "app_store":
-            return self.app_store_service or self.google_play_service
+            if self.app_store_service is None:
+                # Wiring bug — fail loudly instead of answering with Google Play data
+                # while the UI is labeled App Store.
+                raise RuntimeError("App Store 服务未注入。")
+            return self.app_store_service
         return self.google_play_service
 
     def _is_app_store(self) -> bool:

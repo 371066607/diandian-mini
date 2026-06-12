@@ -18,6 +18,8 @@ ApplicationWindow {
     readonly property bool isAppStore: bridge.platform === "app_store"
     readonly property string platformLabel: isAppStore ? "App Store" : "Google Play"
     property string currentPage: "dashboard"
+    property string coverageProgressText: ""
+    property real coverageProgressValue: 0
     property var navItems: [
         { key: "dashboard", label: "首页", subtitle: "本地监控总览、趋势和提醒" },
         { key: "app_search", label: "应用搜索", subtitle: "按关键词搜索 Google Play 应用" },
@@ -25,6 +27,7 @@ ApplicationWindow {
         { key: "reviews", label: "评论", subtitle: "评论抓取、筛选和保存" },
         { key: "charts", label: "榜单", subtitle: "Top Free / Paid / Grossing 榜单抓取" },
         { key: "keywords", label: "关键词", subtitle: "关键词排名查询与历史保存" },
+        { key: "coverage", label: "覆盖词", subtitle: "发现哪些关键词能搜到你的 App（覆盖关键词）" },
         { key: "tracking", label: "监控", subtitle: "管理本地监控任务，同步应用和关键词" },
         { key: "history", label: "历史", subtitle: "本地快照和排名历史" },
         { key: "alerts", label: "提醒", subtitle: "全部监控告警与筛选" },
@@ -82,6 +85,10 @@ ApplicationWindow {
         function onUpdateApplied(message) {
             restartDialog.body = message
             restartDialog.open()
+        }
+        function onCoverageProgress(message, fraction) {
+            root.coverageProgressText = message
+            root.coverageProgressValue = fraction
         }
     }
 
@@ -869,6 +876,7 @@ ApplicationWindow {
                     ReviewsPage {}
                     ChartsPage {}
                     KeywordsPage {}
+                    CoveragePage {}
                     TrackingPage {}
                     HistoryPage {}
                     AlertsPage {}
@@ -1821,7 +1829,7 @@ ApplicationWindow {
                     Field { id: kwLimit; text: "100"; width: 100 }
                     PrimaryButton { text: "查询排名"; onClicked: root.bridge.fetchKeywordRank(kwText.text, kwApp.text, kwCountry.text, kwLang.text, kwLimit.text) }
                     SecondaryButton { text: "保存排名"; onClicked: root.bridge.saveKeywordRank() }
-                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addKeywordTracking(kwText.text, kwApp.text, kwCountry.text, kwLang.text) }
+                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addKeywordTracking(kwText.text, kwApp.text, kwCountry.text, kwLang.text) }
                 }
             }
             DataTable {
@@ -1846,6 +1854,85 @@ ApplicationWindow {
                     { label: "开发者", key: "developer", width: 150 },
                     { label: "评分", key: "rating", width: 60 },
                     { label: "安装量", key: "installs", width: 110 }
+                ]
+            }
+        }
+    }
+
+    component CoveragePage: ScrollView {
+        id: coveragePage
+        clip: true
+        contentWidth: availableWidth
+        property var cov: root.bridge.coverage
+        ColumnLayout {
+            width: parent.width
+            spacing: 18
+
+            Card {
+                ToolbarFlow {
+                    HistoryField {
+                        id: covApp
+                        historyKey: "app_id"
+                        placeholderText: root.isAppStore ? "App ID（如 587366035）/ Bundle ID" : "com.whatsapp"
+                        width: 300
+                        // Same gate as the button — Enter must not start a second concurrent scan
+                        onAccepted: if (!coveragePage.cov.running) root.bridge.discoverCoverage(text, covCountry.text, covLang.text)
+                    }
+                    Field { id: covCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
+                    Field { id: covLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
+                    PrimaryButton {
+                        text: coveragePage.cov.running ? "分析中..." : "发现覆盖关键词"
+                        enabled: !coveragePage.cov.running
+                        onClicked: root.bridge.discoverCoverage(covApp.text, covCountry.text, covLang.text)
+                    }
+                    SecondaryButton {
+                        text: "加入监控（选中词）"
+                        enabled: covTable.selectedIndex >= 0 && !coveragePage.cov.running
+                        onClicked: {
+                            // Track against the SCAN's app/locale (cov.*), not the live input
+                            // fields — those may have been edited since the results rendered.
+                            var row = coveragePage.cov.rows[covTable.selectedIndex]
+                            if (row) root.bridge.addKeywordTracking(row.keyword, coveragePage.cov.appId, coveragePage.cov.country, coveragePage.cov.lang)
+                        }
+                    }
+                }
+                Label {
+                    text: "原理：从该 App 的标题 / 描述 / 分类自动提词 → 经 " + root.platformLabel + " 自动补全扩展成真实搜索短语 → 逐词检索看你的 App 排第几。只发现「与你 App 文案相关」的词，不是全网穷举。"
+                    color: root.cFaint
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            Card {
+                visible: coveragePage.cov.running
+                Label {
+                    text: root.coverageProgressText || "正在生成候选关键词..."
+                    color: root.cBody
+                    font.pixelSize: 13
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+                ProgressBar {
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 1
+                    value: root.coverageProgressValue
+                }
+            }
+
+            DataTable {
+                id: covTable
+                title: "覆盖关键词 · " + coveragePage.cov.summary
+                subtitle: root.platformLabel
+                          + " · 按排名升序，选中某行可「加入监控」长期追踪覆盖变化"
+                rows: root.rows(coveragePage.cov, "rows")
+                tableHeight: 520
+                emptyText: coveragePage.cov.running ? "正在分析覆盖关键词..." : "暂无数据，输入 App 后点「发现覆盖关键词」"
+                columns: [
+                    { label: "排名", key: "rank", width: 90 },
+                    { label: "关键词（能搜到你 App 的词）", key: "keyword", fill: true }
                 ]
             }
         }

@@ -19,7 +19,11 @@ class ChartService:
         limit: int,
         platform: str = "google_play",
     ):
-        if platform == "app_store" and self.app_store_service is not None:
+        if platform == "app_store":
+            if self.app_store_service is None:
+                # Wiring bug — fail loudly instead of serving Google Play data
+                # mislabeled as App Store.
+                raise RuntimeError("App Store 服务未注入，无法获取 App Store 榜单。")
             return self.app_store_service.chart(
                 chart_type=chart_type,
                 category=category,

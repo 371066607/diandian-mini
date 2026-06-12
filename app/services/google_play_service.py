@@ -6,7 +6,6 @@ import html
 import json
 import re
 import shutil
-import subprocess
 import time
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
@@ -21,6 +20,7 @@ from app.constants import (
 from app.schemas.app_schema import AppDetail, AppSummary
 from app.schemas.chart_schema import ChartItem
 from app.schemas.review_schema import ReviewItem
+from app.utils import proc
 from app.utils.install_parser import parse_install_range
 from app.utils.normalize import (
     normalize_app_detail,
@@ -117,6 +117,28 @@ class GooglePlayService:
         if not mapped_items:
             raise ServiceError(EMPTY_RESULT_MESSAGE)
         return mapped_items
+
+    def suggest(
+        self,
+        term: str,
+        country: str = "us",
+        lang: str = "en",
+        count: int = 8,
+    ) -> list[str]:
+        """Google Play search autocomplete — expand a seed term into real query
+        phrases (e.g. "photo edit" -> "photo editor free"). Best-effort: returns []
+        when the optional gplay_scraper backend or the network is unavailable, since
+        suggestions only enrich the keyword-coverage candidate pool."""
+        term = (term or "").strip()
+        if not term or self._gplay_scraper is None:
+            return []
+        try:
+            hints = self._gplay_scraper.suggest_analyze(
+                term, count=max(1, count), lang=lang, country=country or ""
+            )
+        except Exception:
+            return []
+        return [h.strip() for h in (hints or []) if isinstance(h, str) and h.strip()]
 
     def app_detail(
         self,
@@ -476,7 +498,7 @@ class GooglePlayService:
                 args.extend(["-X", method.upper()])
             if data is not None:
                 args.extend(["--data-binary", data.decode("utf-8")])
-            completed = subprocess.run(
+            completed = proc.run(
                 args,
                 check=True,
                 capture_output=True,

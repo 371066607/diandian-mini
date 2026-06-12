@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from app.constants import EMPTY_RESULT_MESSAGE, NETWORK_ERROR_MESSAGE, NOT_FOUND_MESSAGE
@@ -25,6 +27,16 @@ class AppStoreService:
         "top_free": "https://itunes.apple.com/{country}/rss/topfreeapplications/limit={limit}/json",
         "top_paid": "https://itunes.apple.com/{country}/rss/toppaidapplications/limit={limit}/json",
         "top_grossing": "https://itunes.apple.com/{country}/rss/topgrossingapplications/limit={limit}/json",
+    }
+    _HINTS_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints"
+    # App Store autocomplete needs an X-Apple-Store-Front header to localize hints.
+    # country -> storefront id (the "-1,29" lang/platform suffix is appended at use).
+    _STOREFRONTS = {
+        "us": "143441", "gb": "143444", "ca": "143455", "au": "143460",
+        "de": "143443", "fr": "143442", "jp": "143462", "cn": "143465",
+        "kr": "143466", "hk": "143463", "tw": "143470", "sg": "143464",
+        "in": "143467", "br": "143503", "mx": "143468", "es": "143454",
+        "it": "143450", "ru": "143469", "nl": "143452",
     }
     _HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -128,6 +140,47 @@ class AppStoreService:
 
     def permissions(self, app_id: str, country: str = "us", lang: str = "en") -> dict[str, list[str]]:
         return {}
+
+    def suggest(
+        self,
+        term: str,
+        country: str = "us",
+        lang: str = "en",
+        count: int = 8,
+    ) -> list[str]:
+        """App Store search autocomplete via MZSearchHints. Best-effort: returns []
+        on any failure, since suggestions only enrich the keyword-coverage pool."""
+        term = (term or "").strip()
+        if not term:
+            return []
+        storefront = self._STOREFRONTS.get((country or "us").lower(), "143441")
+        url = f"{self._HINTS_URL}?clientApplication=Software&term={quote(term)}"
+        req = Request(
+            url,
+            headers={
+                "Accept": "text/xml",
+                "User-Agent": "iTunes-iPhone/12.0",
+                "X-Apple-Store-Front": f"{storefront}-1,29",
+            },
+        )
+        try:
+            if self.request_delay_seconds > 0:
+                time.sleep(self.request_delay_seconds)
+            with urlopen(req, timeout=15) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            return []
+        # The plist lists alternating <string>hint</string><string>store-url</string>;
+        # keep the hint phrases, drop the "Suggestions" title and the URL entries.
+        hints: list[str] = []
+        for raw in re.findall(r"<string>([^<]*)</string>", text):
+            val = html.unescape(raw).strip()
+            if not val or val.lower() == "suggestions" or val.startswith("http"):
+                continue
+            hints.append(val)
+            if len(hints) >= count:
+                break
+        return hints
 
     # --- internal mapping ---
 

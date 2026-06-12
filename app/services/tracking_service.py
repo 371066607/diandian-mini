@@ -62,10 +62,14 @@ class TrackingService:
         settings_service=None,
         review_service=None,
         chart_rank_service=None,
+        keyword_service_app_store=None,
     ):
         self.database = database
         self.google_play_service = google_play_service
         self.keyword_service = keyword_service
+        # Per-platform keyword rank service: keyword monitors carry a ``platform`` and
+        # sync routes to the matching one (App Store ranks via iTunes search).
+        self.keyword_service_app_store = keyword_service_app_store
         self.chart_rank_service = chart_rank_service
         self.alert_service = alert_service
         self.settings_service = settings_service
@@ -202,11 +206,17 @@ class TrackingService:
             )
 
     def set_keyword_frequency(
-        self, keyword: str, app_id: str, country: str, lang: str, frequency: str
+        self,
+        keyword: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        frequency: str,
+        platform: str = "google_play",
     ) -> str:
         with self.database.session() as session:
             return self.tracking_repository.set_keyword_frequency(
-                session, keyword, app_id, country, lang, frequency
+                session, keyword, app_id, country, lang, frequency, platform=platform
             )
 
     def remove_app(self, app_id: str, country: str = "us", lang: str = "en") -> None:
@@ -316,9 +326,28 @@ class TrackingService:
             return "flat"
         return "none"
 
-    def add_keyword(self, keyword: str, app_id: str, country: str = "us", lang: str = "en") -> None:
+    def _keyword_service_for(self, platform: str):
+        """The rank service matching a tracked keyword's platform. A missing service is a
+        composition-root wiring bug — fail loudly instead of silently ranking the keyword
+        via the wrong store (which would record bogus found=False rows and alerts)."""
+        if platform == "app_store":
+            if self.keyword_service_app_store is None:
+                raise RuntimeError("App Store 关键词服务未注入，无法处理 App Store 关键词。")
+            return self.keyword_service_app_store
+        return self.keyword_service
+
+    def add_keyword(
+        self,
+        keyword: str,
+        app_id: str,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
+    ) -> None:
         with self.database.session() as session:
-            self.tracking_repository.add_keyword(session, keyword, app_id, country, lang)
+            self.tracking_repository.add_keyword(
+                session, keyword, app_id, country, lang, platform=platform
+            )
 
     def add_keywords_bulk(
         self, keywords, app_id: str, country: str = "us", lang: str = "en"
@@ -375,9 +404,18 @@ class TrackingService:
         with self.database.session() as session:
             return self.tracking_repository.list_keywords(session)
 
-    def remove_keyword(self, keyword: str, app_id: str, country: str = "us", lang: str = "en") -> int:
+    def remove_keyword(
+        self,
+        keyword: str,
+        app_id: str,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
+    ) -> int:
         with self.database.session() as session:
-            return self.tracking_repository.remove_keyword(session, keyword, app_id, country, lang)
+            return self.tracking_repository.remove_keyword(
+                session, keyword, app_id, country, lang, platform=platform
+            )
 
     def toggle_app(self, app_id: str, country: str = "us", lang: str = "en") -> bool:
         with self.database.session() as session:
@@ -405,6 +443,7 @@ class TrackingService:
         app_id: str,
         country: str = "us",
         lang: str = "en",
+        platform: str = "google_play",
     ) -> bool:
         with self.database.session() as session:
             keywords = self.tracking_repository.list_keywords(session)
@@ -416,6 +455,7 @@ class TrackingService:
                     and item.app_id == app_id
                     and item.country == country
                     and item.lang == lang
+                    and item.platform == platform
                 ),
                 None,
             )
@@ -427,6 +467,7 @@ class TrackingService:
                 country,
                 lang,
                 next_enabled,
+                platform=platform,
             )
 
     def _escalate_after(self) -> int:
@@ -585,8 +626,10 @@ class TrackingService:
         lang: str = "en",
         limit: int | None = None,
         collector=None,
+        platform: str = "google_play",
     ):
-        if self.keyword_service is None:
+        keyword_service = self._keyword_service_for(platform)
+        if keyword_service is None:
             raise RuntimeError("KeywordService 未注入。")
         effective_limit = limit or self._default_keyword_limit()
         # Before fetching, capture the prior *different-day* rank as the alert baseline and
@@ -597,10 +640,10 @@ class TrackingService:
         first_of_day = True
         if self.alert_service is not None:
             try:
-                previous_rank = self.keyword_service.previous_distinct_rank(
+                previous_rank = keyword_service.previous_distinct_rank(
                     keyword, app_id, country, lang
                 )
-                latest = self.keyword_service.latest_rank(keyword, app_id, country, lang)
+                latest = keyword_service.latest_rank(keyword, app_id, country, lang)
                 today = now_iso()[:10]
                 first_of_day = latest is None or (latest.captured_at or "")[:10] != today
             except Exception:
@@ -608,7 +651,7 @@ class TrackingService:
                     "could not load previous rank for %s / %s", keyword, app_id
                 )
         try:
-            result = self.keyword_service.rank(
+            result = keyword_service.rank(
                 keyword,
                 app_id,
                 country=country,
@@ -626,7 +669,7 @@ class TrackingService:
             if self.alert_service is not None:
                 with self.database.session() as session:
                     count = self.tracking_repository.record_keyword_failure(
-                        session, keyword, app_id, country, lang, now_iso()
+                        session, keyword, app_id, country, lang, now_iso(), platform=platform
                     )
                 failure = self.alert_service.record_fetch_failure(
                     app_id,
@@ -641,7 +684,9 @@ class TrackingService:
         new_alerts: list = []
         prior_failures = 0
         with self.database.session() as session:
-            self.tracking_repository.add_keyword(session, keyword, app_id, country, lang)
+            self.tracking_repository.add_keyword(
+                session, keyword, app_id, country, lang, platform=platform
+            )
             self.tracking_repository.update_keyword_sync_time(
                 session,
                 keyword,
@@ -649,10 +694,11 @@ class TrackingService:
                 country,
                 lang,
                 now_iso(),
+                platform=platform,
             )
             # A returned result (even "未命中"/found=False) is a successful fetch.
             prior_failures = self.tracking_repository.record_keyword_success(
-                session, keyword, app_id, country, lang
+                session, keyword, app_id, country, lang, platform=platform
             )
             # Only diff on the first sync of the day — a same-day re-sync already compared
             # against the prior day, so re-diffing would re-emit the same rank-change alert.
@@ -689,7 +735,12 @@ class TrackingService:
         def sync_one(item) -> bool:
             try:
                 self.sync_keyword_now(
-                    item.keyword, item.app_id, country=item.country, lang=item.lang, collector=sink
+                    item.keyword,
+                    item.app_id,
+                    country=item.country,
+                    lang=item.lang,
+                    collector=sink,
+                    platform=item.platform,
                 )
                 return True
             except Exception:

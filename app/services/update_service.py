@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import zipfile
@@ -13,6 +12,7 @@ from urllib.request import urlopen
 
 import bootstrap
 from app.constants import GITHUB_REPO
+from app.utils import proc
 
 CODE_TAG = "code"  # the GitHub release tag that carries the hot-patch (app-code.zip)
 
@@ -66,14 +66,14 @@ class UpdateService:
         return self._check_patch()
 
     def _git(self, *args: str) -> str:
-        out = subprocess.run(
+        out = proc.run(
             ["git", *args], cwd=self.project_root, capture_output=True, text=True, timeout=30
         )
         return out.stdout.strip()
 
     def _remote_branch(self) -> str:
         for ref in ("origin/main", "origin/master"):
-            check = subprocess.run(
+            check = proc.run(
                 ["git", "rev-parse", "--verify", ref],
                 cwd=self.project_root,
                 capture_output=True,
@@ -166,7 +166,7 @@ class UpdateService:
 
     def git_pull(self) -> tuple[bool, str]:
         try:
-            out = subprocess.run(
+            out = proc.run(
                 ["git", "pull"],
                 cwd=self.project_root,
                 capture_output=True,
@@ -180,7 +180,7 @@ class UpdateService:
     @staticmethod
     def restart() -> None:
         if getattr(sys, "frozen", False):
-            subprocess.Popen([sys.executable])
+            proc.popen([sys.executable])
         else:
             os.execv(sys.executable, [sys.executable, *sys.argv])
         os._exit(0)
