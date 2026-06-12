@@ -9,7 +9,7 @@ import shutil
 import time
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from app.constants import (
     DATA_ERROR_MESSAGE,
@@ -22,6 +22,7 @@ from app.schemas.chart_schema import ChartItem
 from app.schemas.review_schema import ReviewItem
 from app.utils import proc
 from app.utils.install_parser import parse_install_range
+from app.utils.network import urlopen_proxied
 from app.utils.normalize import (
     normalize_app_detail,
     normalize_app_summary,
@@ -88,35 +89,43 @@ class GooglePlayService:
         country: str = "us",
         lang: str = "en",
         limit: int = 20,
+        proxy: str | None = None,
     ) -> list[AppSummary]:
-        try:
-            raw_items = self._run_with_retry(
-                self._search,
-                keyword,
-                max_attempts=3,
-                n_hits=limit,
-                country=country,
-                lang=lang,
-            )
-        except Exception as exc:
+        # The primary path goes through the google_play_scraper library, whose internal
+        # urllib can't be pointed at a per-request proxy — so when a proxy IS requested
+        # (concurrent coverage scan), go straight to the DOM endpoint we fetch ourselves.
+        if proxy:
+            raw_items = self._search_via_dom(keyword, country, lang, limit, proxy)
+        else:
             try:
-                url = (
-                    f"{self._PLAY_BASE_URL}/store/search?"
-                    f"q={quote(keyword)}&c=apps&hl={lang}&gl={country}"
-                )
-                dom = self._run_with_retry(
-                    self._request_text,
-                    url,
+                raw_items = self._run_with_retry(
+                    self._search,
+                    keyword,
                     max_attempts=3,
+                    n_hits=limit,
+                    country=country,
+                    lang=lang,
                 )
-                raw_items = self._parse_search_dom(dom, n_hits=limit)
-            except Exception:
-                raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
+            except Exception as exc:
+                try:
+                    raw_items = self._search_via_dom(keyword, country, lang, limit, None)
+                except Exception:
+                    raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
 
         mapped_items = [item for raw in raw_items if (item := self._try_map_summary(raw)) is not None]
         if not mapped_items:
             raise ServiceError(EMPTY_RESULT_MESSAGE)
         return mapped_items
+
+    def _search_via_dom(self, keyword, country, lang, limit, proxy):
+        """Fetch + parse the Play Store search results HTML directly (the only search
+        path that can run through an explicit proxy)."""
+        url = (
+            f"{self._PLAY_BASE_URL}/store/search?"
+            f"q={quote(keyword)}&c=apps&hl={lang}&gl={country}"
+        )
+        dom = self._run_with_retry(self._request_text, url, max_attempts=3, proxy=proxy)
+        return self._parse_search_dom(dom, n_hits=limit)
 
     def suggest(
         self,
@@ -476,6 +485,7 @@ class GooglePlayService:
         method: str = "GET",
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
+        proxy: str | None = None,
     ) -> str:
         request_headers = headers or {"User-Agent": "Mozilla/5.0"}
         request = Request(
@@ -485,13 +495,16 @@ class GooglePlayService:
             method=method,
         )
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen_proxied(request, timeout=30, proxy=proxy) as response:
                 return response.read().decode("utf-8")
         except Exception:
             curl = shutil.which("curl")
             if not curl:
                 raise
-            args = [curl, "-sS", "-L", "--http1.1", url]
+            args = [curl, "-sS", "-L", "--http1.1"]
+            if proxy:
+                args.extend(["--proxy", proxy])
+            args.append(url)
             for key, value in request_headers.items():
                 args.extend(["-H", f"{key}: {value}"])
             if method.upper() != "GET":

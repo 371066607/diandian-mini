@@ -7,9 +7,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from app.constants import EMPTY_RESULT_MESSAGE, NETWORK_ERROR_MESSAGE, NOT_FOUND_MESSAGE
+from app.utils.network import urlopen_proxied
 from app.schemas.app_schema import AppDetail, AppSummary
 from app.schemas.chart_schema import ChartItem
 from app.schemas.review_schema import ReviewItem
@@ -52,10 +53,12 @@ class AppStoreService:
         country: str = "us",
         lang: str = "en",
         limit: int = 20,
+        proxy: str | None = None,
     ) -> list[AppSummary]:
         data = self._get_json(
             self._SEARCH_URL,
             {"term": keyword, "country": country, "entity": "software", "limit": min(limit, 200)},
+            proxy=proxy,
         )
         results = data.get("results", [])
         if not results:
@@ -166,7 +169,7 @@ class AppStoreService:
         try:
             if self.request_delay_seconds > 0:
                 time.sleep(self.request_delay_seconds)
-            with urlopen(req, timeout=15) as resp:
+            with urlopen_proxied(req, timeout=15) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
         except Exception:
             return []
@@ -300,14 +303,14 @@ class AppStoreService:
         except Exception:
             return None
 
-    def _get_json(self, url: str, params: dict) -> dict:
+    def _get_json(self, url: str, params: dict, proxy: str | None = None) -> dict:
         if params:
             url = f"{url}?{urlencode(params)}"
         req = Request(url, headers=self._HEADERS)
         try:
             if self.request_delay_seconds > 0:
                 time.sleep(self.request_delay_seconds)
-            with urlopen(req, timeout=20) as resp:
+            with urlopen_proxied(req, timeout=20, proxy=proxy) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             raise ServiceError(NETWORK_ERROR_MESSAGE) from exc

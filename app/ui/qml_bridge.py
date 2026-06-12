@@ -7,11 +7,13 @@ from typing import Any
 from PySide6.QtCore import QObject, Property, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from app.config import DATA_DIR
 from app.constants import DEFAULT_SETTINGS
 from app.db.repositories import KeywordRankRepository, SnapshotRepository
 from app.ui.alert_labels import ALERT_SEVERITY_COLORS, alert_severity_label, alert_type_label
 from app.utils.network import apply_proxy_env
 from app.utils.normalize import normalize_app_id, safe_float, safe_int
+from app.utils.proxy_pool import ProxyPool, load_proxies
 from app.utils.time_utils import (
     DEFAULT_SYNC_TIME,
     FREQUENCY_HOURS,
@@ -810,6 +812,15 @@ class QmlBridge(QObject):
         platform = self._platform
         pool_key = (platform, normalize_app_id(app_id), country, lang)
         cached_pool = self._coverage_pools.get(pool_key)
+        # Build a proxy pool from settings + data/proxies.txt. Concurrency is honoured
+        # ONLY when proxies exist — parallel same-IP scraping just multiplies ban risk.
+        proxies = load_proxies(self.services.get("settings_service"), DATA_DIR)
+        proxy_pool = ProxyPool(proxies) if proxies else None
+        max_workers = self._coverage_concurrency() if proxy_pool else 1
+        if proxy_pool:
+            self.statusMessage.emit(
+                f"覆盖扫描启用 {len(proxy_pool)} 个代理 · {max_workers} 并发"
+            )
         self._set_coverage(
             summary="正在分析覆盖关键词，请稍候...",
             running=True,
@@ -832,6 +843,8 @@ class QmlBridge(QObject):
                     limit=50,
                     candidates=candidates,
                     canonical_app_id=canonical,
+                    proxy_pool=proxy_pool,
+                    max_workers=max_workers,
                     progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
                 )
                 return ("ok", result)
@@ -841,6 +854,11 @@ class QmlBridge(QObject):
         # busy=False: a coverage scan runs ~1-2 min, so use inline progress (the
         # CoveragePage shows a bar) instead of blocking the whole UI with the overlay.
         self._run(work, self._on_coverage_done, label="正在分析覆盖关键词...", busy=False)
+
+    def _coverage_concurrency(self) -> int:
+        """Max parallel workers for a proxy-backed coverage scan (clamped 1..16)."""
+        raw = self.services["settings_service"].get("coverage_concurrency", "6")
+        return max(1, min(16, safe_int(raw, 6)))
 
     def _on_coverage_done(self, payload) -> None:
         status, value = payload

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import threading
+
 from app.schemas.app_schema import AppDetail, AppSummary
 from app.services.keyword_coverage_service import KeywordCoverageService
+from app.utils.proxy_pool import ProxyPool
 
 TARGET = "com.test.app"
 
@@ -154,7 +157,7 @@ def test_scan_aborts_after_consecutive_failures():
     candidates = [f"kw{i}" for i in range(20)]
     with pytest.raises(ServiceError):
         service.analyze_coverage("google_play", TARGET, candidates=candidates)
-    assert len(store.searched) == KeywordCoverageService.MAX_CONSECUTIVE_FAILURES
+    assert len(store.searched) == KeywordCoverageService.ABORT_AFTER_FAILURES
 
 
 def test_failure_streak_resets_on_success():
@@ -176,3 +179,72 @@ def test_failure_streak_resets_on_success():
     # alternating failures never reach the cutoff — the scan completes all candidates
     assert store.attempts == len(candidates)
     assert result.candidate_count == len(candidates)
+
+
+class ProxyAwareStore:
+    """Records which proxy each search ran through; ranks a couple of known keywords."""
+
+    RANKS = {"photo editor": 1, "video editor": 12}
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.proxies_used: list[str | None] = []
+
+    def search(self, keyword, country="us", lang="en", limit=50, proxy=None):
+        with self._lock:
+            self.proxies_used.append(proxy)
+        target_rank = self.RANKS.get(keyword)
+        results = []
+        for pos in range(1, min(limit, 20) + 1):
+            app_id = TARGET if pos == target_rank else f"com.other.{pos}"
+            results.append(AppSummary(app_id=app_id))
+        return results
+
+
+def test_concurrent_scan_routes_every_search_through_a_proxy():
+    store = ProxyAwareStore()
+    pool = ProxyPool(["http://p1", "http://p2", "http://p3"])
+    service = KeywordCoverageService(store)
+    candidates = ["photo editor", "video editor", "nope"]
+
+    result = service.analyze_coverage(
+        "google_play", TARGET, limit=50, candidates=candidates,
+        canonical_app_id=TARGET, proxy_pool=pool, max_workers=3,
+    )
+
+    covered = {row["keyword"]: row["rank"] for row in result.covered}
+    assert covered == {"photo editor": 1, "video editor": 12}
+    # concurrency is honoured AND every request went through a proxy (never direct/None)
+    assert len(store.proxies_used) == 3
+    assert all(p is not None for p in store.proxies_used)
+
+
+def test_dead_proxy_is_reported_and_rotated_out():
+    dead = "http://dead"
+
+    class FlakyProxyStore(ProxyAwareStore):
+        def search(self, keyword, country="us", lang="en", limit=50, proxy=None):
+            if proxy == dead:
+                raise RuntimeError("proxy dead")
+            return super().search(keyword, country, lang, limit, proxy=proxy)
+
+    store = FlakyProxyStore()
+    pool = ProxyPool([dead, "http://good"], max_failures=1, cooldown_seconds=999)
+    service = KeywordCoverageService(store)
+
+    result = service.analyze_coverage(
+        "google_play", TARGET, limit=50, candidates=["photo editor"],
+        canonical_app_id=TARGET, proxy_pool=pool, max_workers=1,
+    )
+    # the dead proxy was leased first, failed, and the keyword still resolved via the good one
+    assert result.covered and result.covered[0]["rank"] == 1
+
+
+def test_no_proxy_pool_forces_serial_even_with_high_max_workers():
+    # FakeStore.search has NO proxy kwarg — if the code tried to parallelise/inject a
+    # proxy without a pool it would TypeError. Completing proves the safe-by-design gate.
+    store = FakeStore()
+    service = KeywordCoverageService(store)
+    result = service.analyze_coverage("google_play", TARGET, limit=50, max_workers=8)
+    covered = {row["keyword"] for row in result.covered}
+    assert "photo editor" in covered

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from app.schemas.app_schema import AppDetail
 from app.services.google_play_service import ServiceError
@@ -56,10 +58,15 @@ class KeywordCoverageService:
     around it — not an exhaustive corpus scan.
     """
 
-    # Consecutive per-keyword search failures after which the scan aborts: one keyword
-    # failing is noise, an unbroken run means the network/store is down and every further
-    # candidate would just grind the full retry chain to report a false "0 covered".
-    MAX_CONSECUTIVE_FAILURES = 5
+    # How many keywords may fail BEFORE the first success before the scan gives up: one
+    # keyword failing is noise, but an opening run of nothing-but-failures means the
+    # network/store is down and every further candidate would just grind the full retry
+    # chain to report a false "0 covered". Once anything has succeeded the scan never
+    # aborts — flaky free proxies can drop individual keywords without killing the run.
+    ABORT_AFTER_FAILURES = 5
+    # Distinct proxies to try for one keyword before recording it as failed — bounds the
+    # cost of a keyword hitting several dead proxies in a row.
+    MAX_PROXY_ATTEMPTS = 3
 
     def __init__(self, google_play_service, app_store_service=None):
         self.google_play_service = google_play_service
@@ -130,6 +137,8 @@ class KeywordCoverageService:
         max_candidates: int = 120,
         candidates: list[str] | None = None,
         canonical_app_id: str | None = None,
+        proxy_pool=None,
+        max_workers: int = 1,
         progress=None,
     ) -> KeywordCoverageResult:
         """For each candidate keyword, search and keep it if the app ranks within
@@ -140,8 +149,17 @@ class KeywordCoverageService:
         canonical id from ``app_detail``. Callers re-running a scan can pass back both
         ``candidates`` and ``canonical_app_id`` (from the prior result) to skip the
         detail + autocomplete requests entirely.
+
+        Concurrency is gated on a proxy pool: with ``proxy_pool`` set, up to
+        ``max_workers`` keywords are searched in parallel, each request leased a proxy so
+        the load is spread across IPs. WITHOUT a usable pool the scan stays strictly
+        serial regardless of ``max_workers`` — parallelising same-IP scraping just
+        multiplies the rate-limit/ban risk, so that combination is refused by design.
         """
         store = self._store(platform)
+        has_proxies = proxy_pool is not None and proxy_pool.has_proxies()
+        workers = max(1, int(max_workers)) if has_proxies else 1
+
         canonical = (canonical_app_id or "").strip()
         if candidates is None:
             if progress:
@@ -152,30 +170,50 @@ class KeywordCoverageService:
                 store, detail, country, lang, max_candidates=max_candidates
             )
         targets = {t for t in (normalize_app_id(app_id), normalize_app_id(canonical)) if t}
-        covered: list[dict] = []
-        consecutive_failures = 0
         total = len(candidates)
-        for index, keyword in enumerate(candidates, 1):
+
+        covered: list[dict] = []
+        state = {"done": 0, "failures": 0, "successes": 0}
+        lock = threading.Lock()
+        stop = threading.Event()
+
+        def scan_one(keyword: str) -> None:
+            if stop.is_set():
+                return
+            rank, ok = self._search_keyword(
+                store, keyword, country, lang, limit, targets,
+                proxy_pool if has_proxies else None,
+            )
+            with lock:
+                state["done"] += 1
+                done = state["done"]
+                if ok:
+                    state["successes"] += 1
+                    if rank is not None:
+                        covered.append({"keyword": keyword, "rank": rank})
+                else:
+                    state["failures"] += 1
+                    # Only an opening run of pure failure (network down) aborts the scan;
+                    # once anything has succeeded, drop flaky keywords silently.
+                    if state["successes"] == 0 and state["failures"] >= self.ABORT_AFTER_FAILURES:
+                        stop.set()
             if progress:
-                progress(f"覆盖检测 {index}/{total}：{keyword}", index / total if total else 1.0)
-            try:
-                results = store.search(keyword, country=country, lang=lang, limit=limit)
-            except Exception as exc:
-                # A single keyword's search failing must not abort the scan, but an
-                # unbroken failure run means the network is down — abort loudly instead
-                # of grinding every remaining candidate into a false "0 covered".
-                consecutive_failures += 1
-                if consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
-                    raise ServiceError(
-                        f"连续 {consecutive_failures} 个关键词检索失败，已中止扫描，"
-                        "请检查网络后重试。"
-                    ) from exc
-                continue
-            consecutive_failures = 0
-            for rank, item in enumerate(results, 1):
-                if normalize_app_id(getattr(item, "app_id", None)) in targets:
-                    covered.append({"keyword": keyword, "rank": rank})
+                progress(f"覆盖检测 {done}/{total}：{keyword}", done / total if total else 1.0)
+
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                list(executor.map(scan_one, candidates))
+        else:
+            for keyword in candidates:
+                if stop.is_set():
                     break
+                scan_one(keyword)
+
+        if stop.is_set() and state["successes"] == 0:
+            raise ServiceError(
+                f"前 {state['failures']} 个关键词检索均失败，已中止扫描，请检查网络/代理后重试。"
+            )
+
         covered.sort(key=lambda row: row["rank"])
         return KeywordCoverageResult(
             platform,
@@ -187,6 +225,40 @@ class KeywordCoverageService:
             limit,
             canonical_app_id=canonical or None,
         )
+
+    def _search_keyword(self, store, keyword, country, lang, limit, targets, proxy_pool):
+        """Search one keyword and return ``(rank_or_None, ok)``. ``ok=False`` means the
+        keyword could not be fetched at all (every attempt failed) — distinct from a
+        successful search where the app simply didn't rank (rank None, ok True)."""
+        if proxy_pool is None:
+            try:
+                results = store.search(keyword, country=country, lang=lang, limit=limit)
+            except Exception:
+                return None, False
+            return self._rank_of(results, targets), True
+
+        attempts = min(self.MAX_PROXY_ATTEMPTS, len(proxy_pool))
+        for _ in range(max(1, attempts)):
+            proxy = proxy_pool.lease()
+            if proxy is None:
+                break  # every proxy cooling down — treat as a fetch failure this round
+            try:
+                results = store.search(
+                    keyword, country=country, lang=lang, limit=limit, proxy=proxy
+                )
+            except Exception:
+                proxy_pool.report_bad(proxy)
+                continue
+            proxy_pool.report_ok(proxy)
+            return self._rank_of(results, targets), True
+        return None, False
+
+    @staticmethod
+    def _rank_of(results, targets: set[str]) -> int | None:
+        for rank, item in enumerate(results, 1):
+            if normalize_app_id(getattr(item, "app_id", None)) in targets:
+                return rank
+        return None
 
     # --- seed extraction -----------------------------------------------------
 
