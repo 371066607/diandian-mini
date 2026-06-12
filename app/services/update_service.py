@@ -103,10 +103,22 @@ class UpdateService:
 
         request = Request(
             url,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "DiandianMini"},
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "DiandianMini",
+                # Prevent CDN gzip encoding — avoids IncompleteRead when the
+                # compressed stream is truncated by a proxy or short TCP timeout.
+                "Accept-Encoding": "identity",
+            },
         )
-        with urlopen(request, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                with urlopen(request, timeout=self.timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+        raise last_exc  # type: ignore[misc]
 
     def _check_patch(self) -> UpdateResult:
         local = self.current_version()
