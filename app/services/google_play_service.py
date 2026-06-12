@@ -91,26 +91,12 @@ class GooglePlayService:
         limit: int = 20,
         proxy: str | None = None,
     ) -> list[AppSummary]:
-        # The primary path goes through the google_play_scraper library, whose internal
-        # urllib can't be pointed at a per-request proxy — so when a proxy IS requested
-        # (concurrent coverage scan), go straight to the DOM endpoint we fetch ourselves.
-        if proxy:
+        # The google_play_scraper library path consistently fails with IncompleteRead
+        # against current Play Store responses — skip it and go straight to DOM.
+        try:
             raw_items = self._search_via_dom(keyword, country, lang, limit, proxy)
-        else:
-            try:
-                raw_items = self._run_with_retry(
-                    self._search,
-                    keyword,
-                    max_attempts=3,
-                    n_hits=limit,
-                    country=country,
-                    lang=lang,
-                )
-            except Exception as exc:
-                try:
-                    raw_items = self._search_via_dom(keyword, country, lang, limit, None)
-                except Exception:
-                    raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
+        except Exception as exc:
+            raise ServiceError(NETWORK_ERROR_MESSAGE) from exc
 
         mapped_items = [item for raw in raw_items if (item := self._try_map_summary(raw)) is not None]
         if not mapped_items:
