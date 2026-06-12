@@ -45,7 +45,7 @@ class SettingsPage(BasePage):
 
     def _on_update_checked(self, result) -> None:
         if result.error:
-            self.update_status.setText(f"检查更新失败：{result.error}")
+            self.update_status.setText("检查更新失败：网络连接异常，请稍后重试。")
             return
         if result.mode == "git":
             self._handle_git_result(result)
