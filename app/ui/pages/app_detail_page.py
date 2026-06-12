@@ -105,12 +105,16 @@ class AppDetailPage(BasePage):
         self.icon_label.setPixmap(placeholder_pixmap("ICON"))
         self.icon_label.setFixedSize(96, 96)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _sel = Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
         self.name_label = QLabel("等待加载应用详情")
         self.name_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #0F172A;")
+        self.name_label.setTextInteractionFlags(_sel)
         self.meta_label = QLabel("app_id / developer / category")
         self.meta_label.setStyleSheet("color: #64748B; font-size: 13px;")
+        self.meta_label.setTextInteractionFlags(_sel)
         self.summary_note_label = QLabel("评分 / 评论数 / 安装量 / 版本")
         self.summary_note_label.setStyleSheet("color: #1E293B; font-size: 14px;")
+        self.summary_note_label.setTextInteractionFlags(_sel)
         identity = QVBoxLayout()
         identity.setSpacing(6)
         identity.addWidget(self.name_label)
@@ -216,6 +220,7 @@ class AppDetailPage(BasePage):
         for plain_label in (self.dev_address_label, self.dev_phone_label, self.dev_country_label):
             plain_label.setWordWrap(True)
             plain_label.setStyleSheet("font-size: 13px; color: #1E293B;")
+            plain_label.setTextInteractionFlags(_sel)
             dev_layout.addWidget(plain_label)
         dev_layout.addStretch()
 
@@ -256,6 +261,7 @@ class AppDetailPage(BasePage):
         self.content_rating_desc_label = QLabel("内容分级说明：-")
         self.content_rating_desc_label.setWordWrap(True)
         self.content_rating_desc_label.setStyleSheet("font-size: 13px; color: #475569;")
+        self.content_rating_desc_label.setTextInteractionFlags(_sel)
         info_layout.addWidget(self.content_rating_desc_label)
         self.data_safety_label = QLabel("数据安全：-")
         self.data_safety_label.setWordWrap(True)
@@ -389,6 +395,9 @@ class AppDetailPage(BasePage):
         value = QLabel("-")
         value.setWordWrap(True)
         value.setStyleSheet("font-size: 16px; font-weight: 700; color: #0F172A; border: none;")
+        value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
         layout.addWidget(label)
         layout.addWidget(value)
         return chip, value
