@@ -101,23 +101,36 @@ class UpdateService:
         url = f"https://api.github.com/repos/{self.repo}/releases/tags/{CODE_TAG}"
         from urllib.request import Request
 
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "DiandianMini",
-                # Prevent CDN gzip encoding — avoids IncompleteRead when the
-                # compressed stream is truncated by a proxy or short TCP timeout.
-                "Accept-Encoding": "identity",
-            },
-        )
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "DiandianMini",
+            "Accept-Encoding": "identity",
+        }
+        # urllib path — 3 attempts
         last_exc: Exception | None = None
-        for attempt in range(3):
+        for _ in range(3):
             try:
-                with urlopen(request, timeout=self.timeout) as resp:
+                with urlopen(Request(url, headers=headers), timeout=self.timeout) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+
+        # curl fallback — same as _request_text; handles IncompleteRead / RemoteDisconnected
+        curl = shutil.which("curl")
+        if curl:
+            try:
+                result = proc.run(
+                    [curl, "-sS", "-L", "--http1.1",
+                     "-H", f"Accept: {headers['Accept']}",
+                     "-H", f"User-Agent: {headers['User-Agent']}",
+                     url],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if result.returncode == 0 and result.stdout:
+                    return json.loads(result.stdout)
+            except Exception:  # noqa: BLE001
+                pass
+
         raise last_exc  # type: ignore[misc]
 
     def _check_patch(self) -> UpdateResult:
