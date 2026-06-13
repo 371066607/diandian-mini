@@ -165,12 +165,28 @@ class UpdateService:
 
         if progress:
             progress("正在下载更新补丁…", None)
-        # The patch is small (hundreds of KB); read it in one shot. A bounded
-        # read(n) loop can truncate the redirected CDN response, corrupting the zip.
-        with urlopen(self.patch_zip_url(), timeout=60) as resp:
-            data = resp.read()
-        with open(zip_path, "wb") as fh:
-            fh.write(data)
+        patch_url = self.patch_zip_url()
+        data: bytes | None = None
+        try:
+            with urlopen(patch_url, timeout=60) as resp:
+                data = resp.read()
+        except Exception:  # noqa: BLE001
+            pass
+        if not data:
+            curl = shutil.which("curl")
+            if not curl:
+                raise RuntimeError("urllib 下载失败且系统中未找到 curl，无法下载补丁")
+            completed = proc.run(
+                [curl, "-sS", "-L", "--http1.1", "-o", zip_path, patch_url],
+                capture_output=True, text=True, timeout=120,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(f"curl 下载补丁失败：{completed.stderr[:200]}")
+            # curl wrote directly to zip_path — skip the write step below
+            data = b""  # sentinel: file already written
+        if data:
+            with open(zip_path, "wb") as fh:
+                fh.write(data)
 
         if progress:
             progress("正在应用补丁…", None)
