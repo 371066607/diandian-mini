@@ -33,6 +33,19 @@ class FakeStore:
         }
         return table.get(term, [])
 
+    def suggest_nested(self, term, country="us", lang="en", count=5) -> dict[str, list[str]]:
+        # Each first-level suggestion expands one level further; the level-2 phrases
+        # are reachable ONLY through deep mining, never through flat ``suggest``.
+        table = {
+            "photo editor": {
+                "photo editor free": ["photo editor free download"],
+                "photo editor background": ["photo editor background changer"],
+            },
+            "photo": {"photo collage": ["photo collage maker"]},
+            "editor": {"video editor": ["video editor with music"]},
+        }
+        return table.get(term, {})
+
     def search(self, keyword, country="us", lang="en", limit=50) -> list[AppSummary]:
         self.searched.append(keyword)
         ranks = {"photo editor": 1, "photo collage": 3, "video editor": 12}
@@ -53,6 +66,29 @@ def test_discover_candidates_seeds_from_metadata_and_autocomplete():
     assert "editor" in candidates
     assert "video editor" in candidates  # only reachable via suggest("editor")
     assert len(candidates) == len(set(candidates))  # deduped
+
+
+def test_deep_discovery_expands_nested_autocomplete():
+    store = FakeStore()
+    service = KeywordCoverageService(store)
+    shallow = service.discover_candidates("google_play", TARGET)
+    deep = service.discover_candidates("google_play", TARGET, deep=True)
+    # A level-2 phrase is reachable ONLY via suggest_nested, never via flat suggest.
+    assert "photo editor background changer" not in shallow
+    assert "photo editor background changer" in deep
+    assert "photo editor background" in deep  # the level-1 parent is kept too
+    assert len(deep) == len(set(deep))  # deduped
+
+
+def test_deep_discovery_falls_back_to_flat_when_nested_empty():
+    class NoNestedStore(FakeStore):
+        def suggest_nested(self, term, country="us", lang="en", count=5):
+            return {}  # nested backend yields nothing (e.g. a network hiccup)
+
+    service = KeywordCoverageService(NoNestedStore())
+    deep = service.discover_candidates("google_play", TARGET, deep=True)
+    # with nested empty, deep mode must still fall back to the flat expansion
+    assert "video editor" in deep  # only reachable via flat suggest("editor")
 
 
 def test_analyze_coverage_keeps_only_ranked_keywords_sorted_by_rank():

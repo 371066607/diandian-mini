@@ -53,6 +53,13 @@ class GooglePlayService:
         "grossing": "topgrossing",
     }
 
+    # gplay_scraper supports pluggable HTTP clients. A TLS-fingerprinting client
+    # (curl_cffi) impersonates a real browser, surviving the bot-blocking /
+    # IncompleteRead failures the plain-urllib path keeps hitting. Prefer the most
+    # resilient available client; fall back to the library default (None) when the
+    # optional backend isn't bundled.
+    _GPLAY_HTTP_CLIENTS = ("curl_cffi", None)
+
     def __init__(self, request_delay_seconds: float = 1.0) -> None:
         self.request_delay_seconds = max(0.0, request_delay_seconds)
         try:
@@ -74,9 +81,30 @@ class GooglePlayService:
 
         try:
             from gplay_scraper import GPlayScraper
-            self._gplay_scraper = GPlayScraper()
+            self._gplay_scraper, self._gplay_http_client = self._build_gplay_scraper(
+                GPlayScraper
+            )
         except ImportError:  # pragma: no cover - optional dependency
             self._gplay_scraper = None
+            self._gplay_http_client = None
+
+    @classmethod
+    def _build_gplay_scraper(cls, gplay_scraper_cls):
+        """Instantiate GPlayScraper preferring a resilient HTTP client, returning
+        ``(instance, active_client_name)``. Best-effort: a client whose backend
+        isn't importable or fails to init is skipped for the next candidate, so a
+        missing optional dependency degrades to the library default instead of
+        breaking construction."""
+        import importlib.util
+
+        for client in cls._GPLAY_HTTP_CLIENTS:
+            if client is not None and importlib.util.find_spec(client) is None:
+                continue
+            try:
+                return gplay_scraper_cls(http_client=client), client
+            except Exception:  # noqa: BLE001 - try the next client on any init error
+                continue
+        return gplay_scraper_cls(), None
 
     def configure(self, *, request_delay_seconds: float | None = None) -> None:
         """Update runtime request tuning (called when settings change)."""
@@ -134,6 +162,36 @@ class GooglePlayService:
         except Exception:
             return []
         return [h.strip() for h in (hints or []) if isinstance(h, str) and h.strip()]
+
+    def suggest_nested(
+        self,
+        term: str,
+        country: str = "us",
+        lang: str = "en",
+        count: int = 5,
+    ) -> dict[str, list[str]]:
+        """Two-level autocomplete expansion: each suggestion mapped to ITS own
+        suggestions ("photo editor" -> ["photo editor free", ...]). Yields a much
+        deeper keyword set than the flat ``suggest`` at the cost of ~count× more
+        requests, so callers opt in for deep mining only. Best-effort: returns {}
+        when the gplay_scraper backend or the network is unavailable."""
+        term = (term or "").strip()
+        if not term or self._gplay_scraper is None:
+            return {}
+        try:
+            nested = self._gplay_scraper.suggest_nested(
+                term, count=max(1, count), lang=lang, country=country or ""
+            )
+        except Exception:
+            return {}
+        out: dict[str, list[str]] = {}
+        for parent, children in (nested or {}).items():
+            if not isinstance(parent, str) or not parent.strip():
+                continue
+            out[parent.strip()] = [
+                c.strip() for c in (children or []) if isinstance(c, str) and c.strip()
+            ]
+        return out
 
     def app_detail(
         self,

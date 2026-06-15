@@ -797,8 +797,10 @@ class QmlBridge(QObject):
     def coverage(self) -> dict[str, Any]:
         return self._coverage
 
-    @Slot(str, str, str)
-    def discoverCoverage(self, app_id: str, country: str, lang: str) -> None:
+    @Slot(str, str, str, bool)
+    def discoverCoverage(
+        self, app_id: str, country: str, lang: str, deep: bool = False
+    ) -> None:
         if self._coverage.get("running"):
             self.statusMessage.emit("已有覆盖扫描进行中，请等待其完成。")
             return
@@ -810,7 +812,9 @@ class QmlBridge(QObject):
         country = country.strip() or "us"
         lang = lang.strip() or "en"
         platform = self._platform
-        pool_key = (platform, normalize_app_id(app_id), country, lang)
+        # deep scans expand autocomplete one level further, so they build a different
+        # (larger) candidate set — cache them separately from shallow scans.
+        pool_key = (platform, normalize_app_id(app_id), country, lang, deep)
         cached_pool = self._coverage_pools.get(pool_key)
         # Build a proxy pool from settings + data/proxies.txt. Concurrency is honoured
         # ONLY when proxies exist — parallel same-IP scraping just multiplies ban risk.
@@ -822,7 +826,7 @@ class QmlBridge(QObject):
                 f"覆盖扫描启用 {len(proxy_pool)} 个代理 · {max_workers} 并发"
             )
         self._set_coverage(
-            summary="正在分析覆盖关键词，请稍候...",
+            summary="正在深度挖掘覆盖关键词，请稍候..." if deep else "正在分析覆盖关键词，请稍候...",
             running=True,
             app_id=app_id,
             country=country,
@@ -841,6 +845,7 @@ class QmlBridge(QObject):
                     country=country,
                     lang=lang,
                     limit=50,
+                    deep=deep,
                     candidates=candidates,
                     canonical_app_id=canonical,
                     proxy_pool=proxy_pool,

@@ -87,12 +87,13 @@ class KeywordCoverageService:
         lang: str = "en",
         max_seeds: int = 12,
         max_candidates: int = 120,
+        deep: bool = False,
     ) -> list[str]:
         """app metadata -> seed terms -> autocomplete expansion -> candidate keywords."""
         store = self._store(platform)
         detail = store.app_detail(app_id, country=country, lang=lang)
         return self._candidates_from_detail(
-            store, detail, country, lang, max_seeds, max_candidates
+            store, detail, country, lang, max_seeds, max_candidates, deep=deep
         )
 
     def _candidates_from_detail(
@@ -103,6 +104,7 @@ class KeywordCoverageService:
         lang: str,
         max_seeds: int = 12,
         max_candidates: int = 120,
+        deep: bool = False,
     ) -> list[str]:
         seeds = self._seed_terms(detail, max_seeds)
 
@@ -115,16 +117,34 @@ class KeywordCoverageService:
                 seen.add(t)
                 pool.append(t)
 
-        for seed in seeds:
-            _add(seed)
-        # expand each seed through the store's autocomplete
-        for seed in seeds:
-            if len(pool) >= max_candidates:
-                break
+        def _flat(seed: str) -> None:
             for hint in store.suggest(seed, country=country, lang=lang, count=8):
                 _add(hint)
                 if len(pool) >= max_candidates:
-                    break
+                    return
+
+        for seed in seeds:
+            _add(seed)
+        # expand each seed through the store's autocomplete. deep mode goes one level
+        # further — each suggestion is itself expanded via suggest_nested — for a much
+        # richer pool at ~count× the requests; it falls back to the flat expansion when
+        # the store backend lacks nested support or a nested call comes back empty.
+        nested_fn = getattr(store, "suggest_nested", None) if deep else None
+        for seed in seeds:
+            if len(pool) >= max_candidates:
+                break
+            nested = nested_fn(seed, country=country, lang=lang, count=6) if nested_fn else None
+            if nested:
+                for parent, children in nested.items():
+                    _add(parent)
+                    for child in children:
+                        _add(child)
+                        if len(pool) >= max_candidates:
+                            break
+                    if len(pool) >= max_candidates:
+                        break
+            else:
+                _flat(seed)
         return pool[:max_candidates]
 
     def analyze_coverage(
@@ -135,6 +155,7 @@ class KeywordCoverageService:
         lang: str = "en",
         limit: int = 50,
         max_candidates: int = 120,
+        deep: bool = False,
         candidates: list[str] | None = None,
         canonical_app_id: str | None = None,
         proxy_pool=None,
@@ -167,7 +188,7 @@ class KeywordCoverageService:
             detail = store.app_detail(app_id, country=country, lang=lang)
             canonical = canonical or str(detail.app_id or "").strip()
             candidates = self._candidates_from_detail(
-                store, detail, country, lang, max_candidates=max_candidates
+                store, detail, country, lang, max_candidates=max_candidates, deep=deep
             )
         targets = {t for t in (normalize_app_id(app_id), normalize_app_id(canonical)) if t}
         total = len(candidates)

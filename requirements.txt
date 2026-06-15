@@ -3,6 +3,7 @@ SQLAlchemy==2.0.41
 APScheduler==3.11.0
 google-play-scraper==1.2.7
 gplay-scraper==1.0.6
+curl_cffi==0.15.0
 pydantic==2.11.5
 python-dateutil==2.9.0.post0
 matplotlib==3.10.3

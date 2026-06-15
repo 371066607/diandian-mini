@@ -1876,14 +1876,22 @@ ApplicationWindow {
                         placeholderText: root.isAppStore ? "App ID（如 587366035）/ Bundle ID" : "com.whatsapp"
                         width: 300
                         // Same gate as the button — Enter must not start a second concurrent scan
-                        onAccepted: if (!coveragePage.cov.running) root.bridge.discoverCoverage(text, covCountry.text, covLang.text)
+                        onAccepted: if (!coveragePage.cov.running) root.bridge.discoverCoverage(text, covCountry.text, covLang.text, covDeep.checked)
                     }
                     Field { id: covCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: covLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
+                    CheckBox {
+                        id: covDeep
+                        text: "深度挖掘"
+                        enabled: !coveragePage.cov.running
+                        ToolTip.text: "对每个补全词再展开一层（suggest_nested），候选词更多更深，但请求更多、更慢。"
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 400
+                    }
                     PrimaryButton {
                         text: coveragePage.cov.running ? "分析中..." : "发现覆盖关键词"
                         enabled: !coveragePage.cov.running
-                        onClicked: root.bridge.discoverCoverage(covApp.text, covCountry.text, covLang.text)
+                        onClicked: root.bridge.discoverCoverage(covApp.text, covCountry.text, covLang.text, covDeep.checked)
                     }
                     SecondaryButton {
                         text: "加入监控（选中词）"

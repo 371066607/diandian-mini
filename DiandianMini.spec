@@ -4,18 +4,30 @@
 # the update checker can compare against the published code patch.
 import os
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = [("code_version.txt", ".")] if os.path.exists("code_version.txt") else []
 # The QML UI is loaded from the filesystem at runtime (app/ui/qml_app.py), so the
 # .qml sources must ship as data files — collect_submodules only covers .py modules.
 datas += [("app/qml", "app/qml")]
 hiddenimports = collect_submodules("app")
+binaries = []
+
+# curl_cffi ships a compiled libcurl-impersonate backend + CA bundle that
+# PyInstaller's import follower misses on its own; collect them so the resilient
+# HTTP client (see GooglePlayService) actually works inside the packaged app.
+try:
+    _cc_datas, _cc_binaries, _cc_hidden = collect_all("curl_cffi")
+    datas += _cc_datas
+    binaries += _cc_binaries
+    hiddenimports += _cc_hidden
+except Exception:
+    pass
 
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
