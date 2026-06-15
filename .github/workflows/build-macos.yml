@@ -6,12 +6,13 @@ name: build-macos
 # For Python-only changes skip this and use publish-code-patch instead.
 #
 # 双架构分别打包（互不兼容，用户按自己芯片下载对应的那个）：
-#   • DiandianMini-Intel.dmg         —— Intel(x86_64)，在 macos-13 运行器构建
-#   • DiandianMini-AppleSilicon.dmg  —— Apple Silicon(arm64)，在 macos-14 运行器构建
-# 两个包都原生运行；两者都要求 macOS 13+（PySide6 6.10 的最低系统要求）。
-# 不做 universal2 单包：matplotlib / pydantic-core 等依赖没有 universal2 wheel。
-# 客户端「检查更新」只走 code 热补丁(app-code.zip)、不下载 DMG，故拆分 DMG
-# 名称不影响自动更新。
+#   • DiandianMini-AppleSilicon.dmg  —— arm64，在 macos-14 上原生构建
+#   • DiandianMini-Intel.dmg         —— x86_64，在同一台 macos-14(ARM) 上经 Rosetta
+#     交叉构建（python.org 的 universal2 Python + `arch -x86_64`）
+# 全程只用常驻的 macos-14 运行器，彻底摆脱 Intel 运行器(macos-13)排队枯竭的问题。
+# 两个包都要求 macOS 13+（PySide6 6.10 的最低系统要求）。不做 universal2 单包：
+# curl_cffi / matplotlib / pydantic-core 等依赖没有 universal2 wheel。客户端
+# 「检查更新」只走 code 热补丁(app-code.zip)、不下载 DMG，故拆分 DMG 名不影响自动更新。
 
 on:
   workflow_dispatch:
@@ -34,44 +35,62 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13          # Intel
-            arch: x86_64
-            label: Intel
-            asset: DiandianMini-Intel.dmg
-          - runner: macos-14          # Apple Silicon
-            arch: arm64
+          - arch: arm64
             label: AppleSilicon
             asset: DiandianMini-AppleSilicon.dmg
-    runs-on: ${{ matrix.runner }}
+          - arch: x86_64
+            label: Intel
+            asset: DiandianMini-Intel.dmg
+    runs-on: macos-14   # 常驻的 Apple Silicon 运行器；x86_64 经 Rosetta 交叉构建
     steps:
       - uses: actions/checkout@v4
 
+      # --- arm64: 原生 Python（沿用此前已验证可用的路径）---
       - uses: actions/setup-python@v5
+        if: matrix.arch == 'arm64'
         with:
           python-version: "3.12"
+      - name: Use native python (arm64)
+        if: matrix.arch == 'arm64'
+        run: echo "PY=python" >> "$GITHUB_ENV"
+
+      # --- x86_64: python.org 的 universal2 Python，配合 `arch -x86_64` 经 Rosetta 出 x86_64 ---
+      - name: Set up x86_64 Python via Rosetta
+        if: matrix.arch == 'x86_64'
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+          PYVER=3.12.8
+          curl -fsSL -o /tmp/python.pkg \
+            "https://www.python.org/ftp/python/${PYVER}/python-${PYVER}-macos11.pkg"
+          sudo installer -pkg /tmp/python.pkg -target /
+          PYBIN="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+          # Force the universal2 interpreter to run as x86_64 — pip then resolves
+          # x86_64 wheels and PyInstaller emits an x86_64 binary.
+          echo "PY=arch -x86_64 $PYBIN" >> "$GITHUB_ENV"
 
       - name: Stamp code_version.txt
         run: git show -s --format=%ct HEAD > code_version.txt
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          $PY -m pip install --upgrade pip
+          $PY -m pip install -r requirements.txt pyinstaller
 
       - name: Build .app
-        run: pyinstaller --noconfirm --clean DiandianMini.spec
+        run: $PY -m PyInstaller --noconfirm --clean DiandianMini.spec
 
       - name: Verify architecture
-        # 防回归：产物必须是本 matrix 期望的架构，避免误发架构不符、用户打不开的包。
+        # 防回归：产物必须正好是本 matrix 期望的架构，避免误发架构不符、用户打不开的包。
         run: |
           bin=dist/DiandianMini.app/Contents/MacOS/DiandianMini
           echo "架构:"; file "$bin"; lipo -info "$bin" || true
           if ! lipo -info "$bin" | grep -qw "${{ matrix.arch }}"; then
-            echo "::error::打包产物架构不是 ${{ matrix.arch }}（运行器=${{ matrix.runner }}）" >&2
+            echo "::error::打包产物架构不是 ${{ matrix.arch }}（label=${{ matrix.label }}）" >&2
             exit 1
           fi
 
       - name: Smoke-test bundled binary
+        # x86_64 二进制在 ARM 上由 Rosetta 自动执行，无需 arch 前缀。
         run: ./dist/DiandianMini.app/Contents/MacOS/DiandianMini --smoke-test
 
       - name: Create DMG
