@@ -1,9 +1,18 @@
 name: build-macos
 
-# Full macOS app bundle (.dmg). Publishes to the `macos` release tag (stable
-# download URL) and simultaneously syncs the `code` hot-patch so existing users
-# get the update automatically without re-downloading the full package.
+# Full macOS app bundles (.dmg), built per-architecture and published to the
+# `macos` release tag (stable download URL), plus the `code` hot-patch sync so
+# existing users auto-update without re-downloading the full package.
 # For Python-only changes skip this and use publish-code-patch instead.
+#
+# 双架构分别打包（互不兼容，用户按自己芯片下载对应的那个）：
+#   • DiandianMini-Intel.dmg         —— Intel(x86_64)，在 macos-13 运行器构建
+#   • DiandianMini-AppleSilicon.dmg  —— Apple Silicon(arm64)，在 macos-14 运行器构建
+# 两个包都原生运行；两者都要求 macOS 13+（PySide6 6.10 的最低系统要求）。
+# 不做 universal2 单包：matplotlib / pydantic-core 等依赖没有 universal2 wheel。
+# 客户端「检查更新」只走 code 热补丁(app-code.zip)、不下载 DMG，故拆分 DMG
+# 名称不影响自动更新。
+
 on:
   workflow_dispatch:
     inputs:
@@ -20,7 +29,20 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    name: build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-13          # Intel
+            arch: x86_64
+            label: Intel
+            asset: DiandianMini-Intel.dmg
+          - runner: macos-14          # Apple Silicon
+            arch: arm64
+            label: AppleSilicon
+            asset: DiandianMini-AppleSilicon.dmg
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +61,16 @@ jobs:
       - name: Build .app
         run: pyinstaller --noconfirm --clean DiandianMini.spec
 
+      - name: Verify architecture
+        # 防回归：产物必须是本 matrix 期望的架构，避免误发架构不符、用户打不开的包。
+        run: |
+          bin=dist/DiandianMini.app/Contents/MacOS/DiandianMini
+          echo "架构:"; file "$bin"; lipo -info "$bin" || true
+          if ! lipo -info "$bin" | grep -qw "${{ matrix.arch }}"; then
+            echo "::error::打包产物架构不是 ${{ matrix.arch }}（运行器=${{ matrix.runner }}）" >&2
+            exit 1
+          fi
+
       - name: Smoke-test bundled binary
         run: ./dist/DiandianMini.app/Contents/MacOS/DiandianMini --smoke-test
 
@@ -54,7 +86,7 @@ jobs:
                 -volname "DiandianMini" \
                 -srcfolder dist/DiandianMini.app \
                 -ov -format UDZO \
-                dist/DiandianMini.dmg; then
+                "dist/${{ matrix.asset }}"; then
               echo "DMG created on attempt $attempt"
               break
             fi
@@ -65,9 +97,32 @@ jobs:
             echo "hdiutil attempt $attempt hit a transient error, retrying in 8s..."
             sleep 8
           done
-          echo "DMG size: $(du -sh dist/DiandianMini.dmg | cut -f1)"
+          echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
-      - name: Publish DMG to `macos` release
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ matrix.label }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build              # 等两个架构都构建成功才发布，避免发出半套包
+    runs-on: ubuntu-latest    # gh / zip 跨平台可用，发布步骤与架构无关
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp code_version.txt
+        # 与 build 阶段同一 HEAD，stamp 出的版本号一致
+        run: git show -s --format=%ct HEAD > code_version.txt
+
+      - name: Download DMG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish DMGs to `macos` release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,12 +130,13 @@ jobs:
           d=$(git show -s --date=format:'%Y.%m.%d.%H%M' --format=%cd HEAD)
           cl="${{ github.event.inputs.changelog }}"
           [ -z "$cl" ] && cl="新版本发布"
-          notes=$(printf 'codever:%s\nchangelog:%s\n\n首次使用请下载 DiandianMini.dmg 安装。\n已安装用户会通过热更新自动升级，无需重新下载。' "$ver" "$cl")
+          notes=$(printf 'codever:%s\nchangelog:%s\n\n首次使用请按你的 Mac 芯片下载对应安装包：\n• Apple 芯片(M1/M2/M3…) → DiandianMini-AppleSilicon.dmg\n• Intel 芯片 → DiandianMini-Intel.dmg\n不确定芯片？点左上角  →「关于本机」，看「芯片/处理器」一栏。\n已安装用户会通过热更新自动升级，无需重新下载。' "$ver" "$cl")
           gh release delete macos --yes 2>/dev/null || true
           gh release create macos \
             --title "macOS 安装包 · v$d" \
             --notes "$notes" \
-            dist/DiandianMini.dmg
+            artifacts/DiandianMini-Intel.dmg \
+            artifacts/DiandianMini-AppleSilicon.dmg
 
       - name: Sync code hot-patch
         env:
