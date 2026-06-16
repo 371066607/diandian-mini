@@ -439,6 +439,42 @@ ApplicationWindow {
         }
     }
 
+    // Themed checkbox. The raw Fusion CheckBox renders as an unstyled dark square
+    // with a hard-to-see label that clashes with Field/Button — give it the same
+    // rounded, blue-accent look: a visible box + checkmark + readable text label.
+    component AppCheck: CheckBox {
+        id: ck
+        height: 38
+        spacing: 8
+        font.pixelSize: 13
+        indicator: Rectangle {
+            implicitWidth: 18
+            implicitHeight: 18
+            x: ck.leftPadding
+            y: ck.height / 2 - height / 2
+            radius: 5
+            color: ck.checked ? "#2563EB" : "white"
+            border.color: ck.checked ? "#2563EB" : (ck.hovered ? "#94A3B8" : "#CBD5E1")
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+            Text {
+                anchors.centerIn: parent
+                text: "✓"
+                color: "white"
+                font.pixelSize: 13
+                font.bold: true
+                visible: ck.checked
+            }
+        }
+        contentItem: Text {
+            text: ck.text
+            color: ck.enabled ? "#1E293B" : "#94A3B8"
+            font: ck.font
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: ck.indicator.width + ck.spacing
+        }
+    }
+
     component ToolbarFlow: Flow {
         Layout.fillWidth: true
         spacing: 10
@@ -1265,7 +1301,7 @@ ApplicationWindow {
                     Label { text: "代理"; color: "#334155" }
                     Field { id: setProxy; text: textOr(root.bridge.settings.proxy, ""); Layout.fillWidth: true }
                     Label { text: "定时任务"; color: "#334155" }
-                    CheckBox { id: setScheduler; text: "启用"; checked: textOr(root.bridge.settings.scheduler_enabled, "true") === "true" }
+                    AppCheck { id: setScheduler; text: "启用"; checked: textOr(root.bridge.settings.scheduler_enabled, "true") === "true" }
                 }
                 PrimaryButton {
                     text: "保存设置"
@@ -1880,7 +1916,7 @@ ApplicationWindow {
                     }
                     Field { id: covCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: covLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
-                    CheckBox {
+                    AppCheck {
                         id: covDeep
                         text: "深度挖掘"
                         enabled: !coveragePage.cov.running
