@@ -164,6 +164,34 @@ class KeywordRankModel(Base):
     raw_json: Mapped[str | None] = mapped_column(Text)
 
 
+class KeywordCorpusModel(Base):
+    """Self-accumulating keyword pool, scoped per (platform, country, lang). Every
+    coverage scan both feeds this table (candidates, competitor terms, soup hits) and
+    reads from it (token-overlapping rows enrich later scans) — so the candidate pool
+    grows richer the more apps in a locale get scanned. ``confirmed`` marks a keyword
+    that was actually validated as a real coverage hit (highest-value seed)."""
+
+    __tablename__ = "keyword_corpus"
+    __table_args__ = (
+        UniqueConstraint("platform", "country", "lang", "keyword"),
+        Index("ix_keyword_corpus_lookup", "platform", "country", "lang", "confirmed"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    platform: Mapped[str] = mapped_column(String, default="google_play", nullable=False)
+    country: Mapped[str] = mapped_column(String, default="us", nullable=False)
+    lang: Mapped[str] = mapped_column(String, default="en", nullable=False)
+    keyword: Mapped[str] = mapped_column(String, nullable=False)
+    # where it first entered the pool: seed / autocomplete / soup / similar / covered
+    source: Mapped[str | None] = mapped_column(String)
+    # 1 once the keyword was verified to actually surface an app within the rank limit
+    confirmed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # how many scans have surfaced this keyword — a cheap relevance/popularity signal
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[str] = mapped_column(String, nullable=False)
+    last_seen_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class ChartRankSnapshotModel(Base):
     __tablename__ = "chart_rank_snapshots"
     __table_args__ = (

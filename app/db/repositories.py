@@ -8,6 +8,7 @@ from app.db.models import (
     AppSnapshotModel,
     ChartRankSnapshotModel,
     ChartSnapshotModel,
+    KeywordCorpusModel,
     KeywordRankModel,
     ReviewModel,
     SettingModel,
@@ -1441,3 +1442,110 @@ class TrackingRepository:
                 .values(consecutive_failures=0)
             )
         return prior or 0
+
+
+class KeywordCorpusRepository:
+    """Stateless access to the self-accumulating keyword pool (keyword_corpus)."""
+
+    def upsert_many(
+        self,
+        session,
+        platform: str,
+        country: str,
+        lang: str,
+        items: list[tuple[str, str, bool]],
+    ) -> int:
+        """``items`` are (keyword, source, confirmed). Inserts keywords new to this
+        locale and, for ones already present, bumps hit_count / last_seen_at and
+        upgrades confirmed. Returns how many NEW keywords were added."""
+        # collapse the batch: dedupe by keyword, keep the strongest confirmed flag
+        batch: dict[str, tuple[str, bool]] = {}
+        for keyword, source, confirmed in items:
+            kw = (keyword or "").strip()
+            if not kw:
+                continue
+            prev = batch.get(kw)
+            batch[kw] = (
+                prev[0] if prev else source,
+                bool(confirmed) or (prev[1] if prev else False),
+            )
+        if not batch:
+            return 0
+
+        now = now_iso()
+        existing = {
+            row.keyword: row
+            for row in session.execute(
+                select(KeywordCorpusModel).where(
+                    KeywordCorpusModel.platform == platform,
+                    KeywordCorpusModel.country == country,
+                    KeywordCorpusModel.lang == lang,
+                    KeywordCorpusModel.keyword.in_(list(batch.keys())),
+                )
+            ).scalars()
+        }
+        added = 0
+        for kw, (source, confirmed) in batch.items():
+            row = existing.get(kw)
+            if row is None:
+                session.add(
+                    KeywordCorpusModel(
+                        platform=platform,
+                        country=country,
+                        lang=lang,
+                        keyword=kw,
+                        source=source,
+                        confirmed=1 if confirmed else 0,
+                        hit_count=1,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                    )
+                )
+                added += 1
+            else:
+                row.hit_count = (row.hit_count or 0) + 1
+                row.last_seen_at = now
+                if confirmed and not row.confirmed:
+                    row.confirmed = 1
+        return added
+
+    def fetch(
+        self,
+        session,
+        platform: str,
+        country: str,
+        lang: str,
+        limit: int = 5000,
+    ) -> list[KeywordCorpusModel]:
+        """Most-relevant-first slice of the locale's pool: confirmed keywords first,
+        then by how often they've recurred. Capped so an ever-growing pool can't make
+        a scan's reflux step unbounded."""
+        stmt = (
+            select(KeywordCorpusModel)
+            .where(
+                KeywordCorpusModel.platform == platform,
+                KeywordCorpusModel.country == country,
+                KeywordCorpusModel.lang == lang,
+            )
+            .order_by(
+                desc(KeywordCorpusModel.confirmed),
+                desc(KeywordCorpusModel.hit_count),
+                desc(KeywordCorpusModel.last_seen_at),
+            )
+            .limit(limit)
+        )
+        return list(session.execute(stmt).scalars())
+
+    def count(self, session, platform: str, country: str, lang: str) -> int:
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(KeywordCorpusModel)
+                .where(
+                    KeywordCorpusModel.platform == platform,
+                    KeywordCorpusModel.country == country,
+                    KeywordCorpusModel.lang == lang,
+                )
+            ).scalar()
+            or 0
+        )

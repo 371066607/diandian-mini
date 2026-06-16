@@ -67,10 +67,20 @@ class KeywordCoverageService:
     # Distinct proxies to try for one keyword before recording it as failed — bounds the
     # cost of a keyword hitting several dead proxies in a row.
     MAX_PROXY_ATTEMPTS = 3
+    # Deep mode (深度挖掘) searches a much larger candidate pool than a normal scan —
+    # more keywords checked = more coverage found, at proportionally more requests.
+    DEEP_MAX_CANDIDATES = 200
+    # Alphabet-soup harvesting (deep only): expand the strongest few seeds by appending
+    # a-z and reading autocomplete back. Each seed ≈ 26 requests, so bound the count.
+    SOUP_SEEDS = 2
+    SOUP_LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
-    def __init__(self, google_play_service, app_store_service=None):
+    def __init__(self, google_play_service, app_store_service=None, keyword_corpus_service=None):
         self.google_play_service = google_play_service
         self.app_store_service = app_store_service
+        # Optional self-accumulating keyword pool. When injected, every scan reads from
+        # it (reflux) and feeds it (sediment); when None, behaviour is unchanged.
+        self.keyword_corpus_service = keyword_corpus_service
 
     def _store(self, platform: str):
         if platform == "app_store":
@@ -93,7 +103,8 @@ class KeywordCoverageService:
         store = self._store(platform)
         detail = store.app_detail(app_id, country=country, lang=lang)
         return self._candidates_from_detail(
-            store, detail, country, lang, max_seeds, max_candidates, deep=deep
+            store, detail, country, lang, max_seeds, max_candidates,
+            deep=deep, platform=platform, app_id=app_id,
         )
 
     def _candidates_from_detail(
@@ -105,47 +116,112 @@ class KeywordCoverageService:
         max_seeds: int = 12,
         max_candidates: int = 120,
         deep: bool = False,
+        platform: str = "google_play",
+        app_id: str | None = None,
     ) -> list[str]:
         seeds = self._seed_terms(detail, max_seeds)
+        # deep scans search a larger pool — the explicit "more / slower" of 深度挖掘.
+        cap = max(max_candidates, self.DEEP_MAX_CANDIDATES) if deep else max_candidates
 
         pool: list[str] = []
         seen: set[str] = set()
+        source_of: dict[str, str] = {}
 
-        def _add(term: str) -> None:
+        def _add(term: str, source: str) -> bool:
+            """Add a normalized candidate; returns False once the pool is full."""
             t = self._norm(term)
             if t and t not in seen and 2 <= len(t) <= 50:
                 seen.add(t)
                 pool.append(t)
+                source_of[t] = source
+            return len(pool) < cap
 
         def _flat(seed: str) -> None:
             for hint in store.suggest(seed, country=country, lang=lang, count=8):
-                _add(hint)
-                if len(pool) >= max_candidates:
+                if not _add(hint, "autocomplete"):
                     return
 
         for seed in seeds:
-            _add(seed)
-        # expand each seed through the store's autocomplete. deep mode goes one level
-        # further — each suggestion is itself expanded via suggest_nested — for a much
-        # richer pool at ~count× the requests; it falls back to the flat expansion when
-        # the store backend lacks nested support or a nested call comes back empty.
+            _add(seed, "seed")
+
+        # 1) autocomplete expansion. deep mode goes one level further (suggest_nested);
+        # falls back to flat when nested is unsupported or comes back empty.
         nested_fn = getattr(store, "suggest_nested", None) if deep else None
         for seed in seeds:
-            if len(pool) >= max_candidates:
+            if len(pool) >= cap:
                 break
             nested = nested_fn(seed, country=country, lang=lang, count=6) if nested_fn else None
             if nested:
+                stop = False
                 for parent, children in nested.items():
-                    _add(parent)
+                    if not _add(parent, "autocomplete"):
+                        break
                     for child in children:
-                        _add(child)
-                        if len(pool) >= max_candidates:
+                        if not _add(child, "autocomplete"):
+                            stop = True
                             break
-                    if len(pool) >= max_candidates:
+                    if stop:
                         break
             else:
                 _flat(seed)
-        return pool[:max_candidates]
+
+        # 2) reflux: fold in RELEVANT keywords accumulated from earlier scans of this
+        # locale (the self-built corpus). Always on and cheap — this is what makes the
+        # candidate pool grow richer over time without any external word list.
+        if self.keyword_corpus_service is not None and len(pool) < cap:
+            seed_tokens = {tok for s in seeds for tok in s.split()}
+            for kw in self.keyword_corpus_service.candidates(
+                platform, country, lang, seed_tokens, limit=cap
+            ):
+                if not _add(kw, "corpus"):
+                    break
+
+        # 3) deep-only harvesting. Competitor (similar) titles are high-relevance, so
+        # they join THIS scan's search pool; alphabet-soup is noisier, so it only feeds
+        # the corpus (to be validated by reflux in future scans) rather than spending
+        # this scan's search budget. Both also widen the corpus for next time.
+        soup: list[tuple[str, str]] = []
+        if deep:
+            for term, source in self._competitor_terms(store, app_id, country, lang):
+                _add(term, source)
+            soup = list(self._soup_terms(store, seeds, country, lang))
+
+        # 4) sediment the search pool + soup harvest back into the corpus (non-confirmed).
+        if self.keyword_corpus_service is not None:
+            items = [(t, source_of.get(t, "seed"), False) for t in pool]
+            items += [(n, s, False) for t, s in soup if (n := self._norm(t))]
+            self.keyword_corpus_service.record(platform, country, lang, items)
+
+        return pool[:cap]
+
+    def _competitor_terms(self, store, app_id, country, lang):
+        """Yield ``(phrase, "similar")`` mined from competitor (similar) app titles —
+        phrases real rival apps rank on. Best-effort: ``similar`` raises on failure, but
+        the corpus is optional so any error just means no competitor terms this scan."""
+        if not app_id:
+            return
+        try:
+            similar = store.similar(app_id, country=country, lang=lang, limit=20)
+        except Exception:  # noqa: BLE001 - optional enrichment, never fatal
+            return
+        for item in similar or []:
+            title = getattr(item, "title", "") or ""
+            head = re.split(r"[:\-–—|·,，、（(]", title)[0].strip()
+            if head:
+                yield head, "similar"
+            toks = [w for w in self._tokens(title) if w not in _STOPWORDS]
+            for first, second in zip(toks, toks[1:]):
+                yield f"{first} {second}", "similar"
+
+    def _soup_terms(self, store, seeds, country, lang):
+        """Yield ``(suggestion, "soup")`` from alphabet-soup expansion of the strongest
+        seeds — append a-z and read autocomplete back, turning the suggest endpoint into
+        a much larger keyword generator. Deep-only, bounded by ``SOUP_SEEDS`` (each seed
+        ≈ 26 requests). ``store.suggest`` is already best-effort (returns [])."""
+        for seed in seeds[: self.SOUP_SEEDS]:
+            for letter in self.SOUP_LETTERS:
+                for hint in store.suggest(f"{seed} {letter}", country=country, lang=lang, count=8):
+                    yield hint, "soup"
 
     def analyze_coverage(
         self,
@@ -188,7 +264,8 @@ class KeywordCoverageService:
             detail = store.app_detail(app_id, country=country, lang=lang)
             canonical = canonical or str(detail.app_id or "").strip()
             candidates = self._candidates_from_detail(
-                store, detail, country, lang, max_candidates=max_candidates, deep=deep
+                store, detail, country, lang, max_candidates=max_candidates,
+                deep=deep, platform=platform, app_id=app_id,
             )
         targets = {t for t in (normalize_app_id(app_id), normalize_app_id(canonical)) if t}
         total = len(candidates)
@@ -236,6 +313,12 @@ class KeywordCoverageService:
             )
 
         covered.sort(key=lambda row: row["rank"])
+        # confirmed hits are the highest-value seeds for future scans of this locale
+        if self.keyword_corpus_service is not None and covered:
+            self.keyword_corpus_service.record(
+                platform, country, lang,
+                [(row["keyword"], "covered", True) for row in covered],
+            )
         return KeywordCoverageResult(
             platform,
             app_id,

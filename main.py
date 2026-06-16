@@ -23,6 +23,7 @@ from app.services.app_store_service import AppStoreService
 from app.services.google_play_service import GooglePlayService
 from app.services.history_retention_service import HistoryRetentionService
 from app.services.keyword_coverage_service import KeywordCoverageService
+from app.services.keyword_corpus_service import KeywordCorpusService
 from app.services.keyword_service import KeywordService
 from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
@@ -45,8 +46,11 @@ def build_services(database: Database) -> dict[str, object]:
     keyword_service_app_store = KeywordService(
         app_store_service, database=database, platform="app_store"
     )
+    keyword_corpus_service = KeywordCorpusService(database)
     keyword_coverage_service = KeywordCoverageService(
-        google_play_service, app_store_service=app_store_service
+        google_play_service,
+        app_store_service=app_store_service,
+        keyword_corpus_service=keyword_corpus_service,
     )
     monetization_service = MonetizationService()
     alert_service = AlertService(database, settings_service=settings_service)
@@ -84,6 +88,7 @@ def build_services(database: Database) -> dict[str, object]:
         "keyword_service": keyword_service,
         "keyword_service_app_store": keyword_service_app_store,
         "keyword_coverage_service": keyword_coverage_service,
+        "keyword_corpus_service": keyword_corpus_service,
         "chart_rank_service": chart_rank_service,
         "monetization_service": monetization_service,
         "tracking_service": tracking_service,
