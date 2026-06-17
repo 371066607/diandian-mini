@@ -683,8 +683,16 @@ ApplicationWindow {
                     ctx.fillStyle = lineC
                     for (var p = 0; p < n; p++) { ctx.beginPath(); ctx.arc(xat(p), yat(vals[p]), 3, 0, Math.PI * 2); ctx.fill() }
                     ctx.fillStyle = txtC; ctx.font = "10px sans-serif"
-                    var dl = function (idx, al) { if (idx >= 0 && idx < lbls.length) { ctx.textAlign = al; ctx.fillText(lbls[idx], xat(idx), height - 6) } }
-                    dl(0, "left"); if (n > 2) dl(Math.floor((n - 1) / 2), "center"); dl(n - 1, "right")
+                    var dl = function (idx) {
+                        if (idx < 0 || idx >= lbls.length) return
+                        ctx.textAlign = idx === 0 ? "left" : (idx === n - 1 ? "right" : "center")
+                        ctx.fillText(lbls[idx], xat(idx), height - 6)
+                    }
+                    // 每个数据点尽量都标日期；点太多则按可容纳数等距抽稀（每标至少留 ~56px 不重叠），首尾必标
+                    var maxLabels = Math.max(2, Math.floor(w / 56))
+                    var step = Math.max(1, Math.ceil((n - 1) / Math.max(1, maxLabels - 1)))
+                    for (var li = 0; li < n; li += step) dl(li)
+                    if ((n - 1) % step !== 0) dl(n - 1)
                 }
                 Component.onCompleted: requestPaint()
                 onWidthChanged: requestPaint()
