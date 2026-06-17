@@ -9,7 +9,7 @@ from PySide6.QtGui import QDesktopServices
 
 from app.config import DATA_DIR
 from app.constants import DEFAULT_SETTINGS
-from app.db.repositories import KeywordRankRepository, SnapshotRepository
+from app.db.repositories import ChartRankRepository, KeywordRankRepository, SnapshotRepository
 from app.ui.alert_labels import ALERT_SEVERITY_COLORS, alert_severity_label, alert_type_label
 from app.utils.network import apply_proxy_env
 from app.utils.normalize import normalize_app_id, safe_float, safe_int
@@ -54,6 +54,7 @@ class QmlBridge(QObject):
         self.logger = logger
         self.snapshot_repository = SnapshotRepository()
         self.keyword_rank_repository = KeywordRankRepository()
+        self.chart_rank_repository = ChartRankRepository()
         self._workers: list[Worker] = []
         self._busy_count = 0
         self._platform = "google_play"
@@ -367,6 +368,88 @@ class QmlBridge(QObject):
             label="正在刷新首页...",
             busy=False,
         )
+
+    @staticmethod
+    def _rank_text(rank) -> str:
+        return ("#" + str(rank)) if rank else "未命中"
+
+    @Slot(result="QVariant")
+    def monitorTree(self) -> dict[str, Any]:
+        """App-centric tree of monitored objects: each tracked app with its own tracked
+        keywords and chart positions nested under it (grouped by app_id)."""
+        ts = self.services["tracking_service"]
+        apps = ts.list_apps()
+        keywords = ts.list_keywords()
+        chart_apps = ts.list_chart_apps()
+        tree = []
+        for a in apps:
+            tree.append({
+                "title": a.title or a.app_id,
+                "appId": a.app_id,
+                "country": a.country,
+                "lang": a.lang,
+                "lastSynced": self._fmt_dt(a.last_synced_at),
+                "keywords": [
+                    {"keyword": k.keyword, "country": k.country, "lang": k.lang,
+                     "rank": self._keyword_rank_label(k)}
+                    for k in keywords if k.app_id == a.app_id
+                ],
+                "charts": [
+                    {"collection": c.collection, "category": c.category or "",
+                     "country": c.country, "lang": c.lang, "rank": self._chart_rank_label(c)}
+                    for c in chart_apps if c.app_id == a.app_id
+                ],
+            })
+        return {"apps": tree}
+
+    @Slot(str, str, str, str, str, result="QVariant")
+    def monitorSeries(self, kind: str, app_id: str, country: str, lang: str, key: str) -> dict[str, Any]:
+        """Time-series for a selected monitored object, ready to chart. kind: 'app'
+        (rating/installs/reviews) | 'keyword' (rank) | 'chart' (rank). key: the keyword,
+        or 'collection|category' for a chart."""
+        country = country or "us"
+        lang = lang or "en"
+        try:
+            with self.database.session() as session:
+                if kind == "keyword":
+                    rows = self.keyword_rank_repository.history(session, key, app_id, country, lang)
+                    labels = [r.captured_at[5:10] for r in rows]
+                    values = [r.rank if r.rank else 0 for r in rows]
+                    cur = self._rank_text(rows[-1].rank if rows else None)
+                    return {"title": key, "subtitle": f"{app_id} · {country}/{lang}",
+                            "charts": [{"name": "排名", "labels": labels, "values": values,
+                                        "current": cur, "invert": True}]}
+                if kind == "chart":
+                    coll, _, cat = key.partition("|")
+                    rows = self.chart_rank_repository.history(
+                        session, app_id, coll, cat or None, country, lang)
+                    labels = [r.captured_at[5:10] for r in rows]
+                    values = [r.rank if r.rank else 0 for r in rows]
+                    cur = self._rank_text(rows[-1].rank if rows else None)
+                    return {"title": coll + (f" · {cat}" if cat else ""), "subtitle": app_id,
+                            "charts": [{"name": "榜单名次", "labels": labels, "values": values,
+                                        "current": cur, "invert": True}]}
+                rows = self.snapshot_repository.get_history(session, app_id, country, lang)
+                labels = [r.captured_at[5:10] for r in rows]
+                last = rows[-1] if rows else None
+                return {"title": (last.title if last and last.title else app_id),
+                        "subtitle": f"{app_id} · {country}/{lang}",
+                        "charts": [
+                            {"name": "评分", "labels": labels,
+                             "values": [round(r.rating, 2) if r.rating else 0 for r in rows],
+                             "current": (f"{last.rating:.2f}" if last and last.rating else "-"),
+                             "invert": False},
+                            {"name": "安装量", "labels": labels,
+                             "values": [r.real_installs or r.min_installs or 0 for r in rows],
+                             "current": (str(last.real_installs or last.min_installs or 0) if last else "-"),
+                             "invert": False},
+                            {"name": "评论数", "labels": labels,
+                             "values": [r.reviews_count or 0 for r in rows],
+                             "current": (str(last.reviews_count or 0) if last else "-"),
+                             "invert": False},
+                        ]}
+        except Exception:  # noqa: BLE001
+            return {"title": "", "subtitle": "", "charts": []}
 
     @Slot()
     def refreshTracking(self) -> None:

@@ -611,6 +611,73 @@ ApplicationWindow {
         }
     }
 
+    // Themed trend chart: date x-axis + a dot at each point. Inverts for rank series
+    // (smaller rank = better = drawn near the top). Pure Canvas, themed via tokens.
+    component TrendChart: Rectangle {
+        id: tc
+        property string name: ""
+        property string current: ""
+        property var values: []
+        property var labels: []
+        property bool invert: false
+        Layout.fillWidth: true
+        implicitHeight: 168
+        radius: 8
+        color: root.cChipBg
+        border.color: root.cLine
+        onValuesChanged: cv.requestPaint()
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 4
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: tc.name; color: root.cBody; font.pixelSize: 13; Layout.fillWidth: true }
+                Label { text: tc.current; color: root.cInk; font.pixelSize: 16; font.weight: Font.DemiBold }
+            }
+            Canvas {
+                id: cv
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                onPaint: {
+                    var ctx = getContext("2d"); ctx.reset(); ctx.clearRect(0, 0, width, height)
+                    var vals = tc.values || []
+                    var lbls = tc.labels || []
+                    var n = vals.length
+                    var padL = 6, padR = 6, padT = 10, padB = 20
+                    var w = width - padL - padR, h = height - padT - padB
+                    var lineC = "" + root.cBlue, gridC = "" + root.cLine, txtC = "" + root.cFaint
+                    ctx.strokeStyle = gridC; ctx.lineWidth = 1
+                    for (var g = 0; g <= 3; g++) {
+                        var gy = padT + h * g / 3
+                        ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(padL + w, gy); ctx.stroke()
+                    }
+                    if (n === 0) {
+                        ctx.fillStyle = txtC; ctx.font = "12px sans-serif"; ctx.textAlign = "center"
+                        ctx.fillText("暂无历史数据（同步后逐日累积）", width / 2, padT + h / 2)
+                        return
+                    }
+                    var mn = vals[0], mx = vals[0]
+                    for (var i = 0; i < n; i++) { mn = Math.min(mn, vals[i]); mx = Math.max(mx, vals[i]) }
+                    if (mn === mx) { mx = mn + 1 }
+                    var xat = function (idx) { return padL + (n === 1 ? w / 2 : idx * w / (n - 1)) }
+                    var yat = function (v) { var t = (v - mn) / (mx - mn); return tc.invert ? padT + t * h : padT + (1 - t) * h }
+                    ctx.strokeStyle = lineC; ctx.lineWidth = 2; ctx.beginPath()
+                    for (var k = 0; k < n; k++) { var x = xat(k), y = yat(vals[k]); if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y) }
+                    ctx.stroke()
+                    ctx.fillStyle = lineC
+                    for (var p = 0; p < n; p++) { ctx.beginPath(); ctx.arc(xat(p), yat(vals[p]), 3, 0, Math.PI * 2); ctx.fill() }
+                    ctx.fillStyle = txtC; ctx.font = "10px sans-serif"
+                    var dl = function (idx, al) { if (idx >= 0 && idx < lbls.length) { ctx.textAlign = al; ctx.fillText(lbls[idx], xat(idx), height - 6) } }
+                    dl(0, "left"); if (n > 2) dl(Math.floor((n - 1) / 2), "center"); dl(n - 1, "right")
+                }
+                Component.onCompleted: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
+            }
+        }
+    }
+
     component DataTable: Card {
         id: tableCard
         property var rows: []
@@ -1232,8 +1299,21 @@ ApplicationWindow {
     }
 
     component TrackingPage: ScrollView {
+        id: monPage
         clip: true
         contentWidth: availableWidth
+        property var monTree: ({ apps: [] })
+        property var monDetail: ({ title: "", subtitle: "", charts: [] })
+        property string selKey: ""
+        function selectMon(kind, appId, ctry, lng, key) {
+            monPage.selKey = kind + ":" + appId + ":" + key
+            monPage.monDetail = root.bridge.monitorSeries(kind, appId, ctry, lng, key)
+        }
+        Component.onCompleted: monPage.monTree = root.bridge.monitorTree()
+        Connections {
+            target: root.bridge
+            function onTrackingChanged() { monPage.monTree = root.bridge.monitorTree() }
+        }
         ColumnLayout {
             width: parent.width
             spacing: 18
@@ -1269,50 +1349,122 @@ ApplicationWindow {
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 18
-                ColumnLayout {
-                    spacing: 18
+                spacing: 14
+
+                Card {
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: 256
+                    Layout.maximumWidth: 256
+                    Layout.alignment: Qt.AlignTop
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Label { text: "监控对象（按 App）"; color: root.cFaint; font.pixelSize: 12; Layout.bottomMargin: 4 }
+                        Repeater {
+                            model: root.rows(monPage.monTree, "apps")
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                property var appNode: modelData
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: 34
+                                    radius: 7
+                                    property string myKey: "app:" + appNode.appId + ":"
+                                    color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 8
+                                        anchors.rightMargin: 8
+                                        Label { text: appNode.title; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cInk; font.weight: Font.DemiBold; font.pixelSize: 13; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    }
+                                    TapHandler { onTapped: monPage.selectMon("app", appNode.appId, appNode.country, appNode.lang, "") }
+                                }
+                                Repeater {
+                                    model: appNode.keywords
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        implicitHeight: 28
+                                        radius: 7
+                                        property string myKey: "keyword:" + appNode.appId + ":" + modelData.keyword
+                                        color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 8
+                                            anchors.rightMargin: 8
+                                            spacing: 6
+                                            Label { text: "🔑 " + modelData.keyword; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Label { text: modelData.rank; color: root.cFaint; font.pixelSize: 11 }
+                                        }
+                                        TapHandler { onTapped: monPage.selectMon("keyword", appNode.appId, modelData.country, modelData.lang, modelData.keyword) }
+                                    }
+                                }
+                                Repeater {
+                                    model: appNode.charts
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        implicitHeight: 28
+                                        radius: 7
+                                        property string ck: modelData.collection + "|" + modelData.category
+                                        property string myKey: "chart:" + appNode.appId + ":" + ck
+                                        color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 8
+                                            anchors.rightMargin: 8
+                                            spacing: 6
+                                            Label { text: "📊 " + modelData.collection; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Label { text: modelData.rank; color: root.cFaint; font.pixelSize: 11 }
+                                        }
+                                        TapHandler { onTapped: monPage.selectMon("chart", appNode.appId, modelData.country, modelData.lang, parent.ck) }
+                                    }
+                                }
+                            }
+                        }
+                        Label {
+                            text: "暂无监控对象，先在上方添加 App / 榜单监控"
+                            visible: root.rows(monPage.monTree, "apps").length === 0
+                            color: root.cFaint
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                Card {
                     Layout.fillWidth: true
-                    DataTable {
-                        title: "App 监控"
-                        rows: root.rows(root.bridge.tracking, "apps")
-                        tableHeight: 210
-                        columns: [
-                            { label: "App", key: "title", fill: true },
-                            { label: "包名", key: "appId", width: 180 },
-                            { label: "国家", key: "country", width: 52 },
-                            { label: "频率", key: "frequency", width: 58 },
-                            { label: "上次同步", key: "lastSynced", width: 98 },
-                            { label: "下次同步", key: "nextSync", width: 98 },
-                            { label: "状态", key: "enabled", width: 54 }
-                        ]
-                    }
-                    DataTable {
-                        title: "关键词监控"
-                        rows: root.rows(root.bridge.tracking, "keywords")
-                        tableHeight: 190
-                        columns: [
-                            { label: "关键词", key: "keyword", fill: true },
-                            { label: "App", key: "appId", width: 180 },
-                            { label: "排名", key: "rank", width: 68 },
-                            { label: "国家", key: "country", width: 52 },
-                            { label: "频率", key: "frequency", width: 58 },
-                            { label: "上次同步", key: "lastSynced", width: 98 },
-                            { label: "状态", key: "enabled", width: 54 }
-                        ]
-                    }
-                    DataTable {
-                        title: "榜单监控"
-                        rows: root.rows(root.bridge.tracking, "charts")
-                        tableHeight: 170
-                        columns: [
-                            { label: "App", key: "appId", fill: true },
-                            { label: "榜单", key: "collection", width: 110 },
-                            { label: "分类", key: "category", width: 118 },
-                            { label: "国家", key: "country", width: 52 },
-                            { label: "排名", key: "rank", width: 70 },
-                            { label: "状态", key: "enabled", width: 54 }
-                        ]
+                    Layout.alignment: Qt.AlignTop
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            text: textOr(monPage.monDetail.title, "← 选择左侧某个 App / 关键词 / 榜单查看趋势")
+                            color: root.cInk
+                            font.pixelSize: 16
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            text: textOr(monPage.monDetail.subtitle, "")
+                            visible: text.length > 0
+                            color: root.cFaint
+                            font.pixelSize: 12
+                            Layout.fillWidth: true
+                        }
+                        Repeater {
+                            model: root.rows(monPage.monDetail, "charts")
+                            TrendChart {
+                                name: modelData.name
+                                current: modelData.current
+                                values: modelData.values
+                                labels: modelData.labels
+                                invert: modelData.invert === true
+                            }
+                        }
                     }
                 }
             }
