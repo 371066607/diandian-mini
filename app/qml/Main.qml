@@ -1363,59 +1363,94 @@ ApplicationWindow {
                         Repeater {
                             model: root.rows(monPage.monTree, "apps")
                             ColumnLayout {
+                                id: appRow
                                 Layout.fillWidth: true
                                 spacing: 2
                                 property var appNode: modelData
+                                property bool expanded: false
+                                property bool hasChildren: appNode.keywords.length > 0 || appNode.charts.length > 0
                                 Rectangle {
                                     Layout.fillWidth: true
                                     implicitHeight: 34
                                     radius: 7
                                     property string myKey: "app:" + appNode.appId + ":"
-                                    color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                    color: monPage.selKey === myKey ? root.cBlueSoft : (appHover.hovered ? root.cChipBg : "transparent")
+                                    HoverHandler { id: appHover; cursorShape: Qt.PointingHandCursor }
                                     RowLayout {
                                         anchors.fill: parent
                                         anchors.leftMargin: 8
                                         anchors.rightMargin: 8
+                                        spacing: 6
+                                        Label {
+                                            text: appRow.expanded ? "▾" : "▸"
+                                            color: root.cFaint
+                                            font.pixelSize: 10
+                                            opacity: appRow.hasChildren ? 1 : 0
+                                            Layout.preferredWidth: 10
+                                        }
                                         Label { text: appNode.title; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cInk; font.weight: Font.DemiBold; font.pixelSize: 13; elide: Text.ElideRight; Layout.fillWidth: true }
                                     }
-                                    TapHandler { onTapped: monPage.selectMon("app", appNode.appId, appNode.country, appNode.lang, "") }
+                                    TapHandler {
+                                        onTapped: {
+                                            if (appRow.hasChildren) appRow.expanded = !appRow.expanded
+                                            monPage.selectMon("app", appNode.appId, appNode.country, appNode.lang, "")
+                                        }
+                                    }
+                                }
+                                Label {
+                                    visible: appRow.expanded && appNode.keywords.length > 0
+                                    text: "关键词 · " + appNode.keywords.length
+                                    color: root.cFaint
+                                    font.pixelSize: 11
+                                    Layout.leftMargin: 24
+                                    Layout.topMargin: 3
                                 }
                                 Repeater {
-                                    model: appNode.keywords
+                                    model: appRow.expanded ? appNode.keywords : []
                                     Rectangle {
                                         Layout.fillWidth: true
-                                        Layout.leftMargin: 12
+                                        Layout.leftMargin: 24
                                         implicitHeight: 28
                                         radius: 7
                                         property string myKey: "keyword:" + appNode.appId + ":" + modelData.keyword
-                                        color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                        color: monPage.selKey === myKey ? root.cBlueSoft : (kwHover.hovered ? root.cChipBg : "transparent")
+                                        HoverHandler { id: kwHover; cursorShape: Qt.PointingHandCursor }
                                         RowLayout {
                                             anchors.fill: parent
                                             anchors.leftMargin: 8
                                             anchors.rightMargin: 8
                                             spacing: 6
-                                            Label { text: "🔑 " + modelData.keyword; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Label { text: modelData.keyword; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
                                             Label { text: modelData.rank; color: root.cFaint; font.pixelSize: 11 }
                                         }
                                         TapHandler { onTapped: monPage.selectMon("keyword", appNode.appId, modelData.country, modelData.lang, modelData.keyword) }
                                     }
                                 }
+                                Label {
+                                    visible: appRow.expanded && appNode.charts.length > 0
+                                    text: "榜单 · " + appNode.charts.length
+                                    color: root.cFaint
+                                    font.pixelSize: 11
+                                    Layout.leftMargin: 24
+                                    Layout.topMargin: 3
+                                }
                                 Repeater {
-                                    model: appNode.charts
+                                    model: appRow.expanded ? appNode.charts : []
                                     Rectangle {
                                         Layout.fillWidth: true
-                                        Layout.leftMargin: 12
+                                        Layout.leftMargin: 24
                                         implicitHeight: 28
                                         radius: 7
                                         property string ck: modelData.collection + "|" + modelData.category
                                         property string myKey: "chart:" + appNode.appId + ":" + ck
-                                        color: monPage.selKey === myKey ? root.cBlueSoft : "transparent"
+                                        color: monPage.selKey === myKey ? root.cBlueSoft : (chHover.hovered ? root.cChipBg : "transparent")
+                                        HoverHandler { id: chHover; cursorShape: Qt.PointingHandCursor }
                                         RowLayout {
                                             anchors.fill: parent
                                             anchors.leftMargin: 8
                                             anchors.rightMargin: 8
                                             spacing: 6
-                                            Label { text: "📊 " + modelData.collection; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Label { text: modelData.collection; color: monPage.selKey === parent.parent.myKey ? root.cBlue : root.cBody; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
                                             Label { text: modelData.rank; color: root.cFaint; font.pixelSize: 11 }
                                         }
                                         TapHandler { onTapped: monPage.selectMon("chart", appNode.appId, modelData.country, modelData.lang, parent.ck) }
