@@ -174,7 +174,19 @@ class KeywordCorpusModel(Base):
     __tablename__ = "keyword_corpus"
     __table_args__ = (
         UniqueConstraint("platform", "country", "lang", "keyword"),
-        Index("ix_keyword_corpus_lookup", "platform", "country", "lang", "confirmed"),
+        # Covers fetch()'s WHERE (platform, country, lang) plus its FULL ordering
+        # (confirmed, hit_count, last_seen_at). All three ORDER BY terms are DESC, so
+        # SQLite satisfies the read with a reverse walk of this index + LIMIT — no
+        # in-memory sort — no matter how large the pool grows.
+        Index(
+            "ix_keyword_corpus_fetch",
+            "platform",
+            "country",
+            "lang",
+            "confirmed",
+            "hit_count",
+            "last_seen_at",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

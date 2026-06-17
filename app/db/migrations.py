@@ -28,6 +28,11 @@ TIME_SERIES_INDEXES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     ("ix_alerts_app_created", "alerts", ("app_id", "created_at")),
     ("ix_alerts_is_read", "alerts", ("is_read",)),
+    (
+        "ix_keyword_corpus_fetch",
+        "keyword_corpus",
+        ("platform", "country", "lang", "confirmed", "hit_count", "last_seen_at"),
+    ),
 )
 
 
