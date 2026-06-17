@@ -11,7 +11,7 @@ ApplicationWindow {
     minimumWidth: 1100
     minimumHeight: 720
     title: appTitle.replace("Google Play", platformLabel)
-    color: "#F5F7FB"
+    color: root.cBg
 
     required property var bridge
     required property string appTitle
@@ -66,7 +66,7 @@ ApplicationWindow {
 
     function showToast(message, isError) {
         toast.text = message
-        toast.color = isError ? "#991B1B" : "#0F172A"
+        toast.color = isError ? "#5A1A18" : "#1F2937"
         toast.opacity = 1
         toast.visible = true
         toastTimer.restart()
@@ -93,18 +93,58 @@ ApplicationWindow {
     }
 
     // --- design tokens ---
-    readonly property color cInk: "#0F172A"
-    readonly property color cBody: "#1E293B"
-    readonly property color cSlate: "#475569"
-    readonly property color cMuted: "#64748B"
-    readonly property color cFaint: "#94A3B8"
-    readonly property color cLine: "#E2E8F0"
-    readonly property color cChipBg: "#F8FAFC"
-    readonly property color cBlue: "#2563EB"
-    readonly property color cBlueSoft: "#EFF6FF"
-    readonly property color cAmber: "#F59E0B"
-    readonly property color cGreen: "#16A34A"
-    readonly property color cRed: "#DC2626"
+    // Each theme is a FULL palette — switching recolors the WHOLE app (background,
+    // surfaces, borders, text and accent), not just the accent. Switchable live in 设置.
+    property string themeName: textOr(bridge.settings.theme, "slate")
+    readonly property var themePresets: ({
+        "light": {
+            bg: "#F3F5F9", surface: "#FFFFFF", sidebar: "#F8FAFC", chip: "#EDF0F5", line: "#DBE1EA",
+            ink: "#1B2230", body: "#404B5C", slate: "#5E6A7B", muted: "#7E8898", faint: "#A4AEBC",
+            accent: "#2F6FED", accentSoft: "#E5EEFC", onAccent: "#FFFFFF",
+            amber: "#C2780A", green: "#1A8A4E", red: "#D33A3A"
+        },
+        "sand": {
+            bg: "#F6F2EB", surface: "#FFFEFA", sidebar: "#FBF8F1", chip: "#F0EADF", line: "#E6DFCF",
+            ink: "#2A2419", body: "#4E4636", slate: "#6E6451", muted: "#8D8470", faint: "#B2A993",
+            accent: "#DD6B20", accentSoft: "#F8E7D7", onAccent: "#FFFFFF",
+            amber: "#B7791F", green: "#2F855A", red: "#C53030"
+        },
+        "slate": {
+            bg: "#1B212B", surface: "#242C38", sidebar: "#171D26", chip: "#2C3543", line: "#39434F",
+            ink: "#E7ECF2", body: "#C1C9D4", slate: "#98A2AF", muted: "#7A8492", faint: "#5F6975",
+            accent: "#38BDF8", accentSoft: "#103142", onAccent: "#06222E",
+            amber: "#F0A93B", green: "#46BE84", red: "#F06D6D"
+        },
+        "violet": {
+            bg: "#1B1726", surface: "#241F33", sidebar: "#181426", chip: "#2C2640", line: "#3A3350",
+            ink: "#E9E6F1", body: "#C5BED5", slate: "#A199B6", muted: "#837A97", faint: "#675E7B",
+            accent: "#A78BFA", accentSoft: "#2A1F45", onAccent: "#1B1334",
+            amber: "#F0A93B", green: "#4FB98A", red: "#F06D6D"
+        },
+        "teal": {
+            bg: "#14201D", surface: "#1C2A27", sidebar: "#102019", chip: "#233631", line: "#314841",
+            ink: "#E2EAE7", body: "#B8C7C1", slate: "#92A39C", muted: "#75857E", faint: "#5C6B64",
+            accent: "#2DD4BF", accentSoft: "#0E3A31", onAccent: "#06302A",
+            amber: "#F0A93B", green: "#3FBE85", red: "#F06D6D"
+        }
+    })
+    readonly property var pal: themePresets[themeName] || themePresets.slate
+    readonly property color cBg: pal.bg
+    readonly property color cSurface: pal.surface
+    readonly property color cSidebar: pal.sidebar
+    readonly property color cChipBg: pal.chip
+    readonly property color cLine: pal.line
+    readonly property color cInk: pal.ink
+    readonly property color cBody: pal.body
+    readonly property color cSlate: pal.slate
+    readonly property color cMuted: pal.muted
+    readonly property color cFaint: pal.faint
+    readonly property color cBlue: pal.accent
+    readonly property color cBlueSoft: pal.accentSoft
+    readonly property color cOnAccent: pal.onAccent
+    readonly property color cAmber: pal.amber
+    readonly property color cGreen: pal.green
+    readonly property color cRed: pal.red
 
     component Card: Rectangle {
         id: card
@@ -114,9 +154,9 @@ ApplicationWindow {
         property int pad: 20
         Layout.fillWidth: true
         implicitHeight: shell.implicitHeight + pad * 2
-        color: "white"
+        color: root.cSurface
         radius: 10
-        border.color: cardHover.hovered ? "#CBD5E1" : "#E2E8F0"
+        border.color: cardHover.hovered ? root.cLine : root.cLine
         border.width: 1
 
         layer.enabled: true
@@ -143,7 +183,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Label {
                     text: card.title
-                    color: "#1E293B"
+                    color: root.cBody
                     font.pixelSize: 14
                     font.weight: Font.DemiBold
                     Layout.fillWidth: true
@@ -179,7 +219,7 @@ ApplicationWindow {
             id: badgeText
             anchors.centerIn: parent
             text: badge.text
-            color: badge.subtle ? badge.tint : "white"
+            color: badge.subtle ? badge.tint : root.cOnAccent
             font.pixelSize: 11
             font.weight: Font.DemiBold
         }
@@ -194,7 +234,7 @@ ApplicationWindow {
         implicitHeight: 64
         radius: 10
         color: accent === "blue" ? root.cBlueSoft : root.cChipBg
-        border.color: accent === "blue" ? "#BFDBFE" : root.cLine
+        border.color: accent === "blue" ? root.cBlueSoft : root.cLine
         ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: 14
@@ -205,7 +245,7 @@ ApplicationWindow {
             Label { text: chip.label; color: root.cMuted; font.pixelSize: 11 }
             Label {
                 text: chip.value
-                color: chip.accent === "blue" ? "#1D4ED8" : root.cInk
+                color: chip.accent === "blue" ? root.cBlue : root.cInk
                 font.pixelSize: 15
                 font.weight: Font.Bold
                 elide: Text.ElideRight
@@ -222,7 +262,7 @@ ApplicationWindow {
         Rectangle {
             anchors.fill: parent
             radius: rimg.cornerRadius
-            color: "#F1F5F9"
+            color: root.cChipBg
             border.color: root.cLine
             visible: rimgImage.status !== Image.Ready
             Label {
@@ -278,13 +318,13 @@ ApplicationWindow {
         height: 38
         implicitWidth: 180
         selectByMouse: true
-        color: "#0F172A"
-        selectedTextColor: "#0F172A"
-        selectionColor: "#DBEAFE"
+        color: root.cInk
+        selectedTextColor: root.cInk
+        selectionColor: root.cBlueSoft
         background: Rectangle {
             radius: 8
-            color: "white"
-            border.color: parent.activeFocus ? "#2563EB" : "#CBD5E1"
+            color: root.cSurface
+            border.color: parent.activeFocus ? root.cBlue : root.cLine
             Behavior on border.color { ColorAnimation { duration: 120 } }
         }
         leftPadding: 12
@@ -308,8 +348,8 @@ ApplicationWindow {
         Rectangle {
             anchors.fill: parent
             radius: 8
-            color: "white"
-            border.color: hfInput.activeFocus ? "#2563EB" : "#CBD5E1"
+            color: root.cSurface
+            border.color: hfInput.activeFocus ? root.cBlue : root.cLine
             Behavior on border.color { ColorAnimation { duration: 120 } }
         }
 
@@ -319,11 +359,11 @@ ApplicationWindow {
             leftPadding: 12
             rightPadding: 30
             selectByMouse: true
-            color: "#0F172A"
-            selectedTextColor: "#0F172A"
-            selectionColor: "#DBEAFE"
+            color: root.cInk
+            selectedTextColor: root.cInk
+            selectionColor: root.cBlueSoft
             placeholderText: hf.placeholderText
-            placeholderTextColor: "#94A3B8"
+            placeholderTextColor: root.cFaint
             font.pixelSize: 13
             verticalAlignment: Text.AlignVCenter
             background: null
@@ -336,7 +376,7 @@ ApplicationWindow {
             anchors.rightMargin: 11
             anchors.verticalCenter: parent.verticalCenter
             text: "▾"
-            color: hpopup.visible ? "#2563EB" : "#94A3B8"
+            color: hpopup.visible ? root.cBlue : root.cFaint
             font.pixelSize: 11
             visible: root.history(hf.historyKey).length > 0
             TapHandler {
@@ -353,8 +393,8 @@ ApplicationWindow {
             implicitHeight: Math.min(hlist.contentHeight + 12, 240)
             background: Rectangle {
                 radius: 8
-                color: "white"
-                border.color: "#E2E8F0"
+                color: root.cSurface
+                border.color: root.cLine
             }
             contentItem: ListView {
                 id: hlist
@@ -368,7 +408,7 @@ ApplicationWindow {
                     height: 32
                     contentItem: Label {
                         text: modelData
-                        color: "#1E293B"
+                        color: root.cBody
                         font.pixelSize: 12
                         elide: Text.ElideRight
                         verticalAlignment: Text.AlignVCenter
@@ -376,7 +416,7 @@ ApplicationWindow {
                     }
                     background: Rectangle {
                         radius: 6
-                        color: hovered ? "#EFF6FF" : "transparent"
+                        color: hovered ? root.cBlueSoft : "transparent"
                     }
                     onClicked: {
                         hf.text = modelData
@@ -394,13 +434,13 @@ ApplicationWindow {
         font.pixelSize: 13
         background: Rectangle {
             radius: 8
-            color: "white"
-            border.color: parent.activeFocus ? "#2563EB" : "#CBD5E1"
+            color: root.cSurface
+            border.color: parent.activeFocus ? root.cBlue : root.cLine
             Behavior on border.color { ColorAnimation { duration: 120 } }
         }
         contentItem: Text {
             text: parent.displayText
-            color: "#0F172A"
+            color: root.cInk
             verticalAlignment: Text.AlignVCenter
             leftPadding: 12
             rightPadding: 28
@@ -412,12 +452,12 @@ ApplicationWindow {
         height: 38
         font.pixelSize: 13
         font.weight: Font.DemiBold
-        palette.buttonText: "white"
+        palette.buttonText: root.cOnAccent
         scale: down ? 0.985 : (hovered ? 1.01 : 1.0)
         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
         background: Rectangle {
             radius: 8
-            color: parent.down ? "#1E40AF" : (parent.hovered ? "#1D4ED8" : "#2563EB")
+            color: parent.down ? root.cBlue : (parent.hovered ? root.cBlue : root.cBlue)
             border.color: color
             Behavior on color { ColorAnimation { duration: 120 } }
         }
@@ -427,13 +467,13 @@ ApplicationWindow {
         height: 38
         font.pixelSize: 13
         font.weight: Font.DemiBold
-        palette.buttonText: "#1E293B"
+        palette.buttonText: root.cBody
         scale: down ? 0.985 : (hovered ? 1.01 : 1.0)
         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
         background: Rectangle {
             radius: 8
-            color: parent.down ? "#EEF2FF" : (parent.hovered ? "#F8FAFC" : "white")
-            border.color: parent.hovered ? "#94A3B8" : "#CBD5E1"
+            color: parent.down ? root.cBlueSoft : (parent.hovered ? root.cChipBg : root.cSurface)
+            border.color: parent.hovered ? root.cFaint : root.cLine
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
         }
@@ -453,14 +493,14 @@ ApplicationWindow {
             x: ck.leftPadding
             y: ck.height / 2 - height / 2
             radius: 5
-            color: ck.checked ? "#2563EB" : "white"
-            border.color: ck.checked ? "#2563EB" : (ck.hovered ? "#94A3B8" : "#CBD5E1")
+            color: ck.checked ? root.cBlue : root.cSurface
+            border.color: ck.checked ? root.cBlue : (ck.hovered ? root.cFaint : root.cLine)
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
             Text {
                 anchors.centerIn: parent
                 text: "✓"
-                color: "white"
+                color: root.cOnAccent
                 font.pixelSize: 13
                 font.bold: true
                 visible: ck.checked
@@ -468,7 +508,7 @@ ApplicationWindow {
         }
         contentItem: Text {
             text: ck.text
-            color: ck.enabled ? "#1E293B" : "#94A3B8"
+            color: ck.enabled ? root.cBody : root.cFaint
             font: ck.font
             verticalAlignment: Text.AlignVCenter
             leftPadding: ck.indicator.width + ck.spacing
@@ -510,7 +550,7 @@ ApplicationWindow {
             var ctx = getContext("2d")
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
-            ctx.strokeStyle = "#E2E8F0"
+            ctx.strokeStyle = root.cLine
             ctx.lineWidth = 1
             for (var g = 1; g < 4; g++) {
                 var y = height * g / 4
@@ -520,7 +560,7 @@ ApplicationWindow {
                 ctx.stroke()
             }
             if (!values || values.length === 0) {
-                ctx.fillStyle = "#94A3B8"
+                ctx.fillStyle = root.cFaint
                 ctx.font = "13px sans-serif"
                 ctx.textAlign = "center"
                 ctx.fillText("暂无历史数据", width / 2, height / 2)
@@ -553,7 +593,7 @@ ApplicationWindow {
                 ctx.closePath()
                 ctx.fill()
             }
-            ctx.strokeStyle = "#2563EB"
+            ctx.strokeStyle = root.cBlue
             ctx.lineWidth = 2
             ctx.beginPath()
             for (var k = 0; k < xs.length; k++) {
@@ -563,7 +603,7 @@ ApplicationWindow {
             ctx.stroke()
             // emphasize the latest point
             if (xs.length > 0 && reveal === 1) {
-                ctx.fillStyle = "#2563EB"
+                ctx.fillStyle = root.cBlue
                 ctx.beginPath()
                 ctx.arc(xs[xs.length - 1], ys[ys.length - 1], 3, 0, Math.PI * 2)
                 ctx.fill()
@@ -593,7 +633,7 @@ ApplicationWindow {
                 model: tableCard.columns
                 Label {
                     text: modelData.label
-                    color: "#334155"
+                    color: root.cBody
                     font.pixelSize: 12
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
@@ -608,7 +648,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             height: 1
-            color: "#E2E8F0"
+            color: root.cLine
         }
 
         ListView {
@@ -628,9 +668,9 @@ ApplicationWindow {
                 width: ListView.view.width
                 height: tableCard.rowHeight
                 color: tableCard.selectedIndex === rowNumber
-                       ? "#DBEAFE"
-                       : (rowHover.hovered ? "#EEF6FF"
-                          : (highlighted ? "#EFF6FF" : (rowNumber % 2 === 0 ? "white" : "#F8FAFC")))
+                       ? root.cBlueSoft
+                       : (rowHover.hovered ? root.cBlueSoft
+                          : (highlighted ? root.cBlueSoft : (rowNumber % 2 === 0 ? root.cSurface : root.cChipBg)))
 
                 Behavior on color { ColorAnimation { duration: 120 } }
                 HoverHandler { id: rowHover }
@@ -673,7 +713,7 @@ ApplicationWindow {
                                 visible: cell.cellType === "text"
                                 anchors.fill: parent
                                 text: cell.cellValue === undefined || cell.cellValue === null ? "" : cell.cellValue
-                                color: modelData.color || "#1E293B"
+                                color: modelData.color || root.cBody
                                 font.pixelSize: 12
                                 font.weight: rowDelegate.emphasized ? Font.DemiBold : Font.Normal
                                 elide: Text.ElideRight
@@ -716,7 +756,7 @@ ApplicationWindow {
                                     Label {
                                         text: "★"
                                         font.pixelSize: 12
-                                        color: index < Number(cell.cellValue || 0) ? root.cAmber : "#D8DEE9"
+                                        color: index < Number(cell.cellValue || 0) ? root.cAmber : root.cLine
                                     }
                                 }
                             }
@@ -729,7 +769,7 @@ ApplicationWindow {
                 anchors.centerIn: parent
                 visible: tableList.count === 0
                 text: tableCard.emptyText
-                color: "#94A3B8"
+                color: root.cFaint
             }
         }
     }
@@ -741,7 +781,7 @@ ApplicationWindow {
         Rectangle {
             Layout.preferredWidth: 220
             Layout.fillHeight: true
-            color: "#111827"
+            color: root.cSidebar
 
             ColumnLayout {
                 anchors.fill: parent
@@ -750,7 +790,7 @@ ApplicationWindow {
 
                 Label {
                     text: "点点数据 Mini"
-                    color: "white"
+                    color: root.cInk
                     font.pixelSize: 18
                     font.weight: Font.Bold
                     Layout.topMargin: 8
@@ -763,8 +803,8 @@ ApplicationWindow {
                     Layout.bottomMargin: 12
                     implicitHeight: 36
                     radius: 9
-                    color: "#1F2937"
-                    border.color: "#374151"
+                    color: root.cChipBg
+                    border.color: root.cLine
 
                     RowLayout {
                         anchors.fill: parent
@@ -781,15 +821,15 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 radius: 7
-                                color: active ? "#3B82F6"
-                                              : (segmentHover.hovered ? "#374151" : "transparent")
+                                color: active ? root.cBlue
+                                              : (segmentHover.hovered ? root.cLine : "transparent")
                                 Behavior on color { ColorAnimation { duration: 140 } }
                                 HoverHandler { id: segmentHover; cursorShape: Qt.PointingHandCursor }
                                 TapHandler { onTapped: root.bridge.setPlatform(modelData.key) }
                                 Label {
                                     anchors.centerIn: parent
                                     text: modelData.label
-                                    color: platformSegment.active ? "white" : "#94A3B8"
+                                    color: platformSegment.active ? root.cOnAccent : root.cFaint
                                     font.pixelSize: 11
                                     font.weight: Font.DemiBold
                                 }
@@ -809,14 +849,14 @@ ApplicationWindow {
                         height: 38
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
-                        palette.buttonText: checked ? "white" : "#CBD5E1"
+                        palette.buttonText: checked ? root.cOnAccent : root.cMuted
                         onClicked: root.currentPage = modelData.key
                         scale: down ? 0.985 : (hovered ? 1.01 : 1.0)
                         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
                         background: Rectangle {
                             radius: 8
-                            color: navButton.checked ? "#3B82F6" : (navButton.hovered ? "#1F2937" : "transparent")
-                            border.color: navButton.hovered && !navButton.checked ? "#334155" : "transparent"
+                            color: navButton.checked ? root.cBlue : (navButton.hovered ? root.cChipBg : "transparent")
+                            border.color: navButton.hovered && !navButton.checked ? root.cBody : "transparent"
                             Behavior on color { ColorAnimation { duration: 140 } }
                             Behavior on border.color { ColorAnimation { duration: 140 } }
                         }
@@ -827,14 +867,14 @@ ApplicationWindow {
                             anchors.rightMargin: 10
                             anchors.verticalCenter: parent.verticalCenter
                             radius: height / 2
-                            color: "#EF4444"
+                            color: root.cRed
                             width: Math.max(20, unreadBadgeText.implicitWidth + 10)
                             height: 18
                             Label {
                                 id: unreadBadgeText
                                 anchors.centerIn: parent
                                 text: Math.min(root.bridge.alerts.unread || 0, 99)
-                                color: "white"
+                                color: "#FFFFFF"
                                 font.pixelSize: 10
                                 font.weight: Font.Bold
                             }
@@ -846,7 +886,7 @@ ApplicationWindow {
 
                 Label {
                     text: root.platformLabel + " / 本地 SQLite"
-                    color: "#94A3B8"
+                    color: root.cFaint
                     font.pixelSize: 12
                 }
             }
@@ -855,7 +895,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            color: "#F5F7FB"
+            color: root.cBg
 
             ColumnLayout {
                 anchors.fill: parent
@@ -870,13 +910,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Label {
                             text: root.pageTitle()
-                            color: "#0F172A"
+                            color: root.cInk
                             font.pixelSize: 24
                             font.weight: Font.Bold
                         }
                         Label {
                             text: root.pageSubtitle()
-                            color: "#64748B"
+                            color: root.cMuted
                             font.pixelSize: 13
                         }
                     }
@@ -934,7 +974,7 @@ ApplicationWindow {
         opacity: 0
         z: 30
         radius: 8
-        color: "#0F172A"
+        color: "#1F2937"
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 28
@@ -949,7 +989,7 @@ ApplicationWindow {
             width: parent.width - 28
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-            color: "white"
+            color: "#EFF3F8"
             font.pixelSize: 13
             font.weight: Font.DemiBold
         }
@@ -976,18 +1016,18 @@ ApplicationWindow {
         width: Math.min(460, root.width - 80)
         header: null
         Overlay.modal: Rectangle { color: "#660F172A" }
-        background: Rectangle { radius: 12; color: "white"; border.color: "#E2E8F0" }
+        background: Rectangle { radius: 12; color: root.cSurface; border.color: root.cLine }
         contentItem: ColumnLayout {
             spacing: 14
             Label {
                 text: updateDialog.heading
-                color: "#0F172A"
+                color: root.cInk
                 font.pixelSize: 16
                 font.weight: Font.Bold
             }
             Label {
                 text: updateDialog.body
-                color: "#475569"
+                color: root.cSlate
                 font.pixelSize: 13
                 lineHeight: 1.35
                 wrapMode: Text.WordWrap
@@ -1022,18 +1062,18 @@ ApplicationWindow {
         header: null
         closePolicy: Popup.NoAutoClose
         Overlay.modal: Rectangle { color: "#660F172A" }
-        background: Rectangle { radius: 12; color: "white"; border.color: "#E2E8F0" }
+        background: Rectangle { radius: 12; color: root.cSurface; border.color: root.cLine }
         contentItem: ColumnLayout {
             spacing: 14
             Label {
                 text: "更新完成"
-                color: "#0F172A"
+                color: root.cInk
                 font.pixelSize: 16
                 font.weight: Font.Bold
             }
             Label {
                 text: restartDialog.body
-                color: "#475569"
+                color: root.cSlate
                 font.pixelSize: 13
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
@@ -1081,7 +1121,7 @@ ApplicationWindow {
         Label {
             anchors.centerIn: parent
             text: "处理中..."
-            color: "white"
+            color: root.cSurface
             font.pixelSize: 18
             font.weight: Font.DemiBold
         }
@@ -1106,11 +1146,11 @@ ApplicationWindow {
                         title: modelData.label
                         Label {
                             text: modelData.value
-                            color: "#0F172A"
+                            color: root.cInk
                             font.pixelSize: 22
                             font.weight: Font.Bold
                         }
-                        Label { text: modelData.meta; color: "#64748B"; font.pixelSize: 12 }
+                        Label { text: modelData.meta; color: root.cMuted; font.pixelSize: 12 }
                     }
                 }
             }
@@ -1159,8 +1199,8 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 implicitHeight: 86
                                 radius: 8
-                                color: "#F8FAFC"
-                                border.color: "#E2E8F0"
+                                color: root.cChipBg
+                                border.color: root.cLine
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.margins: 12
@@ -1173,9 +1213,9 @@ ApplicationWindow {
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 4
-                                        Label { text: modelData.title; color: "#0F172A"; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Label { text: "评分 " + modelData.rating + " · 安装 " + modelData.installs; color: "#475569"; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Label { text: "上次同步 " + modelData.lastSynced; color: "#64748B"; font.pixelSize: 12 }
+                                        Label { text: modelData.title; color: root.cInk; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Label { text: "评分 " + modelData.rating + " · 安装 " + modelData.installs; color: root.cSlate; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Label { text: "上次同步 " + modelData.lastSynced; color: root.cMuted; font.pixelSize: 12 }
                                     }
                                 }
                             }
@@ -1183,7 +1223,7 @@ ApplicationWindow {
                         Label {
                             text: "暂无监控 App"
                             visible: root.rows(root.bridge.dashboard, "health").length === 0
-                            color: "#94A3B8"
+                            color: root.cFaint
                         }
                     }
                 }
@@ -1292,22 +1332,46 @@ ApplicationWindow {
                     columns: 2
                     columnSpacing: 16
                     rowSpacing: 12
-                    Label { text: "默认国家"; color: "#334155" }
+                    Label { text: "默认国家"; color: root.cBody }
                     Field { id: setCountry; text: textOr(root.bridge.settings.default_country, "us"); Layout.fillWidth: true }
-                    Label { text: "默认语言"; color: "#334155" }
+                    Label { text: "默认语言"; color: root.cBody }
                     Field { id: setLang; text: textOr(root.bridge.settings.default_lang, "en"); Layout.fillWidth: true }
-                    Label { text: "默认 limit"; color: "#334155" }
+                    Label { text: "默认 limit"; color: root.cBody }
                     Field { id: setLimit; text: textOr(root.bridge.settings.default_limit, "50"); Layout.fillWidth: true }
-                    Label { text: "数据库路径"; color: "#334155" }
+                    Label { text: "数据库路径"; color: root.cBody }
                     Field { id: setDbPath; text: textOr(root.bridge.settings.database_path, "./data/diandian_mini.sqlite3"); Layout.fillWidth: true }
-                    Label { text: "每日同步时间"; color: "#334155" }
+                    Label { text: "每日同步时间"; color: root.cBody }
                     Field { id: setSyncTime; text: textOr(root.bridge.settings.daily_sync_time, "09:00"); Layout.fillWidth: true }
-                    Label { text: "请求延迟秒数"; color: "#334155" }
+                    Label { text: "请求延迟秒数"; color: root.cBody }
                     Field { id: setDelay; text: textOr(root.bridge.settings.request_delay_seconds, "1"); Layout.fillWidth: true }
-                    Label { text: "代理"; color: "#334155" }
+                    Label { text: "代理"; color: root.cBody }
                     Field { id: setProxy; text: textOr(root.bridge.settings.proxy, ""); Layout.fillWidth: true }
-                    Label { text: "定时任务"; color: "#334155" }
+                    Label { text: "定时任务"; color: root.cBody }
                     AppCheck { id: setScheduler; text: "启用"; checked: textOr(root.bridge.settings.scheduler_enabled, "true") === "true" }
+                    Label { text: "主题色"; color: root.cBody }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        Repeater {
+                            model: [
+                                { k: "light", c: "#2F6FED" },
+                                { k: "sand", c: "#DD6B20" },
+                                { k: "slate", c: "#38BDF8" },
+                                { k: "violet", c: "#A78BFA" },
+                                { k: "teal", c: "#2DD4BF" }
+                            ]
+                            delegate: Rectangle {
+                                width: 26
+                                height: 26
+                                radius: 13
+                                color: modelData.c
+                                border.width: root.themeName === modelData.k ? 3 : 0
+                                border.color: root.cInk
+                                TapHandler { onTapped: root.bridge.setTheme(modelData.k) }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
                 }
                 PrimaryButton {
                     text: "保存设置"
@@ -1330,7 +1394,7 @@ ApplicationWindow {
                     spacing: 10
                     Label {
                         text: "当前版本　" + root.bridge.appVersion
-                        color: "#0F172A"
+                        color: root.cInk
                         font.weight: Font.DemiBold
                         Layout.fillWidth: true
                     }
@@ -1340,7 +1404,7 @@ ApplicationWindow {
                 Label {
                     visible: root.bridge.updateStatus.length > 0
                     text: root.bridge.updateStatus
-                    color: "#64748B"
+                    color: root.cMuted
                     font.pixelSize: 13
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
@@ -1518,7 +1582,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     height: 14
                                     radius: 7
-                                    color: "#F1F5F9"
+                                    color: root.cChipBg
                                     Rectangle {
                                         width: parent.width * modelData.ratio
                                         height: parent.height
@@ -1582,7 +1646,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         height: 8
                         radius: 4
-                        color: "#F1F5F9"
+                        color: root.cChipBg
                         Rectangle {
                             width: parent.width * Math.min(1, (detailPage.d.monetizationScore || 0) / 100)
                             height: parent.height
@@ -2077,7 +2141,7 @@ ApplicationWindow {
                     SecondaryButton { text: "刷新历史"; onClicked: root.bridge.refreshHistory() }
                     Label {
                         text: root.bridge.history.selected ? "当前：" + root.bridge.history.selected : "暂无监控 App"
-                        color: "#475569"
+                        color: root.cSlate
                         height: 38
                         verticalAlignment: Text.AlignVCenter
                     }

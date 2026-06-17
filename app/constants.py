@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = {
     "request_delay_seconds": "1",
     "database_path": "./data/diandian_mini.sqlite3",
     "proxy": "",
+    "theme": "slate",  # UI 主题（含亮/暗），可在设置页切换：light / sand / slate / violet / teal
     # --- Coverage scan proxy pool (覆盖词扫描多 IP 并发，仅在配置了代理时启用) ---
     # 代理清单：每行/逗号一个，形如 http://host:port（也接受 host:port）。也可放
     # data/proxies.txt。配了代理才会并发；没配则维持单线程串行（同 IP 并发=徒增封禁风险）。

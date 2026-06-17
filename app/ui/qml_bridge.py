@@ -67,7 +67,9 @@ class QmlBridge(QObject):
         self._coverage_pools: dict[tuple, tuple[list[str], str | None]] = {}
         self._dashboard: dict[str, Any] = {}
         self._tracking: dict[str, Any] = {}
-        self._settings: dict[str, Any] = {}
+        # Eagerly loaded so the QML palette (bound to settings.theme) gets the right
+        # accent on the very first frame — not after the first refreshSettings().
+        self._settings: dict[str, Any] = services["settings_service"].get_all()
         self._alerts: dict[str, Any] = {"rows": []}
         self._search: dict[str, Any] = {"rows": [], "summary": "等待搜索"}
         self._detail: dict[str, Any] = {"loaded": False}
@@ -478,6 +480,18 @@ class QmlBridge(QObject):
             lambda count: self._after_mutation(f"已标记 {count} 条为已读。"),
             label="正在标记提醒...",
         )
+
+    @Slot(str)
+    def setTheme(self, name: str) -> None:
+        """Persist + apply the UI accent theme. A cheap local write; emits
+        settingsChanged so the QML palette (bound to settings.theme) recolors live."""
+        name = (name or "").strip() or "teal"
+        try:
+            self.services["settings_service"].set_many({"theme": name})
+        except Exception:  # noqa: BLE001
+            pass
+        self._settings = {**self._settings, "theme": name}
+        self.settingsChanged.emit()
 
     @Slot("QVariant")
     def saveSettings(self, payload) -> None:
