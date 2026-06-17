@@ -894,6 +894,12 @@ ApplicationWindow {
                     onCurrentIndexChanged: {
                         opacity = 0
                         pageFade.restart()
+                        // Opening 提醒 marks alerts as read so the unread badge clears —
+                        // standard notification-tray behaviour. markAllAlertsRead refreshes
+                        // the list + badge afterwards; guarded so it only runs when needed.
+                        if (currentIndex === root.pageIndex("alerts")
+                                && (root.bridge.alerts.unread || 0) > 0)
+                            root.bridge.markAllAlertsRead()
                     }
 
                     NumberAnimation {
