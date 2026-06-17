@@ -19,3 +19,12 @@ CREATE TABLE IF NOT EXISTS keyword_corpus (
 -- (confirmed, hit_count, last_seen_at) → reverse index walk + LIMIT, no sort.
 CREATE INDEX IF NOT EXISTS ix_corpus_fetch
   ON keyword_corpus (platform, country, lang, confirmed, hit_count, last_seen_at);
+
+-- Per-IP rate-limit counters (fixed-window). `bucket` = "<sha256(salt|ip)>|<scope>|<window>"
+-- so no raw IP is ever stored; rows expire at `reset_at` and are swept opportunistically.
+-- The Worker also creates this lazily, so a fresh deploy needs no manual migration.
+CREATE TABLE IF NOT EXISTS rate_limit (
+  bucket   TEXT PRIMARY KEY,
+  count    INTEGER NOT NULL,
+  reset_at INTEGER NOT NULL   -- epoch seconds when this window ends
+);
