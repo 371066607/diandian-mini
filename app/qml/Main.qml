@@ -626,6 +626,8 @@ ApplicationWindow {
         color: root.cChipBg
         border.color: root.cLine
         onValuesChanged: cv.requestPaint()
+        onLabelsChanged: cv.requestPaint()
+        onInvertChanged: cv.requestPaint()
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: 12
@@ -644,22 +646,35 @@ ApplicationWindow {
                     var vals = tc.values || []
                     var lbls = tc.labels || []
                     var n = vals.length
-                    var padL = 6, padR = 6, padT = 10, padB = 20
+                    var padL = 42, padR = 8, padT = 10, padB = 20
                     var w = width - padL - padR, h = height - padT - padB
                     var lineC = "" + root.cBlue, gridC = "" + root.cLine, txtC = "" + root.cFaint
+                    var fmt = function (v) {
+                        if (tc.invert) return "#" + Math.round(v)
+                        var a = Math.abs(v)
+                        if (a >= 1000000) return (v / 1000000).toFixed(a >= 10000000 ? 0 : 1) + "M"
+                        if (a >= 1000) return (v / 1000).toFixed(a >= 10000 ? 0 : 1) + "k"
+                        if (a > 0 && a < 10 && Math.round(v) !== v) return v.toFixed(1)
+                        return "" + Math.round(v)
+                    }
+                    var mn = n ? vals[0] : 0, mx = n ? vals[0] : 1
+                    for (var i = 0; i < n; i++) { mn = Math.min(mn, vals[i]); mx = Math.max(mx, vals[i]) }
+                    if (mn === mx) { mx = mn + 1 }
+                    // 横向网格线 + Y 轴量级刻度（上下幅度区间）
                     ctx.strokeStyle = gridC; ctx.lineWidth = 1
+                    ctx.fillStyle = txtC; ctx.font = "10px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle"
                     for (var g = 0; g <= 3; g++) {
                         var gy = padT + h * g / 3
                         ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(padL + w, gy); ctx.stroke()
+                        var gv = tc.invert ? (mn + (mx - mn) * g / 3) : (mx - (mx - mn) * g / 3)
+                        ctx.fillText(fmt(gv), padL - 6, gy)
                     }
+                    ctx.textBaseline = "alphabetic"
                     if (n === 0) {
                         ctx.fillStyle = txtC; ctx.font = "12px sans-serif"; ctx.textAlign = "center"
-                        ctx.fillText("暂无历史数据（同步后逐日累积）", width / 2, padT + h / 2)
+                        ctx.fillText("暂无历史数据（同步后逐日累积）", padL + w / 2, padT + h / 2)
                         return
                     }
-                    var mn = vals[0], mx = vals[0]
-                    for (var i = 0; i < n; i++) { mn = Math.min(mn, vals[i]); mx = Math.max(mx, vals[i]) }
-                    if (mn === mx) { mx = mn + 1 }
                     var xat = function (idx) { return padL + (n === 1 ? w / 2 : idx * w / (n - 1)) }
                     var yat = function (v) { var t = (v - mn) / (mx - mn); return tc.invert ? padT + t * h : padT + (1 - t) * h }
                     ctx.strokeStyle = lineC; ctx.lineWidth = 2; ctx.beginPath()
@@ -1305,9 +1320,18 @@ ApplicationWindow {
         property var monTree: ({ apps: [] })
         property var monDetail: ({ title: "", subtitle: "", charts: [] })
         property string selKey: ""
+        property string monRange: "30"   // 日期区间：7 / 30 / 90 天，或 all 全部
+        property var cur: ({ kind: "", appId: "", ctry: "", lang: "", key: "" })
         function selectMon(kind, appId, ctry, lng, key) {
+            monPage.cur = { kind: kind, appId: appId, ctry: ctry, lang: lng, key: key }
             monPage.selKey = kind + ":" + appId + ":" + key
-            monPage.monDetail = root.bridge.monitorSeries(kind, appId, ctry, lng, key)
+            monPage.loadSeries()
+        }
+        function loadSeries() {
+            if (!monPage.cur.kind) return
+            var d = monPage.monRange === "all" ? 0 : parseInt(monPage.monRange)
+            monPage.monDetail = root.bridge.monitorSeries(monPage.cur.kind, monPage.cur.appId,
+                                                          monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, d)
         }
         Component.onCompleted: monPage.monTree = root.bridge.monitorTree()
         Connections {
@@ -1489,6 +1513,34 @@ ApplicationWindow {
                             color: root.cFaint
                             font.pixelSize: 12
                             Layout.fillWidth: true
+                        }
+                        RowLayout {
+                            visible: monPage.cur.kind !== ""
+                            spacing: 6
+                            Layout.topMargin: 2
+                            Repeater {
+                                model: [{ k: "7", l: "7 天" }, { k: "30", l: "30 天" }, { k: "90", l: "90 天" }, { k: "all", l: "全部" }]
+                                Rectangle {
+                                    id: rangeTab
+                                    property bool on: monPage.monRange === modelData.k
+                                    radius: 7
+                                    implicitHeight: 28
+                                    implicitWidth: tabLbl.implicitWidth + 22
+                                    color: rangeTab.on ? root.cBlueSoft : (tabHover.hovered ? root.cChipBg : "transparent")
+                                    border.width: 1
+                                    border.color: rangeTab.on ? root.cBlue : root.cLine
+                                    Label {
+                                        id: tabLbl
+                                        anchors.centerIn: parent
+                                        text: modelData.l
+                                        color: rangeTab.on ? root.cBlue : root.cMuted
+                                        font.pixelSize: 12
+                                        font.weight: rangeTab.on ? Font.DemiBold : Font.Normal
+                                    }
+                                    HoverHandler { id: tabHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: { monPage.monRange = modelData.k; monPage.loadSeries() } }
+                                }
+                            }
                         }
                         Repeater {
                             model: root.rows(monPage.monDetail, "charts")

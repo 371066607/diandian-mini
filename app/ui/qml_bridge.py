@@ -402,17 +402,24 @@ class QmlBridge(QObject):
             })
         return {"apps": tree}
 
-    @Slot(str, str, str, str, str, result="QVariant")
-    def monitorSeries(self, kind: str, app_id: str, country: str, lang: str, key: str) -> dict[str, Any]:
+    @Slot(str, str, str, str, str, int, result="QVariant")
+    def monitorSeries(self, kind: str, app_id: str, country: str, lang: str, key: str,
+                      days: int = 30) -> dict[str, Any]:
         """Time-series for a selected monitored object, ready to chart. kind: 'app'
         (rating/installs/reviews) | 'keyword' (rank) | 'chart' (rank). key: the keyword,
-        or 'collection|category' for a chart."""
+        or 'collection|category' for a chart. ``days`` windows to the last N days
+        (<=0 = all history) — drives the date-range selector in the UI."""
         country = country or "us"
         lang = lang or "en"
+        cutoff = "" if days <= 0 else (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+        def win(items):
+            return [r for r in items if not cutoff or (r.captured_at or "") >= cutoff]
+
         try:
             with self.database.session() as session:
                 if kind == "keyword":
-                    rows = self.keyword_rank_repository.history(session, key, app_id, country, lang)
+                    rows = win(self.keyword_rank_repository.history(session, key, app_id, country, lang))
                     labels = [r.captured_at[5:10] for r in rows]
                     values = [r.rank if r.rank else 0 for r in rows]
                     cur = self._rank_text(rows[-1].rank if rows else None)
