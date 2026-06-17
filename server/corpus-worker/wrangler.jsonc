@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "diandian-corpus",
+  "main": "src/index.js",
+  "compatibility_date": "2026-01-01",
+
+  // Worker logs / errors in the Cloudflare dashboard — handy for watching crowd-sourced
+  // ingest and debugging. Included on the free tier.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+
+  // D1 (edge SQLite). Run `npx wrangler d1 create diandian-corpus` and paste the printed
+  // database_id below before the first deploy.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "diandian-corpus",
+      "database_id": "b31b6cb9-e88c-4858-9ab6-3012db66c61f"
+    }
+  ]
+
+  // API_KEY is a SECRET — set with `npx wrangler secret put API_KEY`, never put it here.
+}
