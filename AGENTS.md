@@ -38,7 +38,7 @@ UI (app/ui — PySide6 pages/widgets)
       → Models (app/db/models.py — ORM)   /   Schemas (app/schemas — pydantic DTOs)
 ```
 
-**Composition root — `main.py:build_services()`.** Every service is constructed once here and collaborators are injected via constructors (database, other services). The resulting `services` dict is handed to `MainWindow`, which passes it down to every page. There is no global/singleton service locator; add new services here and thread them through.
+**Composition root — `app/composition.py:build_services()`** (the thin `main.py` launcher just imports and calls it). Every service is constructed once here and collaborators are injected via constructors (database, other services). The resulting `services` dict is handed to `MainWindow` / the QML bridge, which passes it down to every page. There is no global/singleton service locator; add new services here and thread them through. It lives under `app/` (NOT `main.py`) on purpose: the hot-patch overlays a downloaded `app/` onto `sys.path` but never re-runs the bundled `main.py`, so a newly-added service only reaches existing users via a code patch if it's registered here.
 
 **DB session ownership.** `Database` (`app/db/database.py`) exposes `with database.session() as session:` — a contextmanager that commits on success, rolls back on exception, always closes (`expire_on_commit=False`). **Services open sessions; repositories never do.** Every repository method takes `session` as its first argument and is otherwise stateless (repos are instantiated once in a service's `__init__` and hold no data).
 
