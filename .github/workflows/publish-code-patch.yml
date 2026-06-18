@@ -24,7 +24,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: 打包代码补丁并发布到 `code` 标签
         env:
           GH_TOKEN: ${{ github.token }}
