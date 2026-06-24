@@ -6,13 +6,13 @@ Production API base:
 CATCH_RADAR_STOREINTEL_API_URL=https://catchradar.meshub.ai
 ```
 
-Local API base (desktop default):
+Local API base (for backend development only):
 
 ```bash
 CATCH_RADAR_STOREINTEL_API_URL=http://127.0.0.1:8081
 ```
 
-The desktop now starts in API mode by default, using `http://127.0.0.1:8081`
+The desktop now starts in API mode by default, using `https://catchradar.meshub.ai`
 when no API base env var is provided. API mode must keep `RemoteSchedulerProxy`;
 the backend owns scheduled sync, background refresh execution, persistence, and
 scraping.
