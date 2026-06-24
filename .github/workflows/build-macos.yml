@@ -191,13 +191,93 @@ jobs:
             exit 1
           fi
           echo "Submitting $dmg for Apple notarization..."
-          xcrun notarytool submit "$dmg" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait \
-            --timeout 2h \
-            --verbose
+          submit_json="$RUNNER_TEMP/notary-submit-${{ matrix.label }}.json"
+          submit_ok=false
+          for attempt in 1 2 3; do
+            if xcrun notarytool submit "$dmg" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --no-wait \
+                --output-format json \
+                --no-progress > "$submit_json"; then
+              submit_ok=true
+              break
+            fi
+            echo "::warning::notarytool submit attempt $attempt failed; retrying in 60s."
+            sleep 60
+          done
+          if [ "$submit_ok" != "true" ]; then
+            echo "::error::notarytool submit failed after 3 attempts." >&2
+            exit 1
+          fi
+          cat "$submit_json"
+          submission_id=$(python3 - "$submit_json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as f:
+              print(json.load(f).get("id", ""))
+          PY
+          )
+          if [ -z "$submission_id" ]; then
+            echo "::error::notarytool submit did not return a submission id." >&2
+            exit 1
+          fi
+          echo "Notary submission id: $submission_id"
+
+          accepted=false
+          deadline=$((SECONDS + 7200))
+          poll_attempt=1
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            info_json="$RUNNER_TEMP/notary-info-${{ matrix.label }}.json"
+            if xcrun notarytool info "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --output-format json \
+                --no-progress > "$info_json"; then
+              cat "$info_json"
+              status=$(python3 - "$info_json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as f:
+              print(json.load(f).get("status", ""))
+          PY
+              )
+              echo "Notary status: $status"
+              case "$status" in
+                Accepted)
+                  accepted=true
+                  break
+                  ;;
+                Invalid|Rejected)
+                  xcrun notarytool log "$submission_id" - \
+                    --apple-id "$APPLE_ID" \
+                    --team-id "$APPLE_TEAM_ID" \
+                    --password "$APPLE_APP_SPECIFIC_PASSWORD" || true
+                  echo "::error::Apple notarization ended with status: $status" >&2
+                  exit 1
+                  ;;
+              esac
+            else
+              rc=$?
+              echo "::warning::notarytool info attempt $poll_attempt failed with exit code $rc; retrying."
+            fi
+            poll_attempt=$((poll_attempt + 1))
+            sleep 60
+          done
+          if [ "$accepted" != "true" ]; then
+            echo "::error::Apple notarization did not complete within 2 hours." >&2
+            xcrun notarytool info "$submission_id" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --output-format json \
+              --no-progress || true
+            exit 1
+          fi
           echo "Stapling notarization ticket to $dmg..."
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
