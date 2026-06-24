@@ -27,15 +27,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Build .exe
-        run: pyinstaller --noconfirm --clean DiandianMini.spec
+        run: pyinstaller --noconfirm --clean CatchRadar.spec
       - name: Smoke self-check (bundled binary boots)
-        run: dist/DiandianMini/DiandianMini.exe --smoke-test
+        run: dist/CatchRadar/CatchRadar.exe --smoke-test
       - name: Zip bundle
-        run: Compress-Archive -Path dist/DiandianMini -DestinationPath dist/DiandianMini-windows.zip
+        run: Compress-Archive -Path dist/CatchRadar -DestinationPath dist/CatchRadar-windows.zip
       - name: Publish to `windows` release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create windows --title "Windows 整合包" --notes "最新 Windows 整合包（解压双击即用）" 2>/dev/null || true
-          gh release upload windows dist/DiandianMini-windows.zip --clobber
+          gh release upload windows dist/CatchRadar-windows.zip --clobber

@@ -45,3 +45,18 @@ class AppScheduler:
             id="sync_tracked",
             replace_existing=True,
         )
+
+
+class RemoteSchedulerProxy:
+    """No-op scheduler used when the Go StoreIntel backend owns scheduled sync."""
+
+    running = False
+
+    def start(self) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        return None
+
+    def reload_jobs(self) -> None:
+        return None

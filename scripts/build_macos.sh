@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build a standalone macOS app bundle with PyInstaller -> dist/DiandianMini.app
+# Build a standalone macOS app bundle with PyInstaller -> dist/CatchRadar.app
 set -eu
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -16,8 +16,8 @@ fi
 "$PYTHON" -m pip install --quiet --upgrade pyinstaller
 "$PYTHON" -m pip install --quiet -r requirements.txt
 
-"$PYTHON" -m PyInstaller --noconfirm --clean DiandianMini.spec
+"$PYTHON" -m PyInstaller --noconfirm --clean CatchRadar.spec
 
 echo ""
-echo "✅ 打包完成: dist/DiandianMini.app"
-echo "   运行: open dist/DiandianMini.app"
+echo "✅ 打包完成: dist/CatchRadar.app"
+echo "   运行: open dist/CatchRadar.app"

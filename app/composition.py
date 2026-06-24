@@ -10,8 +10,11 @@ thread them through, same as before.
 
 from __future__ import annotations
 
+import os
+
+from app.constants import DEFAULT_SETTINGS, DEFAULT_STOREINTEL_API_URL
 from app.db.database import Database
-from app.jobs.scheduler import AppScheduler
+from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
 from app.services.alert_service import AlertService
 from app.services.app_store_service import AppStoreService
 from app.services.chart_rank_service import ChartRankService
@@ -25,16 +28,43 @@ from app.services.keyword_service import KeywordService
 from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
 from app.services.settings_service import SettingsService
+from app.services.store_intel_api_client import StoreIntelApiClient
 from app.services.tracking_service import TrackingService
 from app.services.update_service import UpdateService
 from app.utils.network import apply_proxy_env
 from app.utils.normalize import safe_float
 
 
+_DISABLED_API_VALUES = {"", "0", "false", "no", "off", "none", "local", "legacy"}
+_LOCAL_MODE_ENV_KEYS = ("CATCH_RADAR_LEGACY_LOCAL_MODE", "CATCH_RADAR_OFFLINE_MODE")
+
+
+def _env_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _store_intel_api_url() -> str | None:
+    if any(_env_truthy(os.environ.get(key)) for key in _LOCAL_MODE_ENV_KEYS):
+        return None
+
+    for key in ("CATCH_RADAR_STOREINTEL_API_URL", "STOREINTEL_API_URL"):
+        if key in os.environ:
+            value = (os.environ.get(key) or "").strip()
+            if value.lower() in _DISABLED_API_VALUES:
+                return None
+            return value
+
+    return DEFAULT_STOREINTEL_API_URL
+
+
 def build_services(database: Database) -> dict[str, object]:
     settings_service = SettingsService(database)
-    settings = settings_service.get_all()
-    apply_proxy_env(settings.get("proxy"))
+    store_intel_api_url = _store_intel_api_url()
+    settings = (
+        settings_service.get_all() if store_intel_api_url is None else DEFAULT_SETTINGS.copy()
+    )
+    if store_intel_api_url is None:
+        apply_proxy_env(settings.get("proxy"))
     google_play_service = GooglePlayService(
         request_delay_seconds=safe_float(settings.get("request_delay_seconds"), 1.0)
     )
@@ -68,16 +98,24 @@ def build_services(database: Database) -> dict[str, object]:
         google_play_service=google_play_service,
         app_store_service=app_store_service,
     )
-    history_retention_service = HistoryRetentionService(
-        database, settings_service=settings_service
-    )
-    # The scheduler invokes ``sync_tracked_job(tracking_service)`` (its ``args`` are fixed
-    # and scheduler.py is not edited here), so the daily cleanup is reached by attaching the
-    # retention service to tracking_service; sync_tracked_job picks it up via getattr.
-    tracking_service.retention_service = history_retention_service
-    scheduler = AppScheduler(settings_service=settings_service, tracking_service=tracking_service)
+    history_retention_service = HistoryRetentionService(database, settings_service=settings_service)
     update_service = UpdateService()
     export_service = ExportService(database)
+    store_intel_api_client = StoreIntelApiClient(store_intel_api_url)
+    # API mode is the default desktop shape: the Go backend owns scheduled sync,
+    # refresh workers, persistence, and scraping. Local scheduling is kept only
+    # for explicit legacy/offline mode.
+    if store_intel_api_client.enabled:
+        scheduler = RemoteSchedulerProxy()
+    else:
+        # The scheduler invokes ``sync_tracked_job(tracking_service)`` (its ``args`` are
+        # fixed and scheduler.py is not edited here), so the daily cleanup is reached by
+        # attaching the retention service to tracking_service; sync_tracked_job picks it up
+        # via getattr.
+        tracking_service.retention_service = history_retention_service
+        scheduler = AppScheduler(
+            settings_service=settings_service, tracking_service=tracking_service
+        )
     return {
         "settings_service": settings_service,
         "google_play_service": google_play_service,
@@ -96,4 +134,5 @@ def build_services(database: Database) -> dict[str, object]:
         "scheduler": scheduler,
         "update_service": update_service,
         "export_service": export_service,
+        "store_intel_api_client": store_intel_api_client,
     }

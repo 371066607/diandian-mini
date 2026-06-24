@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -24,6 +25,9 @@ from app.utils.time_utils import (
 from app.utils.worker import Worker
 
 
+KEYWORD_RANK_CHECK_LIMIT = 30
+
+
 class QmlBridge(QObject):
     dashboardChanged = Signal()
     trackingChanged = Signal()
@@ -35,6 +39,7 @@ class QmlBridge(QObject):
     keywordsChanged = Signal()
     reviewsChanged = Signal()
     historyChanged = Signal()
+    apiLogsChanged = Signal()
     busyChanged = Signal()
     statusMessage = Signal(str)
     errorMessage = Signal(str)
@@ -46,6 +51,7 @@ class QmlBridge(QObject):
     updateApplied = Signal(str)  # (message) -> QML restart dialog
     coverageChanged = Signal()
     coverageProgress = Signal(str, float)  # (message, fraction 0..1) during a scan
+    _apiLogEntry = Signal("QVariant")
 
     def __init__(self, database, services: dict[str, object], logger, parent=None):
         super().__init__(parent)
@@ -62,15 +68,19 @@ class QmlBridge(QObject):
         self._update_status = ""
         self._pending_update: Any | None = None
         self._coverage: dict[str, Any] = self._coverage_state()
-        # Candidate pools from finished scans, keyed by (platform, app_id, country, lang)
+        # Candidate pools from finished scans, keyed by (platform, app_id, country, lang, deep)
         # — a re-scan of the same identity reuses them instead of re-paying the detail +
         # autocomplete requests (the candidates only derive from slow-moving metadata).
         self._coverage_pools: dict[tuple, tuple[list[str], str | None]] = {}
+        self._coverage_pool_key: tuple | None = None
         self._dashboard: dict[str, Any] = {}
         self._tracking: dict[str, Any] = {}
-        # Eagerly loaded so the QML palette (bound to settings.theme) gets the right
-        # accent on the very first frame — not after the first refreshSettings().
-        self._settings: dict[str, Any] = services["settings_service"].get_all()
+        # API mode starts with defaults and then refreshSettings() reads the backend.
+        # Legacy/offline mode keeps the old local settings bootstrap for the first frame.
+        if self._api_mode_enabled():
+            self._settings: dict[str, Any] = DEFAULT_SETTINGS.copy()
+        else:
+            self._settings = services["settings_service"].get_all()
         self._alerts: dict[str, Any] = {"rows": []}
         self._search: dict[str, Any] = {"rows": [], "summary": "等待搜索"}
         self._detail: dict[str, Any] = {"loaded": False}
@@ -82,13 +92,21 @@ class QmlBridge(QObject):
         self._detail_item: Any | None = None
         self._detail_context: dict[str, str] = {}
         self._detail_gen = 0
+        self._detail_request_id = 0
         self._chart_items: list[Any] = []
         self._chart_context: dict[str, Any] = {}
         self._keyword_result: Any | None = None
+        self._keyword_result_remote = False
         self._reviews_items: list[Any] = []
         self._reviews_context: dict[str, str] = {}
         self._reviews_token: Any | None = None
         self._history_selection: tuple[str, str, str] | None = None
+        self._api_logs: list[dict[str, Any]] = []
+        self._api_log_limit = 200
+        self._apiLogEntry.connect(self._append_api_log_entry)
+        client = self.services.get("store_intel_api_client")
+        if client is not None and hasattr(client, "set_log_sink"):
+            client.set_log_sink(self._queue_api_log_entry)
 
     @Property("QVariant", notify=dashboardChanged)
     def dashboard(self) -> dict[str, Any]:
@@ -130,6 +148,10 @@ class QmlBridge(QObject):
     def history(self) -> dict[str, Any]:
         return self._history
 
+    @Property("QVariant", notify=apiLogsChanged)
+    def apiLogs(self) -> list[dict[str, Any]]:
+        return self._api_logs
+
     @Property(bool, notify=busyChanged)
     def busy(self) -> bool:
         return self._busy_count > 0
@@ -138,10 +160,19 @@ class QmlBridge(QObject):
     def platform(self) -> str:
         return self._platform
 
+    def _api_mode_enabled(self) -> bool:
+        client = self.services.get("store_intel_api_client")
+        return client is not None and bool(getattr(client, "enabled", False))
+
     @Slot(str)
     def setPlatform(self, platform: str) -> None:
         platform = (platform or "").strip()
         if platform not in ("google_play", "app_store") or platform == self._platform:
+            return
+        if platform == "app_store" and self._api_mode_enabled():
+            self.errorMessage.emit(
+                "App Store 后端接口尚未接入，默认后端模式已禁用本地 iTunes 数据源。"
+            )
             return
         self._platform = platform
         self.platformChanged.emit()
@@ -162,6 +193,7 @@ class QmlBridge(QObject):
         self._charts = {"rows": [], "summary": "等待获取榜单"}
         self.chartsChanged.emit()
         self._keyword_result = None
+        self._keyword_result_remote = False
         self._keywords = {"rows": [], "summary": "等待查询排名"}
         self.keywordsChanged.emit()
         self._reviews_items = []
@@ -206,6 +238,48 @@ class QmlBridge(QObject):
         if self._platform == "app_store":
             return self.services["app_store_service"]
         return self.services["google_play_service"]
+
+    def _store_intel_api(self, platform: str | None = None):
+        """Go backend adapter used by the default Google Play shell mode.
+
+        App Store is available only in explicit legacy/offline mode until the Go
+        backend exposes an App Store source.
+        """
+        if (platform or self._platform) != "google_play":
+            return None
+        client = self.services.get("store_intel_api_client")
+        if client is not None and getattr(client, "enabled", False):
+            return client
+        return None
+
+    def _queue_api_log_entry(self, entry: dict[str, Any]) -> None:
+        self._apiLogEntry.emit(entry)
+
+    @Slot("QVariant")
+    def _append_api_log_entry(self, entry: Any) -> None:
+        if not isinstance(entry, dict):
+            return
+        row = {
+            "time": str(entry.get("time") or ""),
+            "method": str(entry.get("method") or ""),
+            "path": str(entry.get("path") or ""),
+            "query": str(entry.get("query") or ""),
+            "body": str(entry.get("body") or ""),
+            "response": str(entry.get("response") or ""),
+            "status": str(entry.get("status") or "-"),
+            "code": str(entry.get("code") or "-"),
+            "duration": f"{int(entry.get('duration_ms') or 0)}ms",
+            "ok": bool(entry.get("ok")),
+            "error": str(entry.get("error") or ""),
+            "stream": bool(entry.get("stream")),
+        }
+        self._api_logs = (self._api_logs + [row])[-self._api_log_limit :]
+        self.apiLogsChanged.emit()
+
+    @Slot()
+    def clearApiLogs(self) -> None:
+        self._api_logs = []
+        self.apiLogsChanged.emit()
 
     @Property("QVariant", notify=inputHistoryChanged)
     def inputHistory(self) -> dict[str, list[str]]:
@@ -377,41 +451,118 @@ class QmlBridge(QObject):
     def monitorTree(self) -> dict[str, Any]:
         """App-centric tree of monitored objects: each tracked app with its own tracked
         keywords and chart positions nested under it (grouped by app_id)."""
+        api = self._store_intel_api()
+        if api is not None:
+            return self._monitor_tree_api(api)
         ts = self.services["tracking_service"]
         apps = ts.list_apps()
         keywords = ts.list_keywords()
         chart_apps = ts.list_chart_apps()
         tree = []
         for a in apps:
-            tree.append({
-                "title": a.title or a.app_id,
-                "appId": a.app_id,
-                "country": a.country,
-                "lang": a.lang,
-                "lastSynced": self._fmt_dt(a.last_synced_at),
-                "keywords": [
-                    {"keyword": k.keyword, "country": k.country, "lang": k.lang,
-                     "rank": self._keyword_rank_label(k)}
-                    for k in keywords if k.app_id == a.app_id
-                ],
-                "charts": [
-                    {"collection": c.collection, "category": c.category or "",
-                     "country": c.country, "lang": c.lang, "rank": self._chart_rank_label(c)}
-                    for c in chart_apps if c.app_id == a.app_id
-                ],
-            })
+            tree.append(
+                {
+                    "title": a.title or a.app_id,
+                    "appId": a.app_id,
+                    "country": a.country,
+                    "lang": a.lang,
+                    "lastSynced": self._fmt_dt(a.last_synced_at),
+                    "keywords": [
+                        {
+                            "keyword": k.keyword,
+                            "country": k.country,
+                            "lang": k.lang,
+                            "rank": self._keyword_rank_label(k),
+                        }
+                        for k in keywords
+                        if k.app_id == a.app_id
+                    ],
+                    "charts": [
+                        {
+                            "collection": c.collection,
+                            "category": c.category or "",
+                            "country": c.country,
+                            "lang": c.lang,
+                            "rank": self._chart_rank_label(c),
+                        }
+                        for c in chart_apps
+                        if c.app_id == a.app_id
+                    ],
+                }
+            )
         return {"apps": tree}
 
+    def _monitor_tree_api(self, api) -> dict[str, Any]:
+        try:
+            apps = api.list_tracked_apps()
+            keywords = api.list_tracked_keywords()
+            chart_apps = api.list_tracked_chart_apps()
+            tree = []
+            for app in apps:
+                app_id = getattr(app, "app_id", "")
+                tree.append(
+                    {
+                        "title": getattr(app, "title", "") or app_id,
+                        "appId": app_id,
+                        "country": getattr(app, "country", "us"),
+                        "lang": getattr(app, "lang", "en"),
+                        "lastSynced": self._fmt_dt(getattr(app, "last_synced_at", "")),
+                        "keywords": [
+                            {
+                                "keyword": getattr(keyword, "keyword", ""),
+                                "country": getattr(keyword, "country", "us"),
+                                "lang": getattr(keyword, "lang", "en"),
+                                "rank": api.latest_keyword_rank_label(
+                                    getattr(keyword, "keyword", ""),
+                                    getattr(keyword, "app_id", ""),
+                                    getattr(keyword, "country", "us"),
+                                    getattr(keyword, "lang", "en"),
+                                ),
+                            }
+                            for keyword in keywords
+                            if getattr(keyword, "app_id", "") == app_id
+                        ],
+                        "charts": [
+                            {
+                                "collection": getattr(chart, "collection", ""),
+                                "category": getattr(chart, "category", "") or "",
+                                "country": getattr(chart, "country", "us"),
+                                "lang": getattr(chart, "lang", "en"),
+                                "rank": api.latest_chart_rank_label(
+                                    getattr(chart, "app_id", ""),
+                                    getattr(chart, "collection", ""),
+                                    getattr(chart, "category", "") or None,
+                                    getattr(chart, "country", "us"),
+                                    getattr(chart, "lang", "en"),
+                                ),
+                            }
+                            for chart in chart_apps
+                            if getattr(chart, "app_id", "") == app_id
+                        ],
+                    }
+                )
+            return {"apps": tree}
+        except Exception:  # noqa: BLE001
+            return {"apps": []}
+
     @Slot(str, str, str, str, str, int, result="QVariant")
-    def monitorSeries(self, kind: str, app_id: str, country: str, lang: str, key: str,
-                      days: int = 30) -> dict[str, Any]:
+    def monitorSeries(
+        self, kind: str, app_id: str, country: str, lang: str, key: str, days: int = 30
+    ) -> dict[str, Any]:
         """Time-series for a selected monitored object, ready to chart. kind: 'app'
         (rating/installs/reviews) | 'keyword' (rank) | 'chart' (rank). key: the keyword,
         or 'collection|category' for a chart. ``days`` windows to the last N days
         (<=0 = all history) — drives the date-range selector in the UI."""
         country = country or "us"
         lang = lang or "en"
-        cutoff = "" if days <= 0 else (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        api = self._store_intel_api()
+        if api is not None:
+            return self._monitor_series_api(api, kind, app_id, country, lang, key, days)
+        cutoff = (
+            ""
+            if days <= 0
+            else (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        )
 
         def win(items):
             return [r for r in items if not cutoff or (r.captured_at or "") >= cutoff]
@@ -419,44 +570,313 @@ class QmlBridge(QObject):
         try:
             with self.database.session() as session:
                 if kind == "keyword":
-                    rows = win(self.keyword_rank_repository.history(session, key, app_id, country, lang))
+                    rows = win(
+                        self.keyword_rank_repository.history(session, key, app_id, country, lang)
+                    )
                     labels = [r.captured_at[5:10] for r in rows]
                     values = [r.rank if r.rank else 0 for r in rows]
                     cur = self._rank_text(rows[-1].rank if rows else None)
-                    return {"title": key, "subtitle": f"{app_id} · {country}/{lang}",
-                            "charts": [{"name": "排名", "labels": labels, "values": values,
-                                        "current": cur, "invert": True}]}
+                    return {
+                        "title": key,
+                        "subtitle": f"{app_id} · {country}/{lang}",
+                        "charts": [
+                            {
+                                "name": "排名",
+                                "labels": labels,
+                                "values": values,
+                                "current": cur,
+                                "invert": True,
+                            }
+                        ],
+                    }
                 if kind == "chart":
                     coll, _, cat = key.partition("|")
                     rows = self.chart_rank_repository.history(
-                        session, app_id, coll, cat or None, country, lang)
+                        session, app_id, coll, cat or None, country, lang
+                    )
                     labels = [r.captured_at[5:10] for r in rows]
                     values = [r.rank if r.rank else 0 for r in rows]
                     cur = self._rank_text(rows[-1].rank if rows else None)
-                    return {"title": coll + (f" · {cat}" if cat else ""), "subtitle": app_id,
-                            "charts": [{"name": "榜单名次", "labels": labels, "values": values,
-                                        "current": cur, "invert": True}]}
+                    return {
+                        "title": coll + (f" · {cat}" if cat else ""),
+                        "subtitle": app_id,
+                        "charts": [
+                            {
+                                "name": "榜单名次",
+                                "labels": labels,
+                                "values": values,
+                                "current": cur,
+                                "invert": True,
+                            }
+                        ],
+                    }
                 rows = self.snapshot_repository.get_history(session, app_id, country, lang)
                 labels = [r.captured_at[5:10] for r in rows]
                 last = rows[-1] if rows else None
-                return {"title": (last.title if last and last.title else app_id),
-                        "subtitle": f"{app_id} · {country}/{lang}",
-                        "charts": [
-                            {"name": "评分", "labels": labels,
-                             "values": [round(r.rating, 2) if r.rating else 0 for r in rows],
-                             "current": (f"{last.rating:.2f}" if last and last.rating else "-"),
-                             "invert": False},
-                            {"name": "安装量", "labels": labels,
-                             "values": [r.real_installs or r.min_installs or 0 for r in rows],
-                             "current": (str(last.real_installs or last.min_installs or 0) if last else "-"),
-                             "invert": False},
-                            {"name": "评论数", "labels": labels,
-                             "values": [r.reviews_count or 0 for r in rows],
-                             "current": (str(last.reviews_count or 0) if last else "-"),
-                             "invert": False},
-                        ]}
+                return {
+                    "title": (last.title if last and last.title else app_id),
+                    "subtitle": f"{app_id} · {country}/{lang}",
+                    "charts": [
+                        {
+                        "name": "评分",
+                        "labels": labels,
+                        "values": [
+                            round(getattr(r, "rating", None), 2)
+                            if getattr(r, "rating", None)
+                            else 0
+                            for r in rows
+                        ],
+                        "current": (
+                            f"{getattr(last, 'rating'):.2f}"
+                            if last and getattr(last, "rating", None)
+                            else "-"
+                        ),
+                        "invert": False,
+                    },
+                    {
+                        "name": "安装量",
+                        "labels": labels,
+                        "values": [
+                            getattr(r, "real_installs", None)
+                            or getattr(r, "min_installs", None)
+                            or 0
+                            for r in rows
+                        ],
+                        "current": (
+                            str(
+                                getattr(last, "real_installs", None)
+                                or getattr(last, "min_installs", None)
+                                or 0
+                            )
+                            if last
+                            else "-"
+                        ),
+                        "invert": False,
+                    },
+                    {
+                        "name": "评论数",
+                        "labels": labels,
+                        "values": [getattr(r, "reviews_count", None) or 0 for r in rows],
+                        "current": (
+                            str(getattr(last, "reviews_count", None) or 0) if last else "-"
+                        ),
+                        "invert": False,
+                    },
+                    ],
+                }
         except Exception:  # noqa: BLE001
             return {"title": "", "subtitle": "", "charts": []}
+
+    def _monitor_series_api(
+        self,
+        api,
+        kind: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        key: str,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        cutoff = (
+            ""
+            if days <= 0
+            else (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        )
+
+        def win(items):
+            return [
+                item
+                for item in items
+                if not cutoff or (getattr(item, "captured_at", "") or "") >= cutoff
+            ]
+
+        try:
+            if kind == "keyword":
+                rows = win(api.list_keyword_rank_history(key, app_id, country, lang))
+                labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+                values = [
+                    getattr(row, "rank", None) or getattr(row, "checked_limit", None) or 0
+                    for row in rows
+                ]
+                current_rank = getattr(rows[-1], "rank", None) if rows else None
+                return {
+                    "title": key,
+                    "subtitle": f"{app_id} · {country}/{lang}",
+                    "charts": [
+                        {
+                            "name": "排名",
+                            "labels": labels,
+                            "values": values,
+                            "current": self._rank_text(current_rank),
+                            "invert": True,
+                        }
+                    ],
+                }
+            if kind == "chart":
+                collection, _, category = key.partition("|")
+                rows = win(
+                    api.list_chart_rank_history(
+                        app_id,
+                        collection,
+                        category or None,
+                        country,
+                        lang,
+                    )
+                )
+                labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+                values = [
+                    getattr(row, "rank", None) or getattr(row, "checked_limit", None) or 0
+                    for row in rows
+                ]
+                current_rank = getattr(rows[-1], "rank", None) if rows else None
+                return {
+                    "title": collection + (f" · {category}" if category else ""),
+                    "subtitle": app_id,
+                    "charts": [
+                        {
+                            "name": "榜单名次",
+                            "labels": labels,
+                            "values": values,
+                            "current": self._rank_text(current_rank),
+                            "invert": True,
+                        }
+                    ],
+                }
+            rows = win(api.list_app_snapshots(app_id, country, lang, limit=0))
+            labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+            last = rows[-1] if rows else None
+            return {
+                "title": (getattr(last, "title", "") if last else "") or app_id,
+                "subtitle": f"{app_id} · {country}/{lang}",
+                "charts": [
+                    {
+                        "name": "评分",
+                        "labels": labels,
+                        "values": [
+                            round(getattr(row, "rating", None), 2)
+                            if getattr(row, "rating", None)
+                            else 0
+                            for row in rows
+                        ],
+                        "current": (
+                            f"{getattr(last, 'rating'):.2f}"
+                            if last is not None and getattr(last, "rating", None)
+                            else "-"
+                        ),
+                        "invert": False,
+                    },
+                    {
+                        "name": "安装量",
+                        "labels": labels,
+                        "values": [
+                            getattr(row, "real_installs", None)
+                            or getattr(row, "min_installs", None)
+                            or 0
+                            for row in rows
+                        ],
+                        "current": (
+                            str(
+                                getattr(last, "real_installs", None)
+                                or getattr(last, "min_installs", None)
+                                or 0
+                            )
+                            if last is not None
+                            else "-"
+                        ),
+                        "invert": False,
+                    },
+                    {
+                        "name": "评论数",
+                        "labels": labels,
+                        "values": [getattr(row, "reviews_count", None) or 0 for row in rows],
+                        "current": (
+                            str(getattr(last, "reviews_count", None) or 0)
+                            if last is not None
+                            else "-"
+                        ),
+                        "invert": False,
+                    },
+                ],
+            }
+        except Exception:  # noqa: BLE001
+            return {"title": "", "subtitle": "", "charts": []}
+
+    def _monitor_target(
+        self, kind: str, app_id: str, country: str, lang: str, key: str
+    ) -> tuple[str, str, str, str, str] | None:
+        kind = (kind or "").strip()
+        app_id = (app_id or "").strip()
+        country = (country or "").strip() or "us"
+        lang = (lang or "").strip() or "en"
+        key = (key or "").strip()
+        if kind not in {"app", "keyword", "chart"} or not app_id:
+            self.errorMessage.emit("请先选择一个监控对象。")
+            return None
+        if kind in {"keyword", "chart"} and not key:
+            self.errorMessage.emit("请先选择一个关键词或榜单监控。")
+            return None
+        return kind, app_id, country, lang, key
+
+    @staticmethod
+    def _split_monitor_chart_key(key: str) -> tuple[str, str]:
+        parts = (key or "").split("|", 1)
+        collection = parts[0].strip() or "top_free"
+        category = parts[1].strip() if len(parts) > 1 else "APPLICATION"
+        return collection, category or "APPLICATION"
+
+    def _toggle_monitor_api(
+        self, api, kind: str, app_id: str, country: str, lang: str, key: str
+    ) -> bool:
+        if kind == "app":
+            current = next(
+                (
+                    item
+                    for item in api.list_tracked_apps()
+                    if getattr(item, "app_id", "") == app_id
+                    and getattr(item, "country", "us") == country
+                    and getattr(item, "lang", "en") == lang
+                ),
+                None,
+            )
+            enabled = not bool(getattr(current, "enabled", False)) if current else True
+            result = api.set_tracked_app_enabled(app_id, enabled, country, lang)
+            return bool(getattr(result, "enabled", enabled))
+        if kind == "keyword":
+            current = next(
+                (
+                    item
+                    for item in api.list_tracked_keywords()
+                    if getattr(item, "keyword", "") == key
+                    and getattr(item, "app_id", "") == app_id
+                    and getattr(item, "country", "us") == country
+                    and getattr(item, "lang", "en") == lang
+                ),
+                None,
+            )
+            enabled = not bool(getattr(current, "enabled", False)) if current else True
+            platform = getattr(current, "platform", "google_play") if current else "google_play"
+            result = api.set_tracked_keyword_enabled(
+                key, app_id, enabled, country, lang, platform
+            )
+            return bool(getattr(result, "enabled", enabled))
+        collection, category = self._split_monitor_chart_key(key)
+        current = next(
+            (
+                item
+                for item in api.list_tracked_chart_apps()
+                if getattr(item, "app_id", "") == app_id
+                and getattr(item, "collection", "") == collection
+                and (getattr(item, "category", "") or "APPLICATION") == category
+                and getattr(item, "country", "us") == country
+                and getattr(item, "lang", "en") == lang
+            ),
+            None,
+        )
+        enabled = not bool(getattr(current, "enabled", False)) if current else True
+        result = api.set_tracked_chart_app_enabled(
+            app_id, collection, enabled, category, country, lang
+        )
+        return bool(getattr(result, "enabled", enabled))
 
     @Slot()
     def refreshTracking(self) -> None:
@@ -469,8 +889,11 @@ class QmlBridge(QObject):
 
     @Slot()
     def refreshSettings(self) -> None:
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["settings_service"].get_all(),
+            lambda: api.get_settings()
+            if api is not None
+            else self.services["settings_service"].get_all(),
             self._set_settings,
             label="正在读取设置...",
             busy=False,
@@ -484,6 +907,19 @@ class QmlBridge(QObject):
     def refreshHistory(self) -> None:
         self._run(self._collect_history, self._set_history, label="正在刷新历史...", busy=False)
 
+    @Slot()
+    def cleanupHistory(self) -> None:
+        api = self._store_intel_api()
+        retention_service = self.services.get("history_retention_service")
+        if api is None and retention_service is None:
+            self.errorMessage.emit("历史清理服务不可用。")
+            return
+        self._run(
+            lambda: api.cleanup_history() if api is not None else retention_service.cleanup(),
+            self._after_history_cleanup,
+            label="正在清理历史...",
+        )
+
     @Slot(str, str, str, str)
     def addApp(self, app_id: str, country: str, lang: str, frequency: str) -> None:
         if self._guard_google_play_only("App 监控"):
@@ -496,10 +932,82 @@ class QmlBridge(QObject):
         country = country.strip() or "us"
         lang = lang.strip() or "en"
         frequency = frequency.strip() or "daily"
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["tracking_service"].add_app(app_id, country, lang, frequency),
+            lambda: (
+                api.add_tracked_app(app_id, country, lang, frequency)
+                if api is not None
+                else self.services["tracking_service"].add_app(app_id, country, lang, frequency)
+            ),
             lambda _: self._after_mutation("已添加 App 监控。"),
             label="正在添加 App 监控...",
+        )
+
+    @Slot(str, str, str, str)
+    def bulkImportApps(self, raw_text: str, country: str, lang: str, frequency: str) -> None:
+        if self._guard_google_play_only("批量导入监控"):
+            return
+        app_ids = self._bulk_app_ids(raw_text)
+        if not app_ids:
+            self.errorMessage.emit("请粘贴至少一个包名。")
+            return
+        if len(app_ids) > 200:
+            self.errorMessage.emit("一次最多导入 200 个包名。")
+            return
+        country = (country or "").strip() or "us"
+        lang = (lang or "").strip() or "en"
+        frequency = (frequency or "").strip() or "daily"
+        api = self._store_intel_api()
+
+        def bulk_import() -> dict[str, Any]:
+            if api is None:
+                return self.services["tracking_service"].add_apps_bulk(
+                    app_ids, country, lang, frequency
+                )
+
+            existing_keys = {
+                (getattr(item, "app_id", ""), getattr(item, "country", "us"), getattr(item, "lang", "en"))
+                for item in api.list_tracked_apps()
+            }
+            added = 0
+            existing = 0
+            failed: list[dict[str, str]] = []
+            for app_id in app_ids:
+                if not self._is_valid_package_name(app_id):
+                    failed.append({"app_id": app_id, "reason": "包名格式不合法"})
+                    continue
+                try:
+                    already = (app_id, country, lang) in existing_keys
+                    api.add_tracked_app(app_id, country, lang, frequency)
+                    if already:
+                        existing += 1
+                    else:
+                        added += 1
+                        existing_keys.add((app_id, country, lang))
+                except Exception as exc:  # noqa: BLE001 - keep bulk import best-effort.
+                    failed.append({"app_id": app_id, "reason": str(exc)})
+            return {"added": added, "existing": existing, "failed": failed, "total": len(app_ids)}
+
+        self._run(bulk_import, self._after_bulk_imported, label="正在批量导入...")
+
+    @staticmethod
+    def _bulk_app_ids(raw_text: str) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in (raw_text or "").splitlines():
+            app_id = raw.strip()
+            if not app_id or app_id in seen:
+                continue
+            seen.add(app_id)
+            cleaned.append(app_id)
+        return cleaned
+
+    @staticmethod
+    def _is_valid_package_name(app_id: str) -> bool:
+        return bool(
+            app_id
+            and " " not in app_id
+            and re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", app_id)
         )
 
     @Slot(str, str, str, str, str)
@@ -518,13 +1026,24 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请输入要监控榜单的包名。")
             return
         self._remember_input("app_id", app_id)
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["tracking_service"].add_chart_app(
-                app_id,
-                collection.strip() or "top_free",
-                category.strip() or "APPLICATION",
-                country.strip() or "us",
-                lang.strip() or "en",
+            lambda: (
+                api.add_tracked_chart_app(
+                    app_id,
+                    collection.strip() or "top_free",
+                    category.strip() or "APPLICATION",
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                )
+                if api is not None
+                else self.services["tracking_service"].add_chart_app(
+                    app_id,
+                    collection.strip() or "top_free",
+                    category.strip() or "APPLICATION",
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                )
             ),
             lambda _: self._after_mutation("已添加榜单监控。"),
             label="正在添加榜单监控...",
@@ -532,6 +1051,16 @@ class QmlBridge(QObject):
 
     @Slot()
     def syncAll(self) -> None:
+        api = self._store_intel_api()
+        if api is not None:
+            self._run(
+                lambda: api.request_refresh("all", due_only=False),
+                lambda job: self._after_mutation(
+                    f"已提交服务器后台刷新全部监控项（任务 {getattr(job, 'job_id', '-')}）。"
+                ),
+                label="正在提交刷新请求...",
+            )
+            return
         self._run(
             lambda: self.services["tracking_service"].sync_all(False),
             lambda result: self._after_mutation(
@@ -543,6 +1072,16 @@ class QmlBridge(QObject):
 
     @Slot()
     def syncDue(self) -> None:
+        api = self._store_intel_api()
+        if api is not None:
+            self._run(
+                lambda: api.request_refresh("due", due_only=True),
+                lambda job: self._after_mutation(
+                    f"已提交服务器后台刷新到期项（任务 {getattr(job, 'job_id', '-')}）。"
+                ),
+                label="正在提交刷新请求...",
+            )
+            return
         self._run(
             lambda: self.services["tracking_service"].sync_all(True),
             lambda result: self._after_mutation(
@@ -552,10 +1091,222 @@ class QmlBridge(QObject):
             label="正在同步到期项...",
         )
 
+    @Slot(str, str, str, str, str)
+    def syncMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
+        if self._guard_google_play_only("监控同步"):
+            return
+        target = self._monitor_target(kind, app_id, country, lang, key)
+        if target is None:
+            return
+        api = self._store_intel_api()
+
+        def sync():
+            target_kind, target_app, target_country, target_lang, target_key = target
+            if api is not None:
+                if target_kind == "app":
+                    job = api.request_refresh(
+                        "app", app_id=target_app, country=target_country, lang=target_lang
+                    )
+                    return f"已提交应用后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
+                if target_kind == "keyword":
+                    job = api.request_refresh(
+                        "keyword",
+                        keyword=target_key,
+                        app_id=target_app,
+                        country=target_country,
+                        lang=target_lang,
+                    )
+                    return f"已提交关键词后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
+                collection, category = self._split_monitor_chart_key(target_key)
+                job = api.request_refresh(
+                    "chart",
+                    app_id=target_app,
+                    collection=collection,
+                    category=category,
+                    country=target_country,
+                    lang=target_lang,
+                )
+                return f"已提交榜单后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
+            tracking_service = self.services["tracking_service"]
+            if target_kind == "app":
+                tracking_service.sync_app_now(target_app, target_country, target_lang)
+                return "应用同步完成。"
+            if target_kind == "keyword":
+                result = tracking_service.sync_keyword_now(
+                    target_key, target_app, target_country, target_lang
+                )
+                rank = result.rank if getattr(result, "rank", None) is not None else "未命中"
+                return f"关键词同步完成，当前排名 {rank}。"
+            collection, category = self._split_monitor_chart_key(target_key)
+            result = tracking_service.sync_chart_now(
+                target_app, collection, category, target_country, target_lang
+            )
+            rank = result.rank if getattr(result, "rank", None) is not None else "未命中"
+            return f"榜单同步完成，当前排名 {rank}。"
+
+        label = "正在提交刷新请求..." if api is not None else "正在同步选中监控项..."
+        self._run(sync, self._after_mutation, label=label)
+
+    @Slot(str, str, str, str, str)
+    def toggleMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
+        if self._guard_google_play_only("监控启停"):
+            return
+        target = self._monitor_target(kind, app_id, country, lang, key)
+        if target is None:
+            return
+        api = self._store_intel_api()
+
+        def toggle() -> tuple[str, bool]:
+            target_kind, target_app, target_country, target_lang, target_key = target
+            if api is not None:
+                return target_kind, self._toggle_monitor_api(
+                    api, target_kind, target_app, target_country, target_lang, target_key
+                )
+            tracking_service = self.services["tracking_service"]
+            if target_kind == "app":
+                return target_kind, tracking_service.toggle_app(
+                    target_app, target_country, target_lang
+                )
+            if target_kind == "keyword":
+                return target_kind, tracking_service.toggle_keyword(
+                    target_key, target_app, target_country, target_lang
+                )
+            collection, category = self._split_monitor_chart_key(target_key)
+            return target_kind, tracking_service.toggle_chart_app(
+                target_app, collection, category, target_country, target_lang
+            )
+
+        def done(result: tuple[str, bool]) -> None:
+            target_kind, enabled = result
+            label = {"app": "应用监控", "keyword": "关键词监控", "chart": "榜单监控"}[
+                target_kind
+            ]
+            self._after_mutation(f"{label}已{'启用' if enabled else '禁用'}。")
+
+        self._run(toggle, done, label="正在切换监控状态...")
+
+    @Slot(str, str, str, str, str, str)
+    def setMonitorFrequency(
+        self, kind: str, app_id: str, country: str, lang: str, key: str, frequency: str
+    ) -> None:
+        if self._guard_google_play_only("监控频率"):
+            return
+        target = self._monitor_target(kind, app_id, country, lang, key)
+        if target is None:
+            return
+        target_kind, target_app, target_country, target_lang, target_key = target
+        frequency = (frequency or "").strip() or "daily"
+        if target_kind == "chart":
+            self.errorMessage.emit("榜单监控暂不支持修改频率。")
+            return
+        api = self._store_intel_api()
+
+        def save() -> str:
+            if api is not None:
+                if target_kind == "app":
+                    result = api.set_tracked_app_frequency(
+                        target_app, frequency, target_country, target_lang
+                    )
+                else:
+                    result = api.set_tracked_keyword_frequency(
+                        target_key, target_app, frequency, target_country, target_lang
+                    )
+                return getattr(result, "frequency", frequency)
+            tracking_service = self.services["tracking_service"]
+            if target_kind == "app":
+                return tracking_service.set_app_frequency(
+                    target_app, target_country, target_lang, frequency
+                )
+            return tracking_service.set_keyword_frequency(
+                target_key, target_app, target_country, target_lang, frequency
+            )
+
+        self._run(
+            save,
+            lambda result: self._after_mutation(
+                f"同步频率已设为「{self._frequency_label(result)}」。"
+            ),
+            label="正在设置同步频率...",
+        )
+
+    @Slot(str, str, str, str, str, str)
+    def setMonitorTag(
+        self, kind: str, app_id: str, country: str, lang: str, key: str, tag: str
+    ) -> None:
+        if self._guard_google_play_only("监控标签"):
+            return
+        target = self._monitor_target(kind, app_id, country, lang, key)
+        if target is None:
+            return
+        target_kind, target_app, target_country, target_lang, _ = target
+        if target_kind != "app":
+            self.errorMessage.emit("只有 App 监控支持标签。")
+            return
+        tag = (tag or "").strip()
+        api = self._store_intel_api()
+
+        def save() -> str:
+            if api is not None:
+                result = api.set_tracked_app_tag(target_app, tag, target_country, target_lang)
+                return getattr(result, "tag", tag)
+            result = self.services["tracking_service"].set_app_tag(
+                target_app, target_country, target_lang, tag
+            )
+            return result or ""
+
+        self._run(
+            save,
+            lambda result: self._after_mutation(
+                f"已设置标签「{result}」。" if result else "已清除标签。"
+            ),
+            label="正在设置标签...",
+        )
+
+    @Slot(str, str, str, str, str)
+    def removeMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
+        if self._guard_google_play_only("删除监控"):
+            return
+        target = self._monitor_target(kind, app_id, country, lang, key)
+        if target is None:
+            return
+        api = self._store_intel_api()
+
+        def remove() -> str:
+            target_kind, target_app, target_country, target_lang, target_key = target
+            if api is not None:
+                if target_kind == "app":
+                    api.remove_tracked_app(target_app, target_country, target_lang)
+                    return "已删除应用监控。"
+                if target_kind == "keyword":
+                    api.remove_tracked_keyword(target_key, target_app, target_country, target_lang)
+                    return "已删除关键词监控。"
+                collection, category = self._split_monitor_chart_key(target_key)
+                api.remove_tracked_chart_app(
+                    target_app, collection, category, target_country, target_lang
+                )
+                return "已删除榜单监控。"
+            tracking_service = self.services["tracking_service"]
+            if target_kind == "app":
+                tracking_service.remove_app(target_app, target_country, target_lang)
+                return "已删除应用监控。"
+            if target_kind == "keyword":
+                tracking_service.remove_keyword(target_key, target_app, target_country, target_lang)
+                return "已删除关键词监控。"
+            collection, category = self._split_monitor_chart_key(target_key)
+            tracking_service.remove_chart_app(
+                target_app, collection, category, target_country, target_lang
+            )
+            return "已删除榜单监控。"
+
+        self._run(remove, self._after_mutation, label="正在删除监控项...")
+
     @Slot()
     def markAllAlertsRead(self) -> None:
+        api = self._store_intel_api()
         self._run(
-            self.services["alert_service"].mark_all_read,
+            api.mark_alerts_read
+            if api is not None
+            else self.services["alert_service"].mark_all_read,
             lambda count: self._after_mutation(f"已标记 {count} 条为已读。"),
             label="正在标记提醒...",
         )
@@ -565,8 +1316,13 @@ class QmlBridge(QObject):
         if alert_id <= 0:
             self.errorMessage.emit("请先选择一条提醒。")
             return
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["alert_service"].mark_read([alert_id]),
+            lambda: (
+                api.mark_alerts_read([alert_id])
+                if api is not None
+                else self.services["alert_service"].mark_read([alert_id])
+            ),
             lambda count: self._after_mutation(f"已标记 {count} 条为已读。"),
             label="正在标记提醒...",
         )
@@ -576,17 +1332,29 @@ class QmlBridge(QObject):
         """Persist + apply the UI accent theme. A cheap local write; emits
         settingsChanged so the QML palette (bound to settings.theme) recolors live."""
         name = (name or "").strip() or "teal"
-        try:
-            self.services["settings_service"].set_many({"theme": name})
-        except Exception:  # noqa: BLE001
-            pass
+        api = self._store_intel_api()
+        if api is None:
+            try:
+                self.services["settings_service"].set_many({"theme": name})
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            self._run(
+                lambda: api.set_settings({"theme": name}),
+                self._set_settings,
+                label="正在保存主题...",
+                busy=False,
+            )
         self._settings = {**self._settings, "theme": name}
         self.settingsChanged.emit()
 
     @Slot("QVariant")
     def saveSettings(self, payload) -> None:
         values = self._to_dict(payload)
-        current = self.services["settings_service"].get_all()
+        api = self._store_intel_api()
+        current = (
+            dict(self._settings) if api is not None else self.services["settings_service"].get_all()
+        )
         updates = DEFAULT_SETTINGS.copy()
         updates.update(current)
         for key in updates:
@@ -604,13 +1372,16 @@ class QmlBridge(QObject):
         updates["request_delay_seconds"] = updates.get("request_delay_seconds") or "1"
 
         def save() -> None:
-            self.services["settings_service"].set_many(updates)
-            apply_proxy_env(updates.get("proxy", ""))
-            google_play_service = self.services.get("google_play_service")
-            if google_play_service is not None and hasattr(google_play_service, "configure"):
-                google_play_service.configure(
-                    request_delay_seconds=safe_float(updates["request_delay_seconds"], 1.0)
-                )
+            if api is not None:
+                api.set_settings(updates)
+            else:
+                self.services["settings_service"].set_many(updates)
+                apply_proxy_env(updates.get("proxy", ""))
+                google_play_service = self.services.get("google_play_service")
+                if google_play_service is not None and hasattr(google_play_service, "configure"):
+                    google_play_service.configure(
+                        request_delay_seconds=safe_float(updates["request_delay_seconds"], 1.0)
+                    )
             scheduler = self.services.get("scheduler")
             if scheduler is not None and hasattr(scheduler, "reload_jobs"):
                 scheduler.reload_jobs()
@@ -624,15 +1395,49 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请输入搜索关键词。")
             return
         self._remember_input("search_keyword", keyword)
-        store = self._active_store()
-        self._run(
-            lambda: store.search(
+        api = self._store_intel_api()
+        store = None if api is not None else self._active_store()
+
+        def search():
+            country_value = country.strip() or "us"
+            lang_value = lang.strip() or "en"
+            limit_value = safe_int(limit, 50)
+            if api is None:
+                return {
+                    "items": store.search(
+                        keyword,
+                        country=country_value,
+                        lang=lang_value,
+                        limit=limit_value,
+                    ),
+                    "queued": False,
+                }
+            items = api.search_cached(
                 keyword,
-                country=country.strip() or "us",
-                lang=lang.strip() or "en",
-                limit=safe_int(limit, 50),
-            ),
-            self._set_search_results,
+                country=country_value,
+                lang=lang_value,
+                limit=limit_value,
+            )
+            if not items or not all(self._has_search_display_data(item) for item in items):
+                self._request_api_refresh(
+                    api,
+                    "search",
+                    query=keyword,
+                    country=country_value,
+                    lang=lang_value,
+                    limit=limit_value,
+                )
+                items = api.search_cached(
+                    keyword,
+                    country=country_value,
+                    lang=lang_value,
+                    limit=limit_value,
+                )
+            return {"items": items, "queued": False}
+
+        self._run(
+            search,
+            self._set_search_result_payload,
             label="正在搜索应用...",
         )
 
@@ -651,11 +1456,16 @@ class QmlBridge(QObject):
         item = self._item_at(self._search_items, index, "请先选择一条搜索结果。")
         if item is None:
             return
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["tracking_service"].add_app(
-                item.app_id,
-                country.strip() or "us",
-                lang.strip() or "en",
+            lambda: (
+                api.add_tracked_app(item.app_id, country.strip() or "us", lang.strip() or "en")
+                if api is not None
+                else self.services["tracking_service"].add_app(
+                    item.app_id,
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                )
             ),
             lambda _: self._after_mutation("已加入 App 监控。"),
             label="正在加入监控...",
@@ -668,18 +1478,66 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请输入包名。")
             return
         self._remember_input("app_id", app_id)
-        self._detail_context = {
+        context = {
             "country": country.strip() or "us",
             "lang": lang.strip() or "en",
         }
-        store = self._active_store()
+        self._detail_context = context
+        self._detail_request_id += 1
+        request_id = self._detail_request_id
+        api = self._store_intel_api()
+        store = None if api is not None else self._active_store()
+
+        def detail():
+            if api is None:
+                return {
+                    "detail": store.app_detail(
+                        app_id,
+                        country=context["country"],
+                        lang=context["lang"],
+                    ),
+                    "queued": False,
+                    "request_id": request_id,
+                }
+            try:
+                cached = api.cached_app_detail(
+                    app_id,
+                    country=context["country"],
+                    lang=context["lang"],
+                )
+            except Exception:
+                self._request_api_refresh(
+                    api,
+                    "app",
+                    app_id=app_id,
+                    country=context["country"],
+                    lang=context["lang"],
+                )
+                cached = api.cached_app_detail(
+                    app_id,
+                    country=context["country"],
+                    lang=context["lang"],
+                )
+            if not self._has_app_detail_data(cached):
+                raise RuntimeError("服务器没有返回可用的应用详情数据。")
+            if not self._has_complete_app_detail_data(cached):
+                self._request_api_refresh(
+                    api,
+                    "app",
+                    app_id=app_id,
+                    country=context["country"],
+                    lang=context["lang"],
+                )
+            return {
+                "detail": cached,
+                "queued": False,
+                "partial": not self._has_complete_app_detail_data(cached),
+                "request_id": request_id,
+            }
+
         self._run(
-            lambda: store.app_detail(
-                app_id,
-                country=self._detail_context["country"],
-                lang=self._detail_context["lang"],
-            ),
-            self._set_detail_result,
+            detail,
+            self._set_detail_payload,
             label="正在获取应用详情...",
         )
 
@@ -693,9 +1551,14 @@ class QmlBridge(QObject):
         app_id = self._detail_item.app_id
         ctx = self._detail_context or {"country": "us", "lang": "en"}
         gen = self._detail_gen
+        api = self._store_intel_api(getattr(self._detail_item, "platform", "google_play"))
         self._run(
-            lambda: self.services["google_play_service"].permissions(
-                app_id, country=ctx["country"], lang=ctx["lang"]
+            lambda: (
+                getattr(self._detail_item, "permissions", {}) or {}
+                if api is not None
+                else self.services["google_play_service"].permissions(
+                    app_id, country=ctx["country"], lang=ctx["lang"]
+                )
             ),
             lambda data: self._apply_detail_permissions(gen, data),
             label="正在获取权限...",
@@ -709,6 +1572,18 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请先获取应用详情。")
             return
         app_id = self._detail_item.app_id
+        api = self._store_intel_api()
+        if api is not None:
+            self._run(
+                lambda: api.request_refresh(
+                    "app", app_id=app_id, country=country.strip() or "us", lang=lang.strip() or "en"
+                ),
+                lambda job: self._after_mutation(
+                    f"已请求服务器刷新应用快照（任务 {getattr(job, 'job_id', '-')}）。"
+                ),
+                label="正在提交刷新请求...",
+            )
+            return
         self._run(
             lambda: self.services["tracking_service"].sync_app_now(
                 app_id,
@@ -727,11 +1602,16 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请先获取应用详情。")
             return
         app_id = self._detail_item.app_id
+        api = self._store_intel_api()
         self._run(
-            lambda: self.services["tracking_service"].add_app(
-                app_id,
-                country.strip() or "us",
-                lang.strip() or "en",
+            lambda: (
+                api.add_tracked_app(app_id, country.strip() or "us", lang.strip() or "en")
+                if api is not None
+                else self.services["tracking_service"].add_app(
+                    app_id,
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                )
             ),
             lambda _: self._after_mutation("已加入 App 监控。"),
             label="正在加入监控...",
@@ -785,16 +1665,57 @@ class QmlBridge(QObject):
         }
         if self._chart_context["category"]:
             self._remember_input("chart_category", self._chart_context["category"])
+        api = self._store_intel_api(self._chart_context["platform"])
+
+        def chart():
+            limit_value = safe_int(limit, 100)
+            if api is None:
+                return {
+                    "items": self.services["chart_service"].fetch(
+                        self._chart_context["chart_type"],
+                        self._chart_context["category"],
+                        self._chart_context["country"],
+                        self._chart_context["lang"],
+                        limit_value,
+                        platform=self._chart_context["platform"],
+                    ),
+                    "queued": False,
+                }
+            try:
+                items = api.fetch_chart_cached(
+                    self._chart_context["chart_type"],
+                    self._chart_context["category"],
+                    self._chart_context["country"],
+                    self._chart_context["lang"],
+                    limit_value,
+                )
+            except Exception:
+                items = []
+            queued = False
+            if not items:
+                self._request_api_refresh(
+                    api,
+                    "chart",
+                    chart_type=self._chart_context["chart_type"],
+                    category=self._chart_context["category"],
+                    country=self._chart_context["country"],
+                    lang=self._chart_context["lang"],
+                    limit=limit_value,
+                )
+                items = api.fetch_chart_cached(
+                    self._chart_context["chart_type"],
+                    self._chart_context["category"],
+                    self._chart_context["country"],
+                    self._chart_context["lang"],
+                    limit_value,
+                )
+            if not items:
+                raise RuntimeError("服务器没有返回可用的榜单数据。")
+            return {"items": items, "queued": queued}
+
         self._run(
-            lambda: self.services["chart_service"].fetch(
-                self._chart_context["chart_type"],
-                self._chart_context["category"],
-                self._chart_context["country"],
-                self._chart_context["lang"],
-                safe_int(limit, 100),
-                platform=self._chart_context["platform"],
-            ),
-            self._set_chart_results,
+            chart,
+            self._set_chart_result_payload,
             label="正在获取榜单...",
         )
 
@@ -808,7 +1729,12 @@ class QmlBridge(QObject):
             "category": None,
             "country": "us",
             "lang": "en",
+            "platform": self._platform,
         }
+        api = self._store_intel_api(ctx.get("platform"))
+        if api is not None:
+            self.statusMessage.emit("API 模式下榜单快照由服务器后台维护。")
+            return
         self._run(
             lambda: self.services["chart_service"].save(
                 ctx["chart_type"],
@@ -838,6 +1764,32 @@ class QmlBridge(QObject):
             return
         self._remember_input("keyword", keyword.strip())
         self._remember_input("app_id", app_id.strip())
+        api = self._store_intel_api()
+        if api is not None:
+            def keyword_rank():
+                country_value = country.strip() or "us"
+                lang_value = lang.strip() or "en"
+                try:
+                    result = api.rank_keyword(
+                        keyword.strip(),
+                        app_id.strip(),
+                        country=country_value,
+                        lang=lang_value,
+                        limit=KEYWORD_RANK_CHECK_LIMIT,
+                    )
+                except Exception:
+                    result = None
+                queued = False
+                if result is None:
+                    raise RuntimeError("服务器没有返回可用的关键词排名数据。")
+                return {"result": result, "queued": queued}
+
+            self._run(
+                keyword_rank,
+                self._set_keyword_payload_from_api,
+                label="正在同步关键词排名...",
+            )
+            return
         # Strict lookup: a missing platform service must fail loudly, not silently
         # answer with Google Play data labeled as the other store.
         keyword_service = self.services[
@@ -849,7 +1801,7 @@ class QmlBridge(QObject):
                 app_id.strip(),
                 country=country.strip() or "us",
                 lang=lang.strip() or "en",
-                limit=safe_int(limit, 100),
+                limit=KEYWORD_RANK_CHECK_LIMIT,
             ),
             self._set_keyword_result,
             label="正在查询关键词排名...",
@@ -859,6 +1811,9 @@ class QmlBridge(QObject):
     def saveKeywordRank(self) -> None:
         if self._keyword_result is None:
             self.errorMessage.emit("请先查询关键词排名。")
+            return
+        if self._keyword_result_remote:
+            self._after_mutation("关键词排名已保存。")
             return
         self._run(
             lambda: self.services["keyword_service"].save_result(self._keyword_result),
@@ -883,13 +1838,24 @@ class QmlBridge(QObject):
             return
         self._remember_input("keyword", keyword)
         self._remember_input("app_id", app_id)
+        api = self._store_intel_api(platform)
         self._run(
-            lambda: self.services["tracking_service"].add_keyword(
-                keyword,
-                app_id,
-                country=country.strip() or "us",
-                lang=lang.strip() or "en",
-                platform=platform,
+            lambda: (
+                api.add_tracked_keyword(
+                    keyword,
+                    app_id,
+                    country=country.strip() or "us",
+                    lang=lang.strip() or "en",
+                    platform=platform,
+                )
+                if api is not None
+                else self.services["tracking_service"].add_keyword(
+                    keyword,
+                    app_id,
+                    country=country.strip() or "us",
+                    lang=lang.strip() or "en",
+                    platform=platform,
+                )
             ),
             lambda _: self._after_mutation("已加入关键词监控。"),
             label="正在加入关键词监控...",
@@ -902,9 +1868,7 @@ class QmlBridge(QObject):
         return self._coverage
 
     @Slot(str, str, str, bool)
-    def discoverCoverage(
-        self, app_id: str, country: str, lang: str, deep: bool = False
-    ) -> None:
+    def discoverCoverage(self, app_id: str, country: str, lang: str, deep: bool = False) -> None:
         if self._coverage.get("running"):
             self.statusMessage.emit("已有覆盖扫描进行中，请等待其完成。")
             return
@@ -919,18 +1883,25 @@ class QmlBridge(QObject):
         # deep scans expand autocomplete one level further, so they build a different
         # (larger) candidate set — cache them separately from shallow scans.
         pool_key = (platform, normalize_app_id(app_id), country, lang, deep)
+        self._coverage_pool_key = pool_key
         cached_pool = self._coverage_pools.get(pool_key)
-        # Build a proxy pool from settings + data/proxies.txt. Concurrency is honoured
-        # ONLY when proxies exist — parallel same-IP scraping just multiplies ban risk.
-        proxies = load_proxies(self.services.get("settings_service"), DATA_DIR)
-        proxy_pool = ProxyPool(proxies) if proxies else None
-        max_workers = self._coverage_concurrency() if proxy_pool else 1
-        if proxy_pool:
-            self.statusMessage.emit(
-                f"覆盖扫描启用 {len(proxy_pool)} 个代理 · {max_workers} 并发"
-            )
+        api = self._store_intel_api(platform)
+        proxy_pool = None
+        max_workers = 1
+        if api is None:
+            # Build a proxy pool from settings + data/proxies.txt. Concurrency is honoured
+            # ONLY when proxies exist — parallel same-IP scraping just multiplies ban risk.
+            proxies = load_proxies(self.services.get("settings_service"), DATA_DIR)
+            proxy_pool = ProxyPool(proxies) if proxies else None
+            max_workers = self._coverage_concurrency() if proxy_pool else 1
+            if proxy_pool:
+                self.statusMessage.emit(
+                    f"覆盖扫描启用 {len(proxy_pool)} 个代理 · {max_workers} 并发"
+                )
         self._set_coverage(
-            summary="正在深度挖掘覆盖关键词，请稍候..." if deep else "正在分析覆盖关键词，请稍候...",
+            summary="正在深度挖掘覆盖关键词，请稍候..."
+            if deep
+            else "正在分析覆盖关键词，请稍候...",
             running=True,
             app_id=app_id,
             country=country,
@@ -943,19 +1914,47 @@ class QmlBridge(QObject):
         def work():
             try:
                 candidates, canonical = cached_pool or (None, None)
-                result = self.services["keyword_coverage_service"].analyze_coverage(
-                    platform,
-                    app_id,
-                    country=country,
-                    lang=lang,
-                    limit=50,
-                    deep=deep,
-                    candidates=candidates,
-                    canonical_app_id=canonical,
-                    proxy_pool=proxy_pool,
-                    max_workers=max_workers,
-                    progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
-                )
+                if api is not None:
+                    try:
+                        result = api.cached_coverage(
+                            app_id,
+                            country=country,
+                            lang=lang,
+                            deep=deep,
+                        )
+                    except Exception:
+                        result = None
+                    if not self._has_coverage_cache_data(result):
+                        self._request_api_refresh(
+                            api,
+                            "coverage",
+                            app_id=app_id,
+                            country=country,
+                            lang=lang,
+                            deep=deep,
+                        )
+                        result = api.cached_coverage(
+                            app_id,
+                            country=country,
+                            lang=lang,
+                            deep=deep,
+                        )
+                    if not self._has_coverage_cache_data(result):
+                        raise RuntimeError("服务器没有返回可用的覆盖词数据。")
+                else:
+                    result = self.services["keyword_coverage_service"].analyze_coverage(
+                        platform,
+                        app_id,
+                        country=country,
+                        lang=lang,
+                        limit=50,
+                        deep=deep,
+                        candidates=candidates,
+                        canonical_app_id=canonical,
+                        proxy_pool=proxy_pool,
+                        max_workers=max_workers,
+                        progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
+                    )
                 return ("ok", result)
             except Exception as exc:  # surface a clean message, never leave it "running"
                 return ("error", str(exc))
@@ -963,6 +1962,17 @@ class QmlBridge(QObject):
         # busy=False: a coverage scan runs ~1-2 min, so use inline progress (the
         # CoveragePage shows a bar) instead of blocking the whole UI with the overlay.
         self._run(work, self._on_coverage_done, label="正在分析覆盖关键词...", busy=False)
+
+    @staticmethod
+    def _has_coverage_cache_data(result) -> bool:
+        if result is None:
+            return False
+        return bool(
+            getattr(result, "captured_at", "")
+            or getattr(result, "candidate_count", 0)
+            or getattr(result, "candidates", [])
+            or getattr(result, "covered", [])
+        )
 
     def _coverage_concurrency(self) -> int:
         """Max parallel workers for a proxy-backed coverage scan (clamped 1..16)."""
@@ -981,11 +1991,12 @@ class QmlBridge(QObject):
             )
             self.errorMessage.emit(f"覆盖分析失败：{value}")
             return
-        pool_key = (
+        pool_key = self._coverage_pool_key or (
             value.platform,
             normalize_app_id(value.app_id),
             value.country,
             value.lang,
+            False,
         )
         self._coverage_pools[pool_key] = (value.candidates, value.canonical_app_id)
         rows = [{"keyword": c["keyword"], "rank": c["rank"]} for c in value.covered]
@@ -1021,7 +2032,7 @@ class QmlBridge(QObject):
         self._run(
             lambda: self._fetch_reviews_for(self._reviews_context, None),
             self._set_reviews_result,
-            label="正在抓取评论...",
+            label="正在获取评论...",
         )
 
     @Slot()
@@ -1040,6 +2051,23 @@ class QmlBridge(QObject):
     def _fetch_reviews_for(self, ctx: dict[str, str], token):
         """Fetch one reviews page from the platform the context was created under,
         so a mid-flight platform switch can't mix sources."""
+        api = self._store_intel_api(ctx.get("platform"))
+        if api is not None:
+            if token is not None:
+                return [], None
+            items = api.list_cached_reviews(ctx["app_id"], limit=50)
+            if not items:
+                self._request_api_refresh(
+                    api,
+                    "reviews",
+                    app_id=ctx["app_id"],
+                    country=ctx["country"],
+                    lang=ctx["lang"],
+                    sort=ctx.get("sort", "newest"),
+                    limit=50,
+                )
+                items = api.list_cached_reviews(ctx["app_id"], limit=50)
+            return items, None
         if ctx.get("platform") == "app_store":
             return self.services["app_store_service"].reviews(
                 ctx["app_id"],
@@ -1060,12 +2088,17 @@ class QmlBridge(QObject):
         if not app_id or not self._reviews_items:
             self.errorMessage.emit("请先获取评论。")
             return
+        api = self._store_intel_api(self._reviews_context.get("platform"))
         self._run(
-            lambda: self.services["review_service"].save(
-                app_id,
-                country,
-                lang,
-                self._reviews_items,
+            lambda: (
+                api.save_reviews(app_id, country, lang, self._reviews_items)
+                if api is not None
+                else self.services["review_service"].save(
+                    app_id,
+                    country,
+                    lang,
+                    self._reviews_items,
+                )
             ),
             lambda saved: self._after_mutation(f"新保存 {saved} 条评论。"),
             label="正在保存评论...",
@@ -1112,6 +2145,16 @@ class QmlBridge(QObject):
         worker.signals.error.connect(fail)
         QThreadPool.globalInstance().start(worker)
 
+    def _request_api_refresh(self, api, kind: str, **kwargs):
+        job = api.request_refresh(kind, **kwargs)
+        job_id = getattr(job, "job_id", "") or getattr(job, "id", "")
+        if job_id:
+            job = api.wait_refresh_job(job_id, timeout=60.0, interval=1.0)
+        if str(getattr(job, "status", "")).lower() == "failed":
+            message = getattr(job, "error", "") or getattr(job, "message", "")
+            raise RuntimeError(message or "服务器刷新任务失败。")
+        return job
+
     def _finish_worker(self, worker: Worker, busy: bool) -> None:
         if worker in self._workers:
             self._workers.remove(worker)
@@ -1127,11 +2170,35 @@ class QmlBridge(QObject):
         self.refreshAlerts()
         self.refreshHistory()
 
+    def _after_bulk_imported(self, result: dict[str, Any]) -> None:
+        failed = result.get("failed", [])
+        message = (
+            f"新增 {result.get('added', 0)} 个，已存在 {result.get('existing', 0)} 个，"
+            f"失败 {len(failed)} 个"
+        )
+        if failed:
+            sample = "、".join(str(item.get("app_id", "?")) for item in failed[:3])
+            message = f"{message}（如：{sample}）"
+        self._after_mutation(message)
+
+    def _after_history_cleanup(self, result: dict[str, Any]) -> None:
+        message = (
+            f"已清理：快照 {int(result.get('snapshots') or 0)}、"
+            f"排名 {int(result.get('keywords') or 0)}、"
+            f"榜单 {int(result.get('charts') or 0)}、"
+            f"告警 {int(result.get('alerts') or 0)}、"
+            f"评论 {int(result.get('reviews') or 0)} 条。"
+        )
+        self._after_mutation(message)
+
     def _after_detail_saved(self, detail) -> None:
         self._set_detail_result(detail)
-        self._after_mutation("快照已写入 SQLite。")
+        self._after_mutation("快照已保存。")
 
     def _collect_dashboard(self) -> dict[str, Any]:
+        api = self._store_intel_api()
+        if api is not None:
+            return self._collect_dashboard_api(api)
         tracking_service = self.services["tracking_service"]
         alert_service = self.services["alert_service"]
         tracked_apps = tracking_service.list_apps()
@@ -1171,13 +2238,76 @@ class QmlBridge(QObject):
             "alerts": [self._alert_row(alert) for alert in alerts],
             "health": [self._health_row(item) for item in health],
             "ratingLabels": [self._short_time(item.captured_at) for item in recent_snapshots],
-            "ratingValues": [item.rating or 0 for item in recent_snapshots],
+            "ratingValues": [
+                getattr(item, "rating", None) or getattr(item, "latest_rating", None) or 0
+                for item in recent_snapshots
+            ],
             "keywordName": keyword_name,
             "keywordLabels": [self._short_time(item.captured_at) for item in keyword_history],
-            "keywordValues": [item.rank or item.checked_limit or 0 for item in keyword_history],
+            "keywordValues": [
+                getattr(item, "rank", None) or getattr(item, "checked_limit", None) or 0
+                for item in keyword_history
+            ],
+        }
+
+    def _collect_dashboard_api(self, api) -> dict[str, Any]:
+        tracked_apps = api.list_tracked_apps()
+        tracked_keywords = api.list_tracked_keywords()
+        chart_apps = api.list_tracked_chart_apps()
+        alerts = api.list_alerts(limit=6)
+        unread = api.unread_count()
+        snapshots_count = api.count_app_snapshots()
+        recent_snapshots = list(reversed(api.list_recent_app_snapshots(limit=8)))
+        try:
+            latest_kw = api.list_recent_keyword_ranks(limit=1)
+        except Exception:
+            latest_kw = []
+        keyword_history = []
+        keyword_name = ""
+        if latest_kw:
+            top = latest_kw[0]
+            keyword_name = top.keyword
+            try:
+                keyword_history = api.list_keyword_rank_history(
+                    top.keyword, top.app_id, top.country, top.lang
+                )
+            except Exception:
+                keyword_history = []
+        latest_sync = self._latest_sync_time(tracked_apps, tracked_keywords, chart_apps)
+        return {
+            "stats": [
+                {
+                    "label": "监控 App",
+                    "value": len(tracked_apps),
+                    "meta": f"启用 {sum(1 for x in tracked_apps if x.enabled)}",
+                },
+                {"label": "关键词监控", "value": len(tracked_keywords), "meta": "后端排名历史"},
+                {"label": "榜单监控", "value": len(chart_apps), "meta": "Go 后端榜单"},
+                {"label": "历史快照", "value": snapshots_count, "meta": "Go 后端数据"},
+                {"label": "未读提醒", "value": unread, "meta": "评分 / 版本 / 排名变化"},
+            ],
+            "latestSync": self._short_time(latest_sync) if latest_sync else "-",
+            "alerts": [self._alert_row(alert) for alert in alerts],
+            "health": [
+                self._health_row_from_tracked(item) for item in tracked_apps if item.enabled
+            ],
+            "ratingLabels": [self._short_time(item.captured_at) for item in recent_snapshots],
+            "ratingValues": [
+                getattr(item, "rating", None) or getattr(item, "latest_rating", None) or 0
+                for item in recent_snapshots
+            ],
+            "keywordName": keyword_name,
+            "keywordLabels": [self._short_time(item.captured_at) for item in keyword_history],
+            "keywordValues": [
+                getattr(item, "rank", None) or getattr(item, "checked_limit", None) or 0
+                for item in keyword_history
+            ],
         }
 
     def _collect_tracking(self) -> dict[str, Any]:
+        api = self._store_intel_api()
+        if api is not None:
+            return self._collect_tracking_api(api)
         tracking_service = self.services["tracking_service"]
         settings = self.services["settings_service"].get_all()
         apps = tracking_service.list_apps()
@@ -1233,7 +2363,86 @@ class QmlBridge(QObject):
             ],
         }
 
+    def _collect_tracking_api(self, api) -> dict[str, Any]:
+        settings = api.get_settings()
+        apps = api.list_tracked_apps()
+        keywords = api.list_tracked_keywords()
+        chart_apps = api.list_tracked_chart_apps()
+        return {
+            "defaults": {
+                "country": settings["default_country"],
+                "lang": settings["default_lang"],
+                "limit": settings["default_limit"],
+            },
+            "apps": [
+                {
+                    "title": getattr(item, "title", "") or getattr(item, "app_id", ""),
+                    "appId": getattr(item, "app_id", ""),
+                    "country": getattr(item, "country", "us"),
+                    "lang": getattr(item, "lang", "en"),
+                    "frequency": self._frequency_label(getattr(item, "frequency", "daily")),
+                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
+                    "nextSync": self._next_sync_label(
+                        getattr(item, "last_synced_at", ""),
+                        getattr(item, "frequency", "daily"),
+                    ),
+                    "failures": self._fail_label(item),
+                    "tag": getattr(item, "tag", "") or "-",
+                    "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
+                }
+                for item in apps
+            ],
+            "keywords": [
+                {
+                    "keyword": getattr(item, "keyword", ""),
+                    "appId": getattr(item, "app_id", ""),
+                    "rank": api.latest_keyword_rank_label(
+                        getattr(item, "keyword", ""),
+                        getattr(item, "app_id", ""),
+                        getattr(item, "country", "us"),
+                        getattr(item, "lang", "en"),
+                    ),
+                    "country": getattr(item, "country", "us"),
+                    "frequency": self._frequency_label(getattr(item, "frequency", "daily")),
+                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
+                    "nextSync": self._next_sync_label(
+                        getattr(item, "last_synced_at", ""),
+                        getattr(item, "frequency", "daily"),
+                    ),
+                    "failures": self._fail_label(item),
+                    "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
+                }
+                for item in keywords
+            ],
+            "charts": [
+                {
+                    "appId": getattr(item, "app_id", ""),
+                    "collection": getattr(item, "collection", ""),
+                    "category": getattr(item, "category", "") or "-",
+                    "country": getattr(item, "country", "us"),
+                    "rank": api.latest_chart_rank_label(
+                        getattr(item, "app_id", ""),
+                        getattr(item, "collection", ""),
+                        getattr(item, "category", None),
+                        getattr(item, "country", "us"),
+                        getattr(item, "lang", "en"),
+                    ),
+                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
+                    "failures": self._fail_label(item),
+                    "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
+                }
+                for item in chart_apps
+            ],
+        }
+
     def _collect_alerts(self) -> dict[str, Any]:
+        api = self._store_intel_api()
+        if api is not None:
+            alerts = api.list_alerts(limit=200)
+            return {
+                "rows": [self._alert_row(alert) for alert in alerts],
+                "unread": api.unread_count(),
+            }
         alert_service = self.services["alert_service"]
         alerts = alert_service.list_alerts(limit=200)
         return {
@@ -1242,6 +2451,9 @@ class QmlBridge(QObject):
         }
 
     def _collect_history(self) -> dict[str, Any]:
+        api = self._store_intel_api()
+        if api is not None:
+            return self._collect_history_api(api)
         tracking_service = self.services["tracking_service"]
         apps = tracking_service.list_apps()
         selected = apps[0] if apps else None
@@ -1290,20 +2502,91 @@ class QmlBridge(QObject):
                 {
                     "time": self._short_time(item.captured_at),
                     "title": item.title or item.app_id,
-                    "rating": item.rating or "-",
-                    "ratings": item.ratings_count or "-",
-                    "reviews": item.reviews_count or "-",
-                    "installs": item.installs or "-",
-                    "version": item.version or "-",
+                    "rating": getattr(item, "rating", None) or "-",
+                    "ratings": getattr(item, "ratings_count", None) or "-",
+                    "reviews": getattr(item, "reviews_count", None) or "-",
+                    "installs": getattr(item, "installs", "") or "-",
+                    "version": getattr(item, "version", "") or "-",
                 }
                 for item in snapshots
             ],
             "keywords": [
                 {
-                    "time": self._short_time(item.captured_at),
-                    "keyword": item.keyword,
-                    "rank": item.rank if item.rank is not None else "未命中",
-                    "limit": item.checked_limit,
+                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "keyword": getattr(item, "keyword", ""),
+                    "rank": getattr(item, "rank", None)
+                    if getattr(item, "rank", None) is not None
+                    else "未命中",
+                    "limit": getattr(item, "checked_limit", 0),
+                }
+                for item in keyword_rows
+            ],
+        }
+
+    def _collect_history_api(self, api) -> dict[str, Any]:
+        apps = api.list_tracked_apps()
+        selected = apps[0] if apps else None
+        if self._history_selection is not None:
+            selected = next(
+                (
+                    item
+                    for item in apps
+                    if (item.app_id, item.country, item.lang) == self._history_selection
+                ),
+                selected,
+            )
+        if selected is not None:
+            self._history_selection = (selected.app_id, selected.country, selected.lang)
+        snapshots = (
+            api.list_app_snapshots(selected.app_id, selected.country, selected.lang, limit=80)
+            if selected is not None
+            else []
+        )
+        keyword_rows = []
+        if selected is not None:
+            try:
+                keyword_rows = api.list_recent_keyword_ranks(
+                    app_id=selected.app_id,
+                    country=selected.country,
+                    lang=selected.lang,
+                    limit=80,
+                )
+            except Exception:
+                keyword_rows = []
+        return {
+            "apps": [
+                {
+                    "label": (
+                        f"{getattr(item, 'title', '') or getattr(item, 'app_id', '')}"
+                        f" · {getattr(item, 'country', 'us')}/{getattr(item, 'lang', 'en')}"
+                    ),
+                    "appId": getattr(item, "app_id", ""),
+                    "country": getattr(item, "country", "us"),
+                    "lang": getattr(item, "lang", "en"),
+                }
+                for item in apps
+            ],
+            "selected": selected.app_id if selected is not None else "",
+            "snapshots": [
+                {
+                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "title": getattr(item, "title", "") or getattr(item, "app_id", ""),
+                    "rating": getattr(item, "rating", None) or "-",
+                    "ratings": getattr(item, "ratings_count", None) or "-",
+                    "reviews": getattr(item, "reviews_count", None) or "-",
+                    "installs": getattr(item, "installs", "") or "-",
+                    "version": getattr(item, "version", "") or "-",
+                }
+                for item in snapshots
+            ],
+            "keywords": [
+                {
+                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "keyword": getattr(item, "keyword", ""),
+                    "rank": getattr(item, "rank", None)
+                    if getattr(item, "rank", None) is not None
+                    else "未命中",
+                    "limit": getattr(item, "checked_limit", 0),
                 }
                 for item in keyword_rows
             ],
@@ -1333,27 +2616,101 @@ class QmlBridge(QObject):
         self._search_items = list(items)
         rows = [
             {
-                "iconUrl": item.icon_url or "",
-                "title": item.title,
-                "appId": item.app_id,
-                "developer": item.developer or "-",
-                "rating": item.rating if item.rating is not None else "-",
-                "ratings": self._fmt_count(item.ratings_count),
-                "installs": item.installs or "-",
-                "price": item.price or "免费",
-                "hasIap": "内购" if item.has_iap else "",
-                "category": item.category or "-",
+                    "iconUrl": getattr(item, "icon_url", "") or "",
+                    "title": getattr(item, "title", "") or getattr(item, "app_id", ""),
+                    "appId": getattr(item, "app_id", ""),
+                    "developer": getattr(item, "developer", "") or "-",
+                    "rating": (
+                        getattr(item, "rating", None)
+                        if getattr(item, "rating", None) is not None
+                        else "-"
+                    ),
+                    "ratings": self._fmt_count(getattr(item, "ratings_count", None)),
+                    "installs": getattr(item, "installs", "") or "-",
+                    "price": getattr(item, "price", "") or "免费",
+                    "hasIap": "内购" if getattr(item, "has_iap", False) else "",
+                    "category": getattr(item, "category", "") or "-",
+                    "summary": getattr(item, "summary", "") or "-",
             }
             for item in items
         ]
         self._search = {"rows": rows, "summary": f"已获取 {len(rows)} 条搜索结果"}
         self.searchChanged.emit()
 
+    def _set_search_result_payload(self, payload) -> None:
+        if isinstance(payload, dict):
+            self._set_search_results(payload.get("items") or [])
+            return
+        self._set_search_results(payload)
+
+    @staticmethod
+    def _has_search_display_data(item) -> bool:
+        if item is None or not getattr(item, "app_id", ""):
+            return False
+        fields = (
+            "developer",
+            "rating",
+            "ratings_count",
+            "installs",
+        )
+        return all(getattr(item, field, None) not in (None, "", [], {}) for field in fields)
+
+    @staticmethod
+    def _has_app_detail_data(item) -> bool:
+        if item is None or not getattr(item, "app_id", ""):
+            return False
+        fields = (
+            "title",
+            "summary",
+            "store_url",
+            "icon_url",
+            "description",
+        )
+        return any(getattr(item, field, None) not in (None, "", [], {}) for field in fields)
+
+    @staticmethod
+    def _has_complete_app_detail_data(item) -> bool:
+        if item is None or not getattr(item, "app_id", ""):
+            return False
+        fields = (
+            "developer",
+            "developer_id",
+            "developer_email",
+            "developer_website",
+            "privacy_policy",
+            "rating",
+            "ratings_count",
+            "reviews_count",
+            "installs",
+            "min_installs",
+            "real_installs",
+            "version",
+            "updated",
+            "released",
+            "content_rating",
+            "screenshots",
+            "histogram",
+            "contains_ads",
+            "has_iap",
+        )
+        return any(getattr(item, field, None) not in (None, "", [], {}) for field in fields)
+
+    def _set_detail_payload(self, payload) -> None:
+        if isinstance(payload, dict):
+            if payload.get("request_id") != self._detail_request_id:
+                return
+            detail = payload.get("detail")
+            if detail is not None:
+                self._set_detail_result(detail)
+                return
+        self._set_detail_result(payload)
+
     def _set_detail_result(self, item) -> None:
         self._detail_item = item
         self._detail_gen += 1
         gen = self._detail_gen
         is_ios = item.platform == "app_store"
+        api = self._store_intel_api(getattr(item, "platform", "google_play"))
         monetization = self.services.get("monetization_service")
         score: dict[str, Any] = {"score": 0, "signals": [], "note": ""}
         if monetization is not None and not is_ios:
@@ -1401,7 +2758,7 @@ class QmlBridge(QObject):
             "reviewsValues": [],
             "installsValues": [],
             "similar": [],
-            "similarLoading": not is_ios,
+            "similarLoading": not is_ios and api is None,
             "recentAlerts": [],
             "recentReviews": [],
             "permissions": [],
@@ -1420,6 +2777,8 @@ class QmlBridge(QObject):
             busy=False,
         )
         ctx = self._detail_context or {"country": "us", "lang": "en"}
+        if api is not None:
+            return
         self._run(
             lambda: self.services["google_play_service"].similar(
                 item.app_id, country=ctx["country"], lang=ctx["lang"], limit=10
@@ -1492,71 +2851,94 @@ class QmlBridge(QObject):
         ]
 
     def _detail_metrics(self, item) -> list[dict[str, Any]]:
-        if item.platform == "app_store":
+        if getattr(item, "platform", "google_play") == "app_store":
             return self._detail_metrics_app_store(item)
-        daily = item.real_daily_installs or item.daily_installs
-        monthly = item.real_monthly_installs or item.monthly_installs
-        ads = item.contains_ads if item.contains_ads is not None else item.ad_supported
-        if item.min_android_api and item.max_android_api:
-            api_text = f"{item.min_android_api} ~ {item.max_android_api}"
-        elif item.min_android_api:
-            api_text = f"{item.min_android_api}+"
+        daily = getattr(item, "real_daily_installs", None) or getattr(item, "daily_installs", None)
+        monthly = getattr(item, "real_monthly_installs", None) or getattr(
+            item, "monthly_installs", None
+        )
+        ads = (
+            getattr(item, "contains_ads", None)
+            if getattr(item, "contains_ads", None) is not None
+            else getattr(item, "ad_supported", None)
+        )
+        min_api = getattr(item, "min_android_api", None)
+        max_api = getattr(item, "max_android_api", None)
+        if min_api and max_api:
+            api_text = f"{min_api} ~ {max_api}"
+        elif min_api:
+            api_text = f"{min_api}+"
         else:
             api_text = "-"
-        if item.original_price:
+        original_price = getattr(item, "original_price", None)
+        currency = getattr(item, "currency", "")
+        if original_price:
             original = (
-                f"{item.currency} {item.original_price:.2f}"
-                if item.currency
-                else f"{item.original_price:.2f}"
+                f"{currency} {original_price:.2f}" if currency else f"{original_price:.2f}"
             )
         else:
             original = "-"
         return [
             {
                 "label": "评分",
-                "value": f"{item.rating:.2f}" if item.rating else "-",
+                "value": f"{getattr(item, 'rating'):.2f}"
+                if getattr(item, "rating", None)
+                else "-",
                 "accent": "blue",
             },
-            {"label": "评分数", "value": self._fmt_count(item.ratings_count)},
-            {"label": "评论数", "value": self._fmt_count(item.reviews_count)},
-            {"label": "安装量", "value": item.installs or "-", "accent": "blue"},
-            {"label": "最低安装", "value": self._fmt_count(item.min_installs)},
-            {"label": "真实安装", "value": self._fmt_count(item.real_installs), "accent": "blue"},
+            {"label": "评分数", "value": self._fmt_count(getattr(item, "ratings_count", None))},
+            {"label": "评论数", "value": self._fmt_count(getattr(item, "reviews_count", None))},
+            {"label": "安装量", "value": getattr(item, "installs", "") or "-", "accent": "blue"},
+            {"label": "最低安装", "value": self._fmt_count(getattr(item, "min_installs", None))},
+            {
+                "label": "真实安装",
+                "value": self._fmt_count(getattr(item, "real_installs", None)),
+                "accent": "blue",
+            },
             {"label": "日均安装", "value": self._fmt_count(daily)},
             {"label": "月均安装", "value": self._fmt_count(monthly)},
             {
                 "label": "上线天数",
-                "value": f"{item.app_age_days:,} 天" if item.app_age_days else "-",
+                "value": f"{getattr(item, 'app_age_days'):,} 天"
+                if getattr(item, "app_age_days", None)
+                else "-",
             },
-            {"label": "发布日期", "value": item.released or "-"},
-            {"label": "最近更新", "value": item.updated or "-"},
-            {"label": "版本", "value": item.version or "-"},
-            {"label": "Android 版本", "value": item.android_version or "-"},
+            {"label": "发布日期", "value": getattr(item, "released", "") or "-"},
+            {"label": "最近更新", "value": getattr(item, "updated", "") or "-"},
+            {"label": "版本", "value": getattr(item, "version", "") or "-"},
+            {"label": "Android 版本", "value": getattr(item, "android_version", "") or "-"},
             {"label": "Android API", "value": api_text},
-            {"label": "内容分级", "value": item.content_rating or "-"},
-            {"label": "价格", "value": item.price or ("免费" if item.free else "-")},
+            {"label": "内容分级", "value": getattr(item, "content_rating", "") or "-"},
+            {
+                "label": "价格",
+                "value": getattr(item, "price", "") or (
+                    "免费" if getattr(item, "free", False) else "-"
+                ),
+            },
             {"label": "原价", "value": original},
-            {"label": "促销", "value": self._yes_no(item.sale)},
-            {"label": "内购", "value": self._yes_no(item.has_iap)},
-            {"label": "内购价", "value": item.iap_price_range or "-"},
+            {"label": "促销", "value": self._yes_no(getattr(item, "sale", None))},
+            {"label": "内购", "value": self._yes_no(getattr(item, "has_iap", None))},
+            {"label": "内购价", "value": getattr(item, "iap_price_range", "") or "-"},
             {"label": "含广告", "value": self._yes_no(ads)},
-            {"label": "可下载", "value": self._yes_no(item.available)},
+            {"label": "可下载", "value": self._yes_no(getattr(item, "available", None))},
         ]
 
     def _detail_metrics_app_store(self, item) -> list[dict[str, Any]]:
         """iOS-native chip set — iTunes lookup has no install counts / Android fields,
         but does carry size, min OS, device & language coverage and per-version rating."""
-        raw = item.raw or {}
+        raw = getattr(item, "raw", None) or {}
         current_rating = raw.get("averageUserRatingForCurrentVersion")
         devices = raw.get("supportedDevices") or []
         languages = raw.get("languageCodesISO2A") or []
         return [
             {
                 "label": "评分",
-                "value": f"{item.rating:.2f}" if item.rating else "-",
+                "value": f"{getattr(item, 'rating'):.2f}"
+                if getattr(item, "rating", None)
+                else "-",
                 "accent": "blue",
             },
-            {"label": "评分数", "value": self._fmt_count(item.ratings_count)},
+            {"label": "评分数", "value": self._fmt_count(getattr(item, "ratings_count", None))},
             {
                 "label": "当前版本评分",
                 "value": f"{current_rating:.2f}" if current_rating else "-",
@@ -1664,26 +3046,71 @@ class QmlBridge(QObject):
 
     def _collect_detail_extras(self, item) -> dict[str, Any]:
         ctx = self._detail_context or {"country": "us", "lang": "en"}
-        history = self.services["tracking_service"].get_history(
-            item.app_id, country=ctx["country"], lang=ctx["lang"]
-        )
-        alerts = self.services["alert_service"].list_alerts(app_id=item.app_id, limit=8)
-        reviews = []
-        review_service = self.services.get("review_service")
-        if review_service is not None:
-            reviews = review_service.list_cached(item.app_id, limit=10)
-        labels = [snap.captured_at[5:10] for snap in history]
-        rating_values = [snap.rating or 0 for snap in history]
-        reviews_values = [snap.reviews_count or 0 for snap in history]
-        installs_values = [snap.real_installs or snap.min_installs or 0 for snap in history]
+        api = self._store_intel_api(getattr(item, "platform", "google_play"))
+
+        def load_optional(section: str, fn):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001 - optional detail blocks must not hide the main detail
+                self.logger.warning("detail %s load failed for %s: %s", section, item.app_id, exc)
+                return []
+
+        if api is not None:
+            history = load_optional(
+                "history",
+                lambda: api.list_app_snapshots(
+                    item.app_id, country=ctx["country"], lang=ctx["lang"], limit=80
+                ),
+            )
+            alerts = load_optional(
+                "alerts",
+                lambda: api.list_alerts(app_id=item.app_id, limit=8),
+            )
+            reviews = load_optional(
+                "reviews",
+                lambda: self._list_cached_reviews(
+                    api,
+                    item.app_id,
+                    country=ctx["country"],
+                    lang=ctx["lang"],
+                    limit=10,
+                ),
+            )
+        else:
+            history = load_optional(
+                "history",
+                lambda: self.services["tracking_service"].get_history(
+                    item.app_id, country=ctx["country"], lang=ctx["lang"]
+                ),
+            )
+            alerts = load_optional(
+                "alerts",
+                lambda: self.services["alert_service"].list_alerts(app_id=item.app_id, limit=8),
+            )
+            reviews = []
+            review_service = self.services.get("review_service")
+            if review_service is not None:
+                reviews = load_optional(
+                    "reviews",
+                    lambda: review_service.list_cached(item.app_id, limit=10),
+                )
+        labels = [(getattr(snap, "captured_at", "") or "")[5:10] for snap in history]
+        rating_values = [getattr(snap, "rating", None) or 0 for snap in history]
+        reviews_values = [getattr(snap, "reviews_count", None) or 0 for snap in history]
+        installs_values = [
+            getattr(snap, "real_installs", None) or getattr(snap, "min_installs", None) or 0
+            for snap in history
+        ]
         # Append today's freshly-fetched values so the charts show something
         # even before any snapshot is saved (mirrors the widgets detail page).
         today = now_iso()[5:10]
         if not labels or labels[-1] != today:
             labels.append(today)
-            rating_values.append(item.rating or 0)
-            reviews_values.append(item.reviews_count or 0)
-            installs_values.append(item.real_installs or item.min_installs or 0)
+            rating_values.append(getattr(item, "rating", None) or 0)
+            reviews_values.append(getattr(item, "reviews_count", None) or 0)
+            installs_values.append(
+                getattr(item, "real_installs", None) or getattr(item, "min_installs", None) or 0
+            )
         return {
             "historyLabels": labels,
             "ratingValues": rating_values,
@@ -1692,13 +3119,30 @@ class QmlBridge(QObject):
             "recentAlerts": [self._alert_row(alert) for alert in alerts],
             "recentReviews": [
                 {
-                    "time": (r.review_created_at or "")[:10],
-                    "rating": r.rating if r.rating is not None else "-",
-                    "content": (r.content or "").strip().replace("\n", " ")[:120],
+                    "time": (getattr(r, "review_created_at", "") or "")[:10],
+                    "rating": getattr(r, "rating", None)
+                    if getattr(r, "rating", None) is not None
+                    else "-",
+                    "content": (getattr(r, "content", "") or "").strip().replace("\n", " ")[:120],
                 }
                 for r in reviews
             ],
         }
+
+    def _list_cached_reviews(self, api, app_id: str, country: str, lang: str, limit: int):
+        items = api.list_cached_reviews(app_id, limit=limit)
+        if items:
+            return items
+        self._request_api_refresh(
+            api,
+            "reviews",
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            sort="newest",
+            limit=limit,
+        )
+        return api.list_cached_reviews(app_id, limit=limit)
 
     def _apply_detail_extras(self, gen: int, extras: dict[str, Any]) -> None:
         if gen != self._detail_gen or not self._detail.get("loaded"):
@@ -1711,12 +3155,16 @@ class QmlBridge(QObject):
             return
         rows = [
             {
-                "iconUrl": entry.icon_url or "",
-                "title": entry.title or entry.app_id,
-                "appId": entry.app_id,
-                "developer": entry.developer or "-",
-                "rating": f"{entry.rating:.1f}" if entry.rating is not None else "-",
-                "installs": entry.installs or "-",
+                "iconUrl": getattr(entry, "icon_url", "") or "",
+                "title": getattr(entry, "title", "") or getattr(entry, "app_id", ""),
+                "appId": getattr(entry, "app_id", ""),
+                "developer": getattr(entry, "developer", "") or "-",
+                "rating": (
+                    f"{getattr(entry, 'rating'):.1f}"
+                    if getattr(entry, "rating", None) is not None
+                    else "-"
+                ),
+                "installs": getattr(entry, "installs", "") or "-",
             }
             for entry in similar
         ]
@@ -1748,48 +3196,106 @@ class QmlBridge(QObject):
         self._chart_items = list(items)
         rows = [
             {
-                "rank": item.rank,
-                "iconUrl": item.icon_url or "",
-                "title": item.title,
-                "appId": item.app_id,
-                "developer": item.developer or "-",
-                "rating": item.rating if item.rating is not None else "-",
-                "installs": item.installs or "-",
-                "price": item.price or ("免费" if item.free else "-"),
-                "category": item.category or "-",
+                "rank": getattr(item, "rank", 0),
+                "iconUrl": getattr(item, "icon_url", "") or "",
+                "title": getattr(item, "title", ""),
+                "appId": getattr(item, "app_id", ""),
+                "developer": getattr(item, "developer", "") or "-",
+                "rating": (
+                    getattr(item, "rating", None)
+                    if getattr(item, "rating", None) is not None
+                    else "-"
+                ),
+                "installs": getattr(item, "installs", "") or "-",
+                "price": getattr(item, "price", "") or (
+                    "免费" if getattr(item, "free", False) else "-"
+                ),
+                "category": getattr(item, "category", "") or "-",
             }
             for item in items
         ]
         self._charts = {"rows": rows, "summary": f"已获取 {len(rows)} 条榜单结果"}
         self.chartsChanged.emit()
 
+    def _set_chart_result_payload(self, payload) -> None:
+        if isinstance(payload, dict):
+            self._set_chart_results(payload.get("items") or [])
+            return
+        self._set_chart_results(payload)
+
     def _set_keyword_result(self, result) -> None:
+        self._keyword_result_remote = False
         self._keyword_result = result
+        app_id = getattr(result, "app_id", "")
+        found = bool(getattr(result, "found", False))
+        rank = getattr(result, "rank", None)
+        checked_limit = int(getattr(result, "checked_limit", 0) or 0)
+        results = getattr(result, "results", []) or []
         rows = [
             {
                 "rank": index,
-                "iconUrl": item.icon_url or "",
-                "title": item.title,
-                "appId": item.app_id,
-                "developer": item.developer or "-",
-                "rating": item.rating if item.rating is not None else "-",
-                "installs": item.installs or "-",
-                "hit": item.app_id == result.app_id,
+                "iconUrl": getattr(item, "icon_url", "") or "",
+                "title": getattr(item, "title", ""),
+                "appId": getattr(item, "app_id", ""),
+                "developer": getattr(item, "developer", "") or "-",
+                "rating": (
+                    getattr(item, "rating", None)
+                    if getattr(item, "rating", None) is not None
+                    else "-"
+                ),
+                "installs": getattr(item, "installs", "") or "-",
+                "hit": getattr(item, "app_id", "") == app_id,
             }
-            for index, item in enumerate(result.results, start=1)
+            for index, item in enumerate(results, start=1)
         ]
-        summary = f"当前排名 #{result.rank}" if result.found else "未找到目标应用"
+        if not rows and found:
+            rows = [
+                {
+                    "rank": rank or "-",
+                    "iconUrl": "",
+                    "title": app_id or "-",
+                    "appId": app_id,
+                    "developer": "-",
+                    "rating": "-",
+                    "installs": "-",
+                    "hit": True,
+                }
+            ]
+        summary = (
+            f"前 {KEYWORD_RANK_CHECK_LIMIT} 条内排名 #{rank}"
+            if found and rank is not None
+            else f"前 {KEYWORD_RANK_CHECK_LIMIT} 条未找到目标应用"
+        )
+        requested_limit = getattr(result, "requested_limit", None) or checked_limit
+        returned_count = getattr(result, "returned_count", None) or checked_limit
+        coverage_complete = bool(getattr(result, "coverage_complete", True))
+        limit_text = f"仅检查前 {KEYWORD_RANK_CHECK_LIMIT} 条"
+        if not coverage_complete:
+            summary = f"{summary}（上游仅返回 {returned_count}/{requested_limit}）"
         self._keywords = {
             "rows": rows,
-            "summary": f"{summary} · checked_limit {result.checked_limit}",
+            "summary": f"{summary} · {limit_text}",
         }
         self.keywordsChanged.emit()
+
+    def _set_keyword_result_from_api(self, result) -> None:
+        self._set_keyword_result(result)
+        self._keyword_result_remote = True
+
+    def _set_keyword_payload_from_api(self, payload) -> None:
+        if isinstance(payload, dict):
+            result = payload.get("result")
+            if result is not None:
+                self._set_keyword_result_from_api(result)
+                return
+        self._set_keyword_result_from_api(payload)
 
     def _set_reviews_result(self, result) -> None:
         items, token = result
         self._reviews_items = list(items)
         self._reviews_token = token
-        self._emit_reviews(f"已获取 {len(items)} 条评论")
+        summary = f"已获取 {len(items)} 条评论"
+        self._emit_reviews(summary)
 
     def _append_reviews_result(self, result) -> None:
         items, token = result
@@ -1800,12 +3306,16 @@ class QmlBridge(QObject):
     def _emit_reviews(self, summary: str) -> None:
         rows = [
             {
-                "user": item.user_name or "-",
-                "rating": item.rating if item.rating is not None else 0,
-                "version": item.app_version or "-",
-                "time": (item.review_created_at or "-")[:16].replace("T", " "),
-                "content": item.content or "",
-                "helpful": item.helpful_count or 0,
+                "user": getattr(item, "user_name", "") or "-",
+                "rating": (
+                    getattr(item, "rating", None)
+                    if getattr(item, "rating", None) is not None
+                    else 0
+                ),
+                "version": getattr(item, "app_version", "") or "-",
+                "time": (getattr(item, "review_created_at", "") or "-")[:16].replace("T", " "),
+                "content": getattr(item, "content", "") or "",
+                "helpful": getattr(item, "helpful_count", None) or 0,
             }
             for item in self._reviews_items
         ]
@@ -1859,7 +3369,7 @@ class QmlBridge(QObject):
 
     @staticmethod
     def _fail_label(item) -> str:
-        count = item.consecutive_failures or 0
+        count = getattr(item, "consecutive_failures", 0) or 0
         return "-" if count == 0 else f"{count} 次"
 
     @staticmethod
@@ -1883,11 +3393,7 @@ class QmlBridge(QObject):
     def _keyword_rank_label(self, item) -> str:
         # Rank snapshots are platform-scoped — read via the service matching the ROW's
         # platform (the tracked list mixes both stores), not the UI's current toggle.
-        key = (
-            "keyword_service_app_store"
-            if item.platform == "app_store"
-            else "keyword_service"
-        )
+        key = "keyword_service_app_store" if item.platform == "app_store" else "keyword_service"
         keyword_service = self.services.get(key)
         if keyword_service is None:
             return "未同步"
@@ -1935,4 +3441,20 @@ class QmlBridge(QObject):
             "failures": item.consecutive_failures,
             "statusColor": color,
             "lastSynced": QmlBridge._fmt_dt(item.last_synced_at),
+        }
+
+    @staticmethod
+    def _health_row_from_tracked(item) -> dict[str, Any]:
+        failures = getattr(item, "consecutive_failures", 0) or 0
+        color = "#16A34A" if failures == 0 else "#D97706"
+        app_id = getattr(item, "app_id", "")
+        return {
+            "title": getattr(item, "title", "") or app_id,
+            "appId": app_id,
+            "rating": "-",
+            "installs": "-",
+            "unread": 0,
+            "failures": failures,
+            "statusColor": color,
+            "lastSynced": QmlBridge._fmt_dt(getattr(item, "last_synced_at", "")),
         }

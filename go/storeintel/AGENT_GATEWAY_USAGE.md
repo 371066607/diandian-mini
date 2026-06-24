@@ -12,9 +12,9 @@ implementations to inject. The business API stays behind `module.Service`.
 import (
     "database/sql"
 
-    storeintel "github.com/diandian-mini/storeintel"
-    storeintelrepo "github.com/diandian-mini/storeintel/repo"
-    googleplay "github.com/diandian-mini/storeintel/upstream/googleplay"
+    storeintel "github.com/catch-radar/storeintel"
+    storeintelrepo "github.com/catch-radar/storeintel/repo"
+    googleplay "github.com/catch-radar/storeintel/upstream/googleplay"
 )
 
 func NewStoreIntelModule(db *sql.DB) (*storeintel.Module, error) {

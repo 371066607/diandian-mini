@@ -1,4 +1,4 @@
-// Crowd-sourced keyword corpus for 点点数据 Mini (Cloudflare Worker + D1).
+// Crowd-sourced keyword corpus for catch-radar (Cloudflare Worker + D1).
 //
 // Privacy by design: clients send ONLY keywords (+ locale, source, confirmed).
 // No app ids, no user ids. The pool is "what search terms exist in this locale",
@@ -86,7 +86,7 @@ export default {
     try {
       const idh = await ipHash(
         request.headers.get("CF-Connecting-IP") || "0.0.0.0",
-        env.API_KEY || "diandian"
+        env.API_KEY || "catch_radar"
       );
       await ensureRl(env);
       // Opportunistic sweep of expired windows (non-blocking, ~2% of requests).

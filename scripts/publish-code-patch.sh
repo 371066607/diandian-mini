@@ -60,7 +60,7 @@ echo "▶ 正在上传到 GitHub release (tag=code)…"
 # 删掉旧的 code release（资产会一起删），再重建
 gh release delete code --yes 2>/dev/null || true
 gh release create code \
-  --repo "371066607/diandian-mini" \
+  --repo "371066607/catch-radar" \
   --title "Code Patch" \
   --notes "$RELEASE_BODY" \
   --prerelease \

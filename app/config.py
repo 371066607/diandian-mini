@@ -15,7 +15,7 @@ if getattr(sys, "frozen", False):
 else:
     DATA_DIR = BASE_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
-DEFAULT_DB_PATH = DATA_DIR / "diandian_mini.sqlite3"
+DEFAULT_DB_PATH = DATA_DIR / "catch_radar.sqlite3"
 
 
 def ensure_runtime_dirs() -> None:

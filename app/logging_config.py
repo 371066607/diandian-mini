@@ -7,7 +7,7 @@ from app.config import LOG_DIR
 
 
 def setup_logging() -> logging.Logger:
-    logger = logging.getLogger("diandian-mini")
+    logger = logging.getLogger("catch-radar")
     if logger.handlers:
         return logger
 

@@ -1,4 +1,4 @@
-# 点点数据 Mini 桌面客户端 v1.1 开发规格书
+# catch-radar 桌面客户端 v1.1 开发规格书
 
 版本：v1.1  
 基于：v1.0 Python 单机桌面版  
@@ -222,7 +222,7 @@ package.json：
 
 ```json
 {
-  "name": "diandian-mini-app-store-scraper",
+  "name": "catch-radar-app-store-scraper",
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
@@ -454,7 +454,7 @@ alerts
 
 1. 导出不能阻塞 UI。
 2. 空数据要提示，不要生成空文件后无提示。
-3. 文件名默认：diandian_mini_export_YYYYMMDD_HHMMSS.xlsx
+3. 文件名默认：catch_radar_export_YYYYMMDD_HHMMSS.xlsx
 4. CSV 使用 UTF-8 with BOM，避免中文乱码。
 5. Excel 第一行加粗。
 6. 列宽自动适配。
@@ -1230,7 +1230,7 @@ Service 层
 | Ollama | 本地 AI chat | `http://localhost:11434/api/chat` | `POST /api/chat` |
 | Ollama | 本地 AI generate | `http://localhost:11434/api/generate` | `POST /api/generate` |
 | npm | app-store-scraper 安装 | `https://registry.npmjs.org/app-store-scraper` | `npm install app-store-scraper` |
-| 本地 DB | SQLite | `./data/diandian_mini.sqlite3` | 本地文件 |
+| 本地 DB | SQLite | `./data/catch_radar.sqlite3` | 本地文件 |
 | 本地日志 | Log file | `./data/logs/app.log` | 本地文件 |
 
 ---
@@ -1849,9 +1849,9 @@ https://registry.npmjs.org/app-store-scraper
 
 | 功能 | 真实地址 |
 |---|---|
-| SQLite 数据库 | `./data/diandian_mini.sqlite3` |
+| SQLite 数据库 | `./data/catch_radar.sqlite3` |
 | 日志 | `./data/logs/app.log` |
-| 导出文件 | 用户选择路径，例如 `~/Downloads/diandian_mini_export_20260604_120000.xlsx` |
+| 导出文件 | 用户选择路径，例如 `~/Downloads/catch_radar_export_20260604_120000.xlsx` |
 | App Store Node wrapper | `./app/integrations/app_store_scraper_node/index.js` |
 
 ---

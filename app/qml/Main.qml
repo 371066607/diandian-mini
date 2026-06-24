@@ -8,7 +8,7 @@ ApplicationWindow {
     visible: true
     width: 1440
     height: 900
-    minimumWidth: 1100
+    minimumWidth: 1280
     minimumHeight: 720
     title: appTitle.replace("Google Play", platformLabel)
     color: root.cBg
@@ -18,6 +18,10 @@ ApplicationWindow {
     readonly property bool isAppStore: bridge.platform === "app_store"
     readonly property string platformLabel: isAppStore ? "App Store" : "Google Play"
     property string currentPage: "dashboard"
+    property bool apiLogPanelCollapsed: false
+    readonly property int apiLogPanelExpandedWidth: 380
+    readonly property int apiLogPanelCollapsedWidth: 48
+    readonly property int apiLogPanelWidth: apiLogPanelCollapsed ? apiLogPanelCollapsedWidth : apiLogPanelExpandedWidth
     property string coverageProgressText: ""
     property real coverageProgressValue: 0
     property var navItems: [
@@ -98,31 +102,31 @@ ApplicationWindow {
     property string themeName: textOr(bridge.settings.theme, "slate")
     readonly property var themePresets: ({
         "light": {
-            bg: "#F3F5F9", surface: "#FFFFFF", sidebar: "#F8FAFC", chip: "#EDF0F5", line: "#DBE1EA",
+            bg: "#F3F5F9", surface: "#FFFFFF", sidebar: "#F8FAFC", chip: "#EDF0F5", line: "#DBE1EA", grid: "rgba(126, 136, 152, 0.20)",
             ink: "#1B2230", body: "#404B5C", slate: "#5E6A7B", muted: "#7E8898", faint: "#A4AEBC",
             accent: "#2F6FED", accentSoft: "#E5EEFC", onAccent: "#FFFFFF",
             amber: "#C2780A", green: "#1A8A4E", red: "#D33A3A"
         },
         "sand": {
-            bg: "#F6F2EB", surface: "#FFFEFA", sidebar: "#FBF8F1", chip: "#F0EADF", line: "#E6DFCF",
+            bg: "#F6F2EB", surface: "#FFFEFA", sidebar: "#FBF8F1", chip: "#F0EADF", line: "#E6DFCF", grid: "rgba(142, 120, 83, 0.18)",
             ink: "#2A2419", body: "#4E4636", slate: "#6E6451", muted: "#8D8470", faint: "#B2A993",
             accent: "#DD6B20", accentSoft: "#F8E7D7", onAccent: "#FFFFFF",
             amber: "#B7791F", green: "#2F855A", red: "#C53030"
         },
         "slate": {
-            bg: "#1B212B", surface: "#242C38", sidebar: "#171D26", chip: "#2C3543", line: "#39434F",
+            bg: "#1B212B", surface: "#242C38", sidebar: "#171D26", chip: "#2C3543", line: "#39434F", grid: "rgba(152, 162, 175, 0.18)",
             ink: "#E7ECF2", body: "#C1C9D4", slate: "#98A2AF", muted: "#7A8492", faint: "#5F6975",
             accent: "#38BDF8", accentSoft: "#103142", onAccent: "#06222E",
             amber: "#F0A93B", green: "#46BE84", red: "#F06D6D"
         },
         "violet": {
-            bg: "#1B1726", surface: "#241F33", sidebar: "#181426", chip: "#2C2640", line: "#3A3350",
+            bg: "#1B1726", surface: "#241F33", sidebar: "#181426", chip: "#2C2640", line: "#3A3350", grid: "rgba(161, 153, 182, 0.18)",
             ink: "#E9E6F1", body: "#C5BED5", slate: "#A199B6", muted: "#837A97", faint: "#675E7B",
             accent: "#A78BFA", accentSoft: "#2A1F45", onAccent: "#1B1334",
             amber: "#F0A93B", green: "#4FB98A", red: "#F06D6D"
         },
         "teal": {
-            bg: "#14201D", surface: "#1C2A27", sidebar: "#102019", chip: "#233631", line: "#314841",
+            bg: "#14201D", surface: "#1C2A27", sidebar: "#102019", chip: "#233631", line: "#314841", grid: "rgba(146, 163, 156, 0.18)",
             ink: "#E2EAE7", body: "#B8C7C1", slate: "#92A39C", muted: "#75857E", faint: "#5C6B64",
             accent: "#2DD4BF", accentSoft: "#0E3A31", onAccent: "#06302A",
             amber: "#F0A93B", green: "#3FBE85", red: "#F06D6D"
@@ -134,6 +138,7 @@ ApplicationWindow {
     readonly property color cSidebar: pal.sidebar
     readonly property color cChipBg: pal.chip
     readonly property color cLine: pal.line
+    readonly property string cGrid: pal.grid || pal.line
     readonly property color cInk: pal.ink
     readonly property color cBody: pal.body
     readonly property color cSlate: pal.slate
@@ -550,7 +555,7 @@ ApplicationWindow {
             var ctx = getContext("2d")
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
-            ctx.strokeStyle = root.cLine
+            ctx.strokeStyle = root.cGrid
             ctx.lineWidth = 1
             for (var g = 1; g < 4; g++) {
                 var y = height * g / 4
@@ -648,7 +653,7 @@ ApplicationWindow {
                     var n = vals.length
                     var padL = 42, padR = 8, padT = 10, padB = 20
                     var w = width - padL - padR, h = height - padT - padB
-                    var lineC = "" + root.cBlue, gridC = "" + root.cLine, txtC = "" + root.cFaint
+                    var lineC = "" + root.cBlue, gridC = root.cGrid, txtC = "" + root.cFaint
                     var fmt = function (v) {
                         if (tc.invert) return "#" + Math.round(v)
                         var a = Math.abs(v)
@@ -864,8 +869,279 @@ ApplicationWindow {
         }
     }
 
+    component ApiLogPanel: Rectangle {
+        id: apiLogPanel
+        Layout.preferredWidth: 360
+        Layout.minimumWidth: 320
+        Layout.fillHeight: true
+        color: root.cSidebar
+        border.color: root.cLine
+        border.width: 1
+        clip: true
+        Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 7
+            spacing: 10
+            visible: root.apiLogPanelCollapsed
+
+            SecondaryButton {
+                text: ">"
+                Layout.fillWidth: true
+                height: 34
+                font.pixelSize: 15
+                onClicked: root.apiLogPanelCollapsed = false
+                ToolTip.visible: hovered
+                ToolTip.text: "展开接口日志"
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: root.cLine
+            }
+
+            Label {
+                text: "日\n志"
+                color: root.cBody
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                Layout.fillWidth: true
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 26
+                radius: 8
+                color: root.cSurface
+                border.color: root.cLine
+                Label {
+                    anchors.centerIn: parent
+                    text: root.bridge.apiLogs ? root.bridge.apiLogs.length : 0
+                    color: root.cFaint
+                    font.pixelSize: 11
+                    font.family: "Menlo"
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 14
+            spacing: 10
+            visible: !root.apiLogPanelCollapsed
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Label {
+                    text: "接口日志"
+                    color: root.cInk
+                    font.pixelSize: 15
+                    font.weight: Font.Bold
+                    Layout.fillWidth: true
+                }
+                Label {
+                    text: (root.bridge.apiLogs ? root.bridge.apiLogs.length : 0) + " 条"
+                    color: root.cFaint
+                    font.pixelSize: 11
+                }
+                SecondaryButton {
+                    text: "收起"
+                    implicitWidth: 58
+                    height: 30
+                    font.pixelSize: 11
+                    onClicked: root.apiLogPanelCollapsed = true
+                }
+                SecondaryButton {
+                    text: "清空"
+                    implicitWidth: 58
+                    height: 30
+                    font.pixelSize: 11
+                    onClicked: root.bridge.clearApiLogs()
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: root.cLine
+            }
+
+            ListView {
+                id: apiLogList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: root.bridge.apiLogs || []
+                boundsBehavior: Flickable.StopAtBounds
+                spacing: 8
+                onCountChanged: if (count > 0) positionViewAtEnd()
+                ScrollIndicator.vertical: ScrollIndicator {}
+
+                delegate: Rectangle {
+                    id: apiLogRow
+                    width: ListView.view.width
+                    implicitHeight: apiLogBody.implicitHeight + 18
+                    radius: 8
+                    color: modelData.ok
+                           ? (apiLogHover.hovered ? root.cChipBg : root.cSurface)
+                           : "#331F2937"
+                    border.color: modelData.ok ? root.cLine : root.cRed
+                    border.width: modelData.ok ? 1 : 1
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                    HoverHandler { id: apiLogHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onTapped: {
+                            apiLogDialog.entry = modelData
+                            apiLogDialog.open()
+                        }
+                    }
+
+                    ColumnLayout {
+                        id: apiLogBody
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 9
+                        spacing: 5
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Label {
+                                text: modelData.time
+                                color: root.cFaint
+                                font.pixelSize: 10
+                                font.family: "Menlo"
+                            }
+                            Label {
+                                text: modelData.method
+                                color: root.cBlue
+                                font.pixelSize: 10
+                                font.weight: Font.Bold
+                                font.family: "Menlo"
+                            }
+                            Label {
+                                text: modelData.status + " / " + modelData.code
+                                color: modelData.ok ? root.cGreen : root.cRed
+                                font.pixelSize: 10
+                                font.weight: Font.DemiBold
+                                font.family: "Menlo"
+                            }
+                            Label {
+                                text: modelData.duration
+                                color: root.cMuted
+                                font.pixelSize: 10
+                                font.family: "Menlo"
+                                Layout.fillWidth: true
+                                horizontalAlignment: Text.AlignRight
+                            }
+                        }
+
+                        Label {
+                            text: modelData.path
+                            color: root.cBody
+                            font.pixelSize: 11
+                            font.family: "Menlo"
+                            wrapMode: Text.WrapAnywhere
+                            Layout.fillWidth: true
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            visible: modelData.body && modelData.body.length > 0
+                            text: modelData.body
+                            color: root.cMuted
+                            font.pixelSize: 10
+                            font.family: "Menlo"
+                            wrapMode: Text.WrapAnywhere
+                            Layout.fillWidth: true
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            visible: modelData.response && modelData.response.length > 0
+                            text: modelData.response
+                            color: root.cFaint
+                            font.pixelSize: 10
+                            font.family: "Menlo"
+                            wrapMode: Text.WrapAnywhere
+                            Layout.fillWidth: true
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                        }
+
+                        Label {
+                            visible: modelData.error && modelData.error.length > 0
+                            text: modelData.error
+                            color: root.cRed
+                            font.pixelSize: 10
+                            wrapMode: Text.WrapAnywhere
+                            Layout.fillWidth: true
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: apiLogList.count === 0
+                    text: "等待接口请求"
+                    color: root.cFaint
+                    font.pixelSize: 12
+                }
+            }
+        }
+    }
+
+    component LogValueBlock: ColumnLayout {
+        id: logValueBlock
+        property string title: ""
+        property string value: ""
+        visible: value.length > 0
+        Layout.fillWidth: true
+        spacing: 6
+
+        Label {
+            text: logValueBlock.title
+            color: root.cBody
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        TextArea {
+            text: logValueBlock.value
+            readOnly: true
+            selectByMouse: true
+            wrapMode: TextEdit.WrapAnywhere
+            color: root.cInk
+            selectedTextColor: root.cInk
+            selectionColor: root.cBlueSoft
+            font.pixelSize: 11
+            font.family: "Menlo"
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(170, Math.max(72, contentHeight + 20))
+            background: Rectangle {
+                radius: 8
+                color: root.cChipBg
+                border.color: root.cLine
+            }
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
+        anchors.rightMargin: root.apiLogPanelWidth
         spacing: 0
 
         Rectangle {
@@ -879,7 +1155,7 @@ ApplicationWindow {
                 spacing: 8
 
                 Label {
-                    text: "点点数据 Mini"
+                    text: "catch-radar"
                     color: root.cInk
                     font.pixelSize: 18
                     font.weight: Font.Bold
@@ -932,21 +1208,21 @@ ApplicationWindow {
                     model: root.navItems
                     Button {
                         id: navButton
+                        property bool selected: root.currentPage === modelData.key
                         text: modelData.label
-                        checkable: true
-                        checked: root.currentPage === modelData.key
+                        checkable: false
                         Layout.fillWidth: true
                         height: 38
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
-                        palette.buttonText: checked ? root.cOnAccent : root.cMuted
+                        palette.buttonText: selected ? root.cOnAccent : root.cMuted
                         onClicked: root.currentPage = modelData.key
                         scale: down ? 0.985 : (hovered ? 1.01 : 1.0)
                         Behavior on scale { NumberAnimation { duration: 90; easing.type: Easing.OutCubic } }
                         background: Rectangle {
                             radius: 8
-                            color: navButton.checked ? root.cBlue : (navButton.hovered ? root.cChipBg : "transparent")
-                            border.color: navButton.hovered && !navButton.checked ? root.cBody : "transparent"
+                            color: navButton.selected ? root.cBlue : (navButton.hovered ? root.cChipBg : "transparent")
+                            border.color: navButton.hovered && !navButton.selected ? root.cBody : "transparent"
                             Behavior on color { ColorAnimation { duration: 140 } }
                             Behavior on border.color { ColorAnimation { duration: 140 } }
                         }
@@ -975,7 +1251,7 @@ ApplicationWindow {
                 Item { Layout.fillHeight: true }
 
                 Label {
-                    text: root.platformLabel + " / 本地 SQLite"
+                    text: root.platformLabel + " / 后端数据"
                     color: root.cFaint
                     font.pixelSize: 12
                 }
@@ -1044,7 +1320,7 @@ ApplicationWindow {
 
                     DashboardPage {}
                     SearchPage {}
-                    DetailPage {}
+                    DetailPage { id: detailPageView }
                     ReviewsPage {}
                     ChartsPage {}
                     KeywordsPage {}
@@ -1054,6 +1330,112 @@ ApplicationWindow {
                     AlertsPage {}
                     SettingsPage {}
                 }
+            }
+        }
+
+    }
+
+    ApiLogPanel {
+        id: apiLogPanelDock
+        width: root.apiLogPanelWidth
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        z: 5
+    }
+
+    Dialog {
+        id: apiLogDialog
+        property var entry: ({})
+        anchors.centerIn: parent
+        modal: true
+        padding: 22
+        width: Math.min(780, root.width - 80)
+        height: Math.min(680, root.height - 80)
+        header: null
+        Overlay.modal: Rectangle { color: "#660F172A" }
+        background: Rectangle {
+            radius: 12
+            color: root.cSurface
+            border.color: root.cLine
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Label {
+                        text: "接口详情"
+                        color: root.cInk
+                        font.pixelSize: 17
+                        font.weight: Font.Bold
+                    }
+                    Label {
+                        text: String(apiLogDialog.entry.method || "-") + " " + String(apiLogDialog.entry.path || "-")
+                        color: root.cMuted
+                        font.pixelSize: 11
+                        font.family: "Menlo"
+                        wrapMode: Text.WrapAnywhere
+                        Layout.fillWidth: true
+                        maximumLineCount: 3
+                        elide: Text.ElideRight
+                    }
+                }
+                Label {
+                    text: String(apiLogDialog.entry.status || "-") + " / "
+                          + String(apiLogDialog.entry.code || "-") + " · "
+                          + String(apiLogDialog.entry.duration || "-")
+                    color: apiLogDialog.entry.ok ? root.cGreen : root.cRed
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    font.family: "Menlo"
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: root.cLine
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
+
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 12
+
+                    LogValueBlock {
+                        title: "Query 参数"
+                        value: String(apiLogDialog.entry.query || "")
+                    }
+                    LogValueBlock {
+                        title: "请求 Body"
+                        value: String(apiLogDialog.entry.body || "")
+                    }
+                    LogValueBlock {
+                        title: "返回 Data"
+                        value: String(apiLogDialog.entry.response || "")
+                    }
+                    LogValueBlock {
+                        title: "错误"
+                        value: String(apiLogDialog.entry.error || "")
+                    }
+                }
+            }
+
+            SecondaryButton {
+                text: "关闭"
+                Layout.alignment: Qt.AlignRight
+                implicitWidth: 86
+                onClicked: apiLogDialog.close()
             }
         }
     }
@@ -1366,6 +1748,7 @@ ApplicationWindow {
                             { label: "手动", value: "manual" }
                         ]
                     }
+                    Field { id: trackTag; placeholderText: "标签"; width: 120 }
                     PrimaryButton { text: "添加 App 监控"; onClicked: root.bridge.addApp(trackAppId.text, trackCountry.text, trackLang.text, trackFreq.currentValue) }
                     SecondaryButton { text: "同步全部"; onClicked: root.bridge.syncAll() }
                     SecondaryButton { text: "同步到期项"; onClicked: root.bridge.syncDue() }
@@ -1376,6 +1759,27 @@ ApplicationWindow {
                     Field { id: chartCategory; text: "APPLICATION"; width: 140 }
                     SecondaryButton { text: "添加榜单监控"; onClicked: root.bridge.addChartApp(chartAppId.text, chartCollection.currentText, chartCategory.text, trackCountry.text, trackLang.text) }
                     SecondaryButton { text: "刷新"; onClicked: root.bridge.refreshTracking() }
+                }
+                ToolbarFlow {
+                    TextArea {
+                        id: bulkAppIds
+                        width: 360
+                        height: 76
+                        selectByMouse: true
+                        wrapMode: TextArea.NoWrap
+                        placeholderText: "com.whatsapp\ncom.facebook.katana"
+                        color: root.cInk
+                        selectedTextColor: root.cInk
+                        selectionColor: root.cBlueSoft
+                        font.pixelSize: 13
+                        background: Rectangle {
+                            radius: 8
+                            color: root.cSurface
+                            border.color: bulkAppIds.activeFocus ? root.cBlue : root.cLine
+                            Behavior on border.color { ColorAnimation { duration: 120 } }
+                        }
+                    }
+                    SecondaryButton { text: "批量导入 App"; onClicked: root.bridge.bulkImportApps(bulkAppIds.text, trackCountry.text, trackLang.text, trackFreq.currentValue) }
                 }
             }
 
@@ -1549,6 +1953,27 @@ ApplicationWindow {
                                     TapHandler { onTapped: { monPage.monRange = modelData.k; monPage.loadSeries() } }
                                 }
                             }
+                            Item { Layout.fillWidth: true }
+                            SecondaryButton {
+                                text: "设置频率"
+                                onClicked: root.bridge.setMonitorFrequency(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, trackFreq.currentValue)
+                            }
+                            SecondaryButton {
+                                text: "设置标签"
+                                onClicked: root.bridge.setMonitorTag(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, trackTag.text)
+                            }
+                            SecondaryButton {
+                                text: "同步选中"
+                                onClicked: root.bridge.syncMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key)
+                            }
+                            SecondaryButton {
+                                text: "启用/禁用"
+                                onClicked: root.bridge.toggleMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key)
+                            }
+                            SecondaryButton {
+                                text: "删除选中"
+                                onClicked: root.bridge.removeMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key)
+                            }
                         }
                         Repeater {
                             model: root.rows(monPage.monDetail, "charts")
@@ -1586,7 +2011,7 @@ ApplicationWindow {
                     Label { text: "默认 limit"; color: root.cBody }
                     Field { id: setLimit; text: textOr(root.bridge.settings.default_limit, "50"); Layout.fillWidth: true }
                     Label { text: "数据库路径"; color: root.cBody }
-                    Field { id: setDbPath; text: textOr(root.bridge.settings.database_path, "./data/diandian_mini.sqlite3"); Layout.fillWidth: true }
+                    Field { id: setDbPath; text: textOr(root.bridge.settings.database_path, "./data/catch_radar.sqlite3"); Layout.fillWidth: true }
                     Label { text: "每日同步时间"; color: root.cBody }
                     Field { id: setSyncTime; text: textOr(root.bridge.settings.daily_sync_time, "09:00"); Layout.fillWidth: true }
                     Label { text: "请求延迟秒数"; color: root.cBody }
@@ -1683,7 +2108,7 @@ ApplicationWindow {
                 subtitle: "双击打开详情"
                 rows: root.rows(root.bridge.search, "rows")
                 tableHeight: 520
-                rowHeight: 52
+                rowHeight: 56
                 onActivated: function(rowIndex, rowData) { root.bridge.openSearchResult(rowIndex, searchCountry.text, searchLang.text) }
                 columns: root.isAppStore ? [
                     { label: "", key: "iconUrl", width: 52, type: "icon" },
@@ -1698,13 +2123,14 @@ ApplicationWindow {
                 ] : [
                     { label: "", key: "iconUrl", width: 52, type: "icon" },
                     { label: "应用名", key: "title", fill: true },
-                    { label: "包名", key: "appId", width: 210 },
-                    { label: "开发者", key: "developer", width: 150 },
-                    { label: "评分", key: "rating", width: 56 },
-                    { label: "评分数", key: "ratings", width: 92 },
-                    { label: "安装量", key: "installs", width: 104 },
-                    { label: "价格", key: "price", width: 64 },
-                    { label: "", key: "hasIap", width: 60, type: "badge", colorKey: "" }
+                    { label: "包名", key: "appId", width: 170 },
+                    { label: "分类", key: "category", width: 92 },
+                    { label: "简介", key: "summary", width: 220 },
+                    { label: "开发者", key: "developer", width: 120 },
+                    { label: "评分", key: "rating", width: 48 },
+                    { label: "评分数", key: "ratings", width: 76 },
+                    { label: "安装量", key: "installs", width: 86 },
+                    { label: "价格", key: "price", width: 54 }
                 ]
             }
         }
@@ -1715,13 +2141,27 @@ ApplicationWindow {
         clip: true
         contentWidth: availableWidth
         property var d: root.bridge.detail
+        function refreshCurrentDetail() {
+            if (root.isAppStore) return
+            var target = (detailPage.d && detailPage.d.loaded === true ? detailPage.d.appId : "") || detailAppId.text
+            if (!target || target.length === 0) return
+            root.bridge.fetchAppDetail(target, detailCountry.text, detailLang.text)
+        }
+        Connections {
+            target: root.bridge
+            function onDetailChanged() {
+                if (detailPage.d.loaded === true && detailPage.d.appId) {
+                    detailAppId.text = detailPage.d.appId
+                }
+            }
+        }
         ColumnLayout {
             width: parent.width
             spacing: 18
 
             Card {
                 ToolbarFlow {
-                    HistoryField { id: detailAppId; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）/ Bundle ID" : "com.whatsapp"; width: 260; onAccepted: root.bridge.fetchAppDetail(text, detailCountry.text, detailLang.text) }
+                    HistoryField { id: detailAppId; historyKey: "app_id"; text: ""; placeholderText: root.isAppStore ? "App ID（如 310633997）/ Bundle ID" : "com.hotshotai"; width: 260; onAccepted: root.bridge.fetchAppDetail(text, detailCountry.text, detailLang.text) }
                     Field { id: detailCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: detailLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
                     PrimaryButton { text: "获取详情"; onClicked: root.bridge.fetchAppDetail(detailAppId.text, detailCountry.text, detailLang.text) }
@@ -2175,12 +2615,17 @@ ApplicationWindow {
             spacing: 18
             Card {
                 ToolbarFlow {
-                    HistoryField { id: kwText; historyKey: "keyword"; placeholderText: "messenger"; width: 220 }
-                    HistoryField { id: kwApp; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 240 }
+                    HistoryField { id: kwText; historyKey: "keyword"; text: root.isAppStore ? "" : "whatsapp"; placeholderText: "messenger"; width: 220 }
+                    HistoryField { id: kwApp; historyKey: "app_id"; text: root.isAppStore ? "" : "com.whatsapp"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 240 }
                     Field { id: kwCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: kwLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
-                    Field { id: kwLimit; text: "100"; width: 100 }
-                    PrimaryButton { text: "查询排名"; onClicked: root.bridge.fetchKeywordRank(kwText.text, kwApp.text, kwCountry.text, kwLang.text, kwLimit.text) }
+                    Label {
+                        text: "仅检查前 30 条"
+                        color: root.cMuted
+                        font.pixelSize: 13
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                    PrimaryButton { text: "查询排名"; onClicked: root.bridge.fetchKeywordRank(kwText.text, kwApp.text, kwCountry.text, kwLang.text, "30") }
                     SecondaryButton { text: "保存排名"; onClicked: root.bridge.saveKeywordRank() }
                     SecondaryButton { text: "加入监控"; onClicked: root.bridge.addKeywordTracking(kwText.text, kwApp.text, kwCountry.text, kwLang.text) }
                 }
@@ -2226,6 +2671,7 @@ ApplicationWindow {
                     HistoryField {
                         id: covApp
                         historyKey: "app_id"
+                        text: root.isAppStore ? "" : "com.whatsapp"
                         placeholderText: root.isAppStore ? "App ID（如 587366035）/ Bundle ID" : "com.whatsapp"
                         width: 300
                         // Same gate as the button — Enter must not start a second concurrent scan
@@ -2307,7 +2753,7 @@ ApplicationWindow {
             spacing: 18
             Card {
                 ToolbarFlow {
-                    HistoryField { id: reviewApp; historyKey: "app_id"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 260 }
+                    HistoryField { id: reviewApp; historyKey: "app_id"; text: root.isAppStore ? "" : "com.whatsapp"; placeholderText: root.isAppStore ? "App ID（如 310633997）" : "com.whatsapp"; width: 260 }
                     Field { id: reviewCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: reviewLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
                     // App Store RSS only supports most-recent ordering
@@ -2386,6 +2832,7 @@ ApplicationWindow {
                         onActivated: root.bridge.loadHistoryIndex(currentIndex)
                     }
                     SecondaryButton { text: "刷新历史"; onClicked: root.bridge.refreshHistory() }
+                    SecondaryButton { text: "清理历史"; visible: !root.isAppStore; onClicked: root.bridge.cleanupHistory() }
                     Label {
                         text: root.bridge.history.selected ? "当前：" + root.bridge.history.selected : "暂无监控 App"
                         color: root.cSlate

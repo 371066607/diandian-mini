@@ -1,4 +1,4 @@
-# 点点数据 Mini 桌面客户端开发规格书
+# catch-radar 桌面客户端开发规格书
 
 版本：v1.0  
 目标开发方式：交给 Claude / Codex 以目标模式开发  
@@ -10,7 +10,7 @@
 
 ## 1. 项目目标
 
-开发一个 Python 桌面应用，作为「点点数据 Mini」的单机版竞品分析工具。
+开发一个 Python 桌面应用，作为「catch-radar」的单机版竞品分析工具。
 
 第一版只做 Google Play，不做 App Store，不做真实收入，不做云端同步。
 
@@ -74,7 +74,7 @@ Vue
 ## 3. 项目结构
 
 ```txt
-diandian_mini_desktop/
+catch_radar_desktop/
 ├── main.py
 ├── requirements.txt
 ├── README.md
@@ -172,7 +172,7 @@ diandian_mini_desktop/
 默认 SQLite 路径：
 
 ```txt
-./data/diandian_mini.sqlite3
+./data/catch_radar.sqlite3
 ```
 
 ### 5.1 apps 表
@@ -673,7 +673,7 @@ Clamp score to 100.
 窗口标题：
 
 ```txt
-点点数据 Mini - Google Play 情报工具
+catch-radar - Google Play 情报工具
 ```
 
 默认窗口大小：
@@ -1054,7 +1054,7 @@ DEFAULT_SETTINGS = {
     "scheduler_enabled": "true",
     "daily_sync_time": "09:00",
     "request_delay_seconds": "1",
-    "database_path": "./data/diandian_mini.sqlite3",
+    "database_path": "./data/catch_radar.sqlite3",
     "proxy": "",
 }
 ```
@@ -1095,7 +1095,7 @@ Google Play 返回空结果。
 README 中提供命令：
 
 ```bash
-pyinstaller --noconfirm --windowed --name DiandianMini main.py
+pyinstaller --noconfirm --windowed --name CatchRadar main.py
 ```
 
 启动时自动创建：
@@ -1103,7 +1103,7 @@ pyinstaller --noconfirm --windowed --name DiandianMini main.py
 ```txt
 data/
 data/logs/
-data/diandian_mini.sqlite3
+data/catch_radar.sqlite3
 ```
 
 ---

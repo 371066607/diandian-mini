@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/diandian-mini/storeintel/dto"
-	"github.com/diandian-mini/storeintel/service"
+	"github.com/catch-radar/storeintel/dto"
+	"github.com/catch-radar/storeintel/service"
 )
 
 const (
@@ -59,6 +59,8 @@ func MapServiceError(err error) (httpStatus int, code int, message string, error
 		return http.StatusOK, ErrorCodeOK, "success", ""
 	case errors.Is(err, service.ErrInvalidRequest):
 		return http.StatusBadRequest, ErrorCodeBadRequest, err.Error(), "STORE_INTEL_REQUEST_INVALID"
+	case errors.Is(err, service.ErrNotFound):
+		return http.StatusNotFound, ErrorCodeNotFound, err.Error(), "STORE_INTEL_NOT_FOUND"
 	case errors.Is(err, service.ErrServiceUnavailable):
 		return http.StatusBadGateway, ErrorCodeInternalFailure, "store intel service is not configured", "STORE_INTEL_SERVICE_NOT_CONFIGURED"
 	case errors.Is(err, service.ErrUpstreamUnavailable):

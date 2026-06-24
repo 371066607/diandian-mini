@@ -15,15 +15,15 @@ npx wrangler login              # 浏览器授权（需 Cloudflare 免费账号�
 npx wrangler whoami             # 可选：确认已登录
 
 # 1) 建 D1 数据库，把输出的 database_id 填进 wrangler.jsonc
-npx wrangler d1 create diandian-corpus
+npx wrangler d1 create catch-radar-corpus
 
 # 2) 建表（远程库）
-npx wrangler d1 execute diandian-corpus --remote --file=schema.sql
+npx wrangler d1 execute catch-radar-corpus --remote --file=schema.sql
 
 # 3) 设置共享密钥（随机串），同一个值要填进客户端
 npx wrangler secret put API_KEY     # 粘贴一串随机字符，回车
 
-# 4) 部署（可先 --dry-run 校验），记下打印出的 https://diandian-corpus.<子域>.workers.dev
+# 4) 部署（可先 --dry-run 校验），记下打印出的 https://catch-radar-corpus.<子域>.workers.dev
 npx wrangler deploy --dry-run   # 可选：只校验不真正部署
 npx wrangler deploy
 ```
@@ -48,6 +48,6 @@ npx wrangler deploy
 ## 本地调试
 ```bash
 echo 'API_KEY=local-dev-key' > .dev.vars   # 本地密钥（已 gitignore，勿提交）
-npx wrangler d1 execute diandian-corpus --local --file=schema.sql   # 本地库建表
+npx wrangler d1 execute catch-radar-corpus --local --file=schema.sql   # 本地库建表
 npx wrangler dev                            # 本地起 Worker（默认本地 D1）
 ```

@@ -14,5 +14,8 @@ class KeywordRankResult(BaseModel):
     found: bool
     rank: int | None = None
     checked_limit: int
+    requested_limit: int | None = None
+    returned_count: int | None = None
+    coverage_complete: bool = True
     captured_at: str
     results: list[AppSummary] = Field(default_factory=list)

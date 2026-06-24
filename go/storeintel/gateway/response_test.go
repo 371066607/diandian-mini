@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/diandian-mini/storeintel/dto"
-	"github.com/diandian-mini/storeintel/gateway"
-	"github.com/diandian-mini/storeintel/service"
+	"github.com/catch-radar/storeintel/dto"
+	"github.com/catch-radar/storeintel/gateway"
+	"github.com/catch-radar/storeintel/service"
 )
 
 func TestSuccessWithContextMatchesGatewayEnvelope(t *testing.T) {

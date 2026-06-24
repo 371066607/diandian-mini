@@ -44,7 +44,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="DiandianMini",
+    name="CatchRadar",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -63,11 +63,11 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="DiandianMini",
+    name="CatchRadar",
 )
 app = BUNDLE(
     coll,
-    name="DiandianMini.app",
+    name="CatchRadar.app",
     icon=None,
-    bundle_identifier="com.diandian.mini",
+    bundle_identifier="com.catchradar.app",
 )

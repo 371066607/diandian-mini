@@ -103,7 +103,7 @@ class UpdateService:
 
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "DiandianMini",
+            "User-Agent": "CatchRadar",
             "Accept-Encoding": "identity",
         }
         # urllib path — 3 attempts
@@ -159,8 +159,8 @@ class UpdateService:
 
     def download_and_apply_patch(self, progress=None) -> None:
         """Download the code patch, verify it, and atomically replace the override dir."""
-        zip_path = os.path.join(tempfile.gettempdir(), "diandian_code.zip")
-        staging = os.path.join(tempfile.gettempdir(), "diandian_code_stage")
+        zip_path = os.path.join(tempfile.gettempdir(), "catch_radar_code.zip")
+        staging = os.path.join(tempfile.gettempdir(), "catch_radar_code_stage")
         override = bootstrap.code_override_dir()
 
         if progress:

@@ -1,9 +1,9 @@
 ---
 name: run-app
-description: Launch, smoke-test, lint, and headlessly verify the 点点数据 Mini (DiandianMini) PySide6 desktop app. Use whenever asked to run / start / 运行 the app, verify a change works in the real GUI, run the test suite, or render the detail/charts pages headlessly. Encodes the non-ASCII-path gotchas that break bare `python`/`pip`/glob commands in this repo.
+description: Launch, smoke-test, lint, and headlessly verify the catch-radar (CatchRadar) PySide6 desktop app. Use whenever asked to run / start / 运行 the app, verify a change works in the real GUI, run the test suite, or render the detail/charts pages headlessly. Encodes the non-ASCII-path gotchas that break bare `python`/`pip`/glob commands in this repo.
 ---
 
-# Running 点点数据 Mini (DiandianMini)
+# Running catch-radar (CatchRadar)
 
 PySide6 + SQLite desktop app. Entry point: `main.py` → `main()` builds services
 (`build_services()`), runs DB migration, starts the APScheduler, shows `MainWindow`.
@@ -108,7 +108,7 @@ with a fake payload, then assert on widget `.text()`.
 
 ## Data & dependency notes
 
-- Runtime data: `data/diandian_mini.sqlite3`, logs in `data/logs/` (auto-created at startup).
+- Runtime data: `data/catch_radar.sqlite3`, logs in `data/logs/` (auto-created at startup).
 - Two scraper libs are installed: `google-play-scraper` (1.2.7) and `gplay-scraper` (1.0.6).
   `GooglePlayService` prefers `gplay-scraper` for `app_detail` / charts and falls back to
   `google-play-scraper` + DOM scraping. If imports fail, re-install with

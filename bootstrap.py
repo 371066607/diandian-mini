@@ -15,7 +15,7 @@ import datetime as _dt
 import os
 import sys
 
-APP_DIR_NAME = "DiandianMini"
+APP_DIR_NAME = "CatchRadar"
 
 
 def user_data_dir() -> str:
@@ -25,7 +25,7 @@ def user_data_dir() -> str:
     elif sys.platform == "win32":
         base = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), APP_DIR_NAME)
     else:
-        base = os.path.expanduser("~/.diandian_mini")
+        base = os.path.expanduser("~/.catch_radar")
     return base
 
 

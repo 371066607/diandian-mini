@@ -276,7 +276,7 @@ def test_sync_all_apps_runs_in_parallel_without_lock_errors(tmp_path):
 
 
 def test_is_sync_due_honors_cadence():
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from app.utils.time_utils import is_sync_due
 
@@ -299,6 +299,14 @@ def test_is_sync_due_honors_cadence():
     assert not is_sync_due(ago(days=99), "manual", now)
     # unknown cadence falls back to daily
     assert is_sync_due(ago(hours=25), "bogus", now)
+    # Remote API timestamps may be UTC-aware while the desktop compares with local
+    # naive datetimes. That must not crash the dashboard / tracking page.
+    assert is_sync_due("2026-06-04T08:00:00Z", "daily", now)
+    assert not is_sync_due(
+        "2026-06-05T08:00:00+00:00",
+        "daily",
+        datetime(2026, 6, 5, 9, 0, 0, tzinfo=timezone.utc),
+    )
 
 
 def test_due_only_sync_respects_frequency(tmp_path):

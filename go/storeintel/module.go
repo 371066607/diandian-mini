@@ -3,9 +3,9 @@ package storeintel
 import (
 	"errors"
 
-	"github.com/diandian-mini/storeintel/repo"
-	"github.com/diandian-mini/storeintel/service"
-	"github.com/diandian-mini/storeintel/upstream/googleplay"
+	"github.com/catch-radar/storeintel/repo"
+	"github.com/catch-radar/storeintel/service"
+	"github.com/catch-radar/storeintel/upstream/googleplay"
 )
 
 var ErrModuleRepoRequired = errors.New("storeintel repo is required")
@@ -18,6 +18,7 @@ type Dependencies struct {
 	Repo           repo.StoreIntelRepo
 	Upstream       service.UpstreamClient
 	AlertPublisher service.AlertPublisher
+	KeywordCorpus  service.KeywordCorpusClient
 	Config         service.Config
 }
 
@@ -32,6 +33,9 @@ func NewModule(deps Dependencies) (*Module, error) {
 	opts := []service.Option{service.WithConfig(deps.Config)}
 	if deps.AlertPublisher != nil {
 		opts = append(opts, service.WithAlertPublisher(deps.AlertPublisher))
+	}
+	if deps.KeywordCorpus != nil {
+		opts = append(opts, service.WithKeywordCorpusClient(deps.KeywordCorpus))
 	}
 	return &Module{
 		Service: service.NewStoreIntelService(deps.Repo, upstream, opts...),

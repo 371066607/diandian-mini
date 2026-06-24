@@ -71,7 +71,7 @@ def _make_window_immersive(window) -> None:
 
 def run_qml_app(database, services, logger, argv: list[str]) -> int:
     app = QApplication(argv)
-    app.setApplicationName("点点数据 Mini")
+    app.setApplicationName("catch-radar")
     QQuickStyle.setStyle("Fusion")
 
     bridge = QmlBridge(database=database, services=services, logger=logger)

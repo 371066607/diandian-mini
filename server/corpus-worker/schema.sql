@@ -1,4 +1,4 @@
--- Crowd-sourced keyword corpus (shared across all 点点数据 Mini clients).
+-- Crowd-sourced keyword corpus (shared across all catch-radar clients).
 -- Stores ONLY keywords per locale — never app ids or any user identifier — so the
 -- pool is "what search terms exist in this locale", not "who scanned what".
 CREATE TABLE IF NOT EXISTS keyword_corpus (

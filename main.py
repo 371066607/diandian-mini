@@ -28,11 +28,21 @@ def main() -> int:
     database = Database()
     migrate(database)
     services = build_services(database)
-    services["settings_service"].ensure_defaults()
+    store_intel_api_client = services.get("store_intel_api_client")
+    if not getattr(store_intel_api_client, "enabled", False):
+        services["settings_service"].ensure_defaults()
 
     if args.smoke_test:
         print("smoke-ok")
         return 0
+
+    if args.widgets and getattr(store_intel_api_client, "enabled", False):
+        print(
+            "旧 Qt Widgets 界面仅允许在 CATCH_RADAR_LEGACY_LOCAL_MODE=true "
+            "或 CATCH_RADAR_OFFLINE_MODE=true 下启动。",
+            file=sys.stderr,
+        )
+        return 2
 
     from PySide6.QtCore import QThreadPool
 
@@ -48,7 +58,7 @@ def main() -> int:
     try:
         if args.widgets:
             app = QApplication(sys.argv)
-            app.setApplicationName("点点数据 Mini")
+            app.setApplicationName("catch-radar")
             window = MainWindow(database=database, services=services, logger=logger)
             # Wire background-sync alerts to the tray/badge. Done here (not in
             # build_services) so the service layer never imports the UI; headless/smoke

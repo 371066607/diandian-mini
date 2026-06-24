@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	storeintel "github.com/diandian-mini/storeintel"
-	"github.com/diandian-mini/storeintel/dto"
-	"github.com/diandian-mini/storeintel/repo"
+	storeintel "github.com/catch-radar/storeintel"
+	"github.com/catch-radar/storeintel/dto"
+	"github.com/catch-radar/storeintel/repo"
 )
 
 type moduleFakeUpstream struct{}
@@ -15,8 +15,28 @@ func (moduleFakeUpstream) SearchApps(context.Context, dto.SearchAppsRequest) ([]
 	return []dto.AppSummary{{Platform: dto.PlatformGooglePlay, AppID: "com.demo"}}, nil
 }
 
+func (moduleFakeUpstream) Suggest(context.Context, dto.SuggestRequest) ([]string, error) {
+	return []string{"demo app"}, nil
+}
+
 func (moduleFakeUpstream) GetAppDetail(context.Context, dto.GetAppDetailRequest) (dto.AppDetail, error) {
 	return dto.AppDetail{AppSummary: dto.AppSummary{Platform: dto.PlatformGooglePlay, AppID: "com.demo", Title: "Demo"}}, nil
+}
+
+func (moduleFakeUpstream) SimilarApps(context.Context, dto.SimilarAppsRequest) ([]dto.AppSummary, error) {
+	return []dto.AppSummary{{Platform: dto.PlatformGooglePlay, AppID: "com.related"}}, nil
+}
+
+func (moduleFakeUpstream) GetAppPermissions(context.Context, dto.AppPermissionsRequest) (map[string][]string, error) {
+	return map[string][]string{"Location": {"approximate location"}}, nil
+}
+
+func (moduleFakeUpstream) FetchChart(context.Context, dto.FetchChartRequest) (dto.FetchChartResponse, error) {
+	return dto.FetchChartResponse{}, nil
+}
+
+func (moduleFakeUpstream) FetchReviews(context.Context, dto.FetchReviewsRequest) (dto.FetchReviewsResponse, error) {
+	return dto.FetchReviewsResponse{}, nil
 }
 
 func TestNewModuleExposesCallableService(t *testing.T) {

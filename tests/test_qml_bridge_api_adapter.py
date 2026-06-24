@@ -1,0 +1,1491 @@
+from __future__ import annotations
+
+import logging
+import os
+import time
+from types import SimpleNamespace
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QUICK_BACKEND", "software")
+
+import pytest
+
+pytest.importorskip("PySide6")
+from PySide6.QtWidgets import QApplication
+
+from app.constants import DEFAULT_SETTINGS
+from app.schemas.app_schema import AppDetail, AppSummary
+from app.schemas.chart_schema import ChartItem
+from app.schemas.keyword_schema import KeywordRankResult
+from app.schemas.review_schema import ReviewItem
+from app.ui.qml_bridge import QmlBridge
+from app.utils.time_utils import now_iso
+
+
+class FakeSettings:
+    def __init__(self):
+        self.values = {**DEFAULT_SETTINGS, "input_history": "{}"}
+
+    def get_all(self):
+        return dict(self.values)
+
+    def get(self, key, default=""):
+        return self.values.get(key, default)
+
+    def set_many(self, values):
+        self.values.update(values)
+
+
+class FakeApi:
+    enabled = True
+
+    def __init__(self):
+        self.calls = []
+        self.settings = {**DEFAULT_SETTINGS, "input_history": "{}", "theme": "slate"}
+
+    def search(self, keyword, country="us", lang="en", limit=50):
+        self.calls.append(("search", keyword, country, lang, limit))
+        return [AppSummary(app_id="com.remote", title="Remote App", has_iap=True)]
+
+    def search_cached(self, keyword, country="us", lang="en", limit=50):
+        self.calls.append(("search_cached", keyword, country, lang, limit))
+        return [AppSummary(app_id="com.remote", title="Remote App", has_iap=True)]
+
+    def app_detail(self, app_id, country="us", lang="en"):
+        self.calls.append(("app_detail", app_id, country, lang))
+        return AppDetail(
+            app_id=app_id,
+            title="Remote Detail",
+            developer="Remote Dev",
+            rating=4.6,
+            free=True,
+            categories=["Tools"],
+        )
+
+    def cached_app_detail(self, app_id, country="us", lang="en"):
+        self.calls.append(("cached_app_detail", app_id, country, lang))
+        return AppDetail(
+            app_id=app_id,
+            title="Remote Detail",
+            developer="Remote Dev",
+            rating=4.6,
+            free=True,
+            categories=["Tools"],
+            permissions={"Location": ["approximate location"]},
+        )
+
+    def similar_apps(self, app_id, country="us", lang="en", limit=10):
+        self.calls.append(("similar_apps", app_id, country, lang, limit))
+        return [AppSummary(app_id="com.related", title="Related App", rating=4.2)]
+
+    def permissions(self, app_id, country="us", lang="en"):
+        self.calls.append(("permissions", app_id, country, lang))
+        return {"Location": ["approximate location"]}
+
+    def reviews(self, app_id, country="us", lang="en", sort="newest", continuation_token=None):
+        self.calls.append(("reviews", app_id, country, lang, sort, continuation_token))
+        return [ReviewItem(app_id=app_id, review_id="r1", rating=5, content="great")], None
+
+    def fetch_chart(self, chart_type, category, country, lang, limit):
+        self.calls.append(("fetch_chart", chart_type, category, country, lang, limit))
+        return [
+            ChartItem(
+                app_id="com.remote",
+                title="Remote App",
+                rank=1,
+                chart_type=chart_type,
+                category=category,
+                country=country,
+                lang=lang,
+            )
+        ]
+
+    def fetch_chart_cached(self, chart_type, category, country, lang, limit):
+        self.calls.append(("fetch_chart_cached", chart_type, category, country, lang, limit))
+        return [
+            ChartItem(
+                app_id="com.remote",
+                title="Remote App",
+                rank=1,
+                chart_type=chart_type,
+                category=category,
+                country=country,
+                lang=lang,
+            )
+        ]
+
+    def rank_keyword(self, keyword, app_id, country="us", lang="en", limit=100):
+        self.calls.append(("rank_keyword", keyword, app_id, country, lang, limit))
+        return KeywordRankResult(
+            keyword=keyword,
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            found=True,
+            rank=1,
+            checked_limit=limit,
+            captured_at="2026-06-18T00:00:00Z",
+            results=[AppSummary(app_id=app_id, title="Remote App")],
+        )
+
+    def cached_keyword_rank(self, keyword, app_id, country="us", lang="en", limit=100):
+        self.calls.append(("cached_keyword_rank", keyword, app_id, country, lang, limit))
+        return KeywordRankResult(
+            keyword=keyword,
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            found=True,
+            rank=1,
+            checked_limit=limit,
+            captured_at="2026-06-18T00:00:00Z",
+            results=[],
+        )
+
+    def analyze_coverage(
+        self,
+        app_id,
+        country="us",
+        lang="en",
+        limit=50,
+        deep=False,
+        candidates=None,
+        canonical_app_id=None,
+    ):
+        self.calls.append(
+            (
+                "analyze_coverage",
+                app_id,
+                country,
+                lang,
+                limit,
+                deep,
+                tuple(candidates or []),
+                canonical_app_id or "",
+            )
+        )
+        return SimpleNamespace(
+            platform="google_play",
+            app_id=app_id,
+            canonical_app_id=canonical_app_id or app_id,
+            country=country,
+            lang=lang,
+            candidates=["notes"],
+            candidate_count=1,
+            covered=[{"keyword": "notes", "rank": 1}],
+            checked_limit=limit,
+        )
+
+    def cached_coverage(self, app_id, country="us", lang="en", deep=False):
+        self.calls.append(("cached_coverage", app_id, country, lang, deep))
+        return SimpleNamespace(
+            platform="google_play",
+            app_id=app_id,
+            canonical_app_id=app_id,
+            country=country,
+            lang=lang,
+            candidates=["notes"],
+            candidate_count=1,
+            covered=[{"keyword": "notes", "rank": 1}],
+            checked_limit=50,
+        )
+
+    def analyze_coverage_stream(
+        self,
+        app_id,
+        country="us",
+        lang="en",
+        limit=50,
+        deep=False,
+        candidates=None,
+        canonical_app_id=None,
+        progress=None,
+    ):
+        self.calls.append(
+            (
+                "analyze_coverage_stream",
+                app_id,
+                country,
+                lang,
+                limit,
+                deep,
+                tuple(candidates or []),
+                canonical_app_id or "",
+            )
+        )
+        if progress is not None:
+            progress("覆盖检测 1/1：notes", 1.0)
+        return SimpleNamespace(
+            platform="google_play",
+            app_id=app_id,
+            canonical_app_id=canonical_app_id or app_id,
+            country=country,
+            lang=lang,
+            candidates=["notes"],
+            candidate_count=1,
+            covered=[{"keyword": "notes", "rank": 1}],
+            checked_limit=limit,
+        )
+
+    def get_settings(self):
+        self.calls.append(("get_settings",))
+        return dict(self.settings)
+
+    def set_settings(self, values):
+        self.calls.append(("set_settings", dict(values)))
+        self.settings.update(values)
+        return dict(self.settings)
+
+    def list_tracked_apps(self):
+        self.calls.append(("list_tracked_apps",))
+        return [
+            SimpleNamespace(
+                app_id="com.remote",
+                title="Remote App",
+                country="us",
+                lang="en",
+                frequency="daily",
+                tag="core",
+                enabled=True,
+                last_synced_at="",
+                consecutive_failures=0,
+            )
+        ]
+
+    def list_tracked_keywords(self):
+        self.calls.append(("list_tracked_keywords",))
+        return [
+            SimpleNamespace(
+                platform="google_play",
+                keyword="notes",
+                app_id="com.remote",
+                country="us",
+                lang="en",
+                frequency="daily",
+                enabled=True,
+                last_synced_at="",
+                consecutive_failures=0,
+            )
+        ]
+
+    def list_tracked_chart_apps(self):
+        self.calls.append(("list_tracked_chart_apps",))
+        return [
+            SimpleNamespace(
+                app_id="com.remote",
+                collection="top_free",
+                category="APPLICATION",
+                country="us",
+                lang="en",
+                frequency="daily",
+                enabled=True,
+                last_synced_at="",
+                consecutive_failures=0,
+            )
+        ]
+
+    def list_app_snapshots(self, app_id, country="us", lang="en", limit=80):
+        self.calls.append(("list_app_snapshots", app_id, country, lang, limit))
+        rows = [
+            SimpleNamespace(
+                platform="google_play",
+                app_id=app_id,
+                country=country,
+                lang=lang,
+                captured_at="2026-06-17T00:00:00Z",
+                title="Remote App",
+                rating=4.5,
+                ratings_count=100,
+                reviews_count=20,
+                installs="1,000+",
+                min_installs=1000,
+                real_installs=1200,
+                version="1.0.0",
+            ),
+            SimpleNamespace(
+                platform="google_play",
+                app_id=app_id,
+                country=country,
+                lang=lang,
+                captured_at="2026-06-18T00:00:00Z",
+                title="Remote App",
+                rating=4.6,
+                ratings_count=120,
+                reviews_count=25,
+                installs="1,000+",
+                min_installs=1000,
+                real_installs=1300,
+                version="1.1.0",
+            ),
+        ]
+        return rows[:limit] if limit else rows
+
+    def list_recent_app_snapshots(self, limit=8):
+        self.calls.append(("list_recent_app_snapshots", limit))
+        return list(reversed(self.list_app_snapshots("com.remote", "us", "en", limit=limit)))
+
+    def count_app_snapshots(self):
+        self.calls.append(("count_app_snapshots",))
+        return 2
+
+    def list_cached_reviews(self, app_id, limit=10):
+        self.calls.append(("list_cached_reviews", app_id, limit))
+        return [ReviewItem(app_id=app_id, review_id="cached", rating=4, content="cached review")]
+
+    def list_keyword_rank_history(self, keyword, app_id, country="us", lang="en", limit=0):
+        self.calls.append(("list_keyword_rank_history", keyword, app_id, country, lang, limit))
+        return [
+            SimpleNamespace(
+                platform="google_play",
+                keyword=keyword,
+                app_id=app_id,
+                country=country,
+                lang=lang,
+                found=True,
+                rank=3,
+                checked_limit=10,
+                captured_at="2026-06-17T00:00:00Z",
+            ),
+            SimpleNamespace(
+                platform="google_play",
+                keyword=keyword,
+                app_id=app_id,
+                country=country,
+                lang=lang,
+                found=True,
+                rank=1,
+                checked_limit=10,
+                captured_at="2026-06-18T00:00:00Z",
+            ),
+        ][: limit or None]
+
+    def list_recent_keyword_ranks(self, *, app_id="", country="", lang="", limit=8):
+        self.calls.append(("list_recent_keyword_ranks", app_id, country, lang, limit))
+        rows = list(
+            reversed(
+                self.list_keyword_rank_history(
+                    "notes", app_id or "com.remote", country or "us", lang or "en"
+                )
+            )
+        )
+        return rows[:limit]
+
+    def latest_keyword_rank_label(self, keyword, app_id, country="us", lang="en"):
+        self.calls.append(("latest_keyword_rank_label", keyword, app_id, country, lang))
+        return "#1"
+
+    def latest_chart_rank_label(self, app_id, collection, category, country="us", lang="en"):
+        self.calls.append(("latest_chart_rank_label", app_id, collection, category, country, lang))
+        return "#2"
+
+    def list_chart_rank_history(
+        self,
+        app_id,
+        collection,
+        category="APPLICATION",
+        country="us",
+        lang="en",
+        limit=0,
+    ):
+        self.calls.append(
+            ("list_chart_rank_history", app_id, collection, category, country, lang, limit)
+        )
+        rows = [
+            SimpleNamespace(
+                app_id=app_id,
+                collection=collection,
+                category=category,
+                country=country,
+                lang=lang,
+                found=True,
+                rank=4,
+                checked_limit=10,
+                captured_at="2026-06-17T00:00:00Z",
+            ),
+            SimpleNamespace(
+                app_id=app_id,
+                collection=collection,
+                category=category,
+                country=country,
+                lang=lang,
+                found=True,
+                rank=2,
+                checked_limit=10,
+                captured_at="2026-06-18T00:00:00Z",
+            ),
+        ]
+        return rows[:limit] if limit else rows
+
+    def list_alerts(self, *, limit=200, **kwargs):
+        self.calls.append(("list_alerts", limit, kwargs))
+        return [
+            SimpleNamespace(
+                id=7,
+                type="rating_drop",
+                severity="high",
+                app_id="com.remote",
+                message="drop",
+                is_read=False,
+                created_at="2026-06-18T00:00:00Z",
+            )
+        ]
+
+    def unread_count(self):
+        self.calls.append(("unread_count",))
+        return 1
+
+    def add_tracked_app(self, app_id, country="us", lang="en", frequency="daily", tag=""):
+        self.calls.append(("add_tracked_app", app_id, country, lang, frequency, tag))
+        return SimpleNamespace(app_id=app_id)
+
+    def add_tracked_keyword(self, keyword, app_id, country="us", lang="en", platform="google_play"):
+        self.calls.append(("add_tracked_keyword", keyword, app_id, country, lang, platform))
+        return SimpleNamespace(keyword=keyword, app_id=app_id)
+
+    def add_tracked_chart_app(
+        self, app_id, collection, category="APPLICATION", country="us", lang="en"
+    ):
+        self.calls.append(("add_tracked_chart_app", app_id, collection, category, country, lang))
+        return SimpleNamespace(app_id=app_id)
+
+    def sync_app_now(self, app_id, country="us", lang="en"):
+        self.calls.append(("sync_app_now", app_id, country, lang))
+        return AppDetail(app_id=app_id, title="Synced Detail", free=True)
+
+    def sync_all(self, due_only=False):
+        self.calls.append(("sync_all", due_only))
+        return {"apps": 1, "keywords": 2, "charts": 3}
+
+    def request_refresh(self, kind, **kwargs):
+        self.calls.append(("request_refresh", kind, kwargs))
+        return SimpleNamespace(job_id=f"job-{len(self.calls)}", status="queued", kind=kind)
+
+    def wait_refresh_job(self, job_id, *, timeout=60.0, interval=1.0):
+        self.calls.append(("wait_refresh_job", job_id, timeout, interval))
+        return SimpleNamespace(job_id=job_id, status="completed")
+
+    def mark_alerts_read(self, ids=None):
+        self.calls.append(("mark_alerts_read", ids or []))
+        return 1
+
+    def cleanup_history(self):
+        self.calls.append(("cleanup_history",))
+        return {"snapshots": 1, "keywords": 2, "charts": 3, "alerts": 4, "reviews": 5}
+
+    def remove_tracked_app(self, app_id, country="us", lang="en"):
+        self.calls.append(("remove_tracked_app", app_id, country, lang))
+        return 1
+
+    def set_tracked_app_enabled(self, app_id, enabled, country="us", lang="en"):
+        self.calls.append(("set_tracked_app_enabled", app_id, enabled, country, lang))
+        return SimpleNamespace(updated=1, enabled=enabled)
+
+    def set_tracked_app_frequency(self, app_id, frequency, country="us", lang="en"):
+        self.calls.append(("set_tracked_app_frequency", app_id, frequency, country, lang))
+        return SimpleNamespace(updated=1, frequency=frequency)
+
+    def set_tracked_app_tag(self, app_id, tag, country="us", lang="en"):
+        self.calls.append(("set_tracked_app_tag", app_id, tag, country, lang))
+        return SimpleNamespace(updated=1, tag=tag)
+
+    def remove_tracked_keyword(
+        self, keyword, app_id, country="us", lang="en", platform="google_play"
+    ):
+        self.calls.append(("remove_tracked_keyword", keyword, app_id, country, lang, platform))
+        return 1
+
+    def set_tracked_keyword_enabled(
+        self, keyword, app_id, enabled, country="us", lang="en", platform="google_play"
+    ):
+        self.calls.append(
+            ("set_tracked_keyword_enabled", keyword, app_id, enabled, country, lang, platform)
+        )
+        return SimpleNamespace(updated=1, enabled=enabled)
+
+    def set_tracked_keyword_frequency(
+        self, keyword, app_id, frequency, country="us", lang="en", platform="google_play"
+    ):
+        self.calls.append(
+            ("set_tracked_keyword_frequency", keyword, app_id, frequency, country, lang, platform)
+        )
+        return SimpleNamespace(updated=1, frequency=frequency)
+
+    def sync_tracked_keyword_now(
+        self, keyword, app_id, country="us", lang="en", platform="google_play", limit=100
+    ):
+        self.calls.append(
+            ("sync_tracked_keyword_now", keyword, app_id, country, lang, platform, limit)
+        )
+        return KeywordRankResult(
+            keyword=keyword,
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            found=True,
+            rank=1,
+            checked_limit=limit,
+            captured_at="2026-06-18T00:00:00Z",
+        )
+
+    def remove_tracked_chart_app(
+        self, app_id, collection, category="APPLICATION", country="us", lang="en"
+    ):
+        self.calls.append(("remove_tracked_chart_app", app_id, collection, category, country, lang))
+        return 1
+
+    def set_tracked_chart_app_enabled(
+        self, app_id, collection, enabled, category="APPLICATION", country="us", lang="en"
+    ):
+        self.calls.append(
+            ("set_tracked_chart_app_enabled", app_id, collection, enabled, category, country, lang)
+        )
+        return SimpleNamespace(updated=1, enabled=enabled)
+
+    def sync_tracked_chart_app_now(
+        self, app_id, collection, category="APPLICATION", country="us", lang="en", limit=100
+    ):
+        self.calls.append(
+            ("sync_tracked_chart_app_now", app_id, collection, category, country, lang, limit)
+        )
+        return SimpleNamespace(
+            app_id=app_id,
+            collection=collection,
+            category=category,
+            country=country,
+            lang=lang,
+            found=True,
+            rank=2,
+            checked_limit=limit,
+            captured_at="2026-06-18T00:00:00Z",
+        )
+
+
+class FakeGooglePlay:
+    def similar(self, app_id, country="us", lang="en", limit=10):
+        return []
+
+
+class FakeTracking:
+    def get_history(self, app_id, country="us", lang="en"):
+        return []
+
+
+class FakeAlerts:
+    def list_alerts(self, app_id=None, limit=8):
+        return []
+
+
+class FakeReviews:
+    def list_cached(self, app_id, limit=10):
+        return []
+
+
+def _wait_idle(app, bridge, timeout=10.0):
+    deadline = time.time() + timeout
+    while bridge._workers and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    for _ in range(5):
+        app.processEvents()
+    assert not bridge._workers, "a bridge worker did not finish in time"
+
+
+def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.searchApps("notes", "us", "en", "10")
+    _wait_idle(app, bridge)
+    assert bridge.search["rows"][0]["appId"] == "com.remote"
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+    assert bridge.detail["loaded"] is True
+    assert bridge.detail["title"] == "Remote Detail"
+    assert bridge.detail["similar"] == []
+
+    bridge.fetchDetailPermissions()
+    _wait_idle(app, bridge)
+    assert bridge.detail["permissionsLoaded"] is True
+    assert bridge.detail["permissions"][0]["group"] == "Location"
+
+    bridge.fetchReviews("com.remote", "us", "en", "newest")
+    _wait_idle(app, bridge)
+    assert bridge.reviews["rows"][0]["content"] == "cached review"
+
+    bridge.fetchChart("top_free", "", "us", "en", "10")
+    _wait_idle(app, bridge)
+    assert bridge.charts["rows"][0]["rank"] == 1
+
+    bridge.fetchKeywordRank("notes", "com.remote", "us", "en", "10")
+    _wait_idle(app, bridge)
+    assert "前 30 条内排名 #1" in bridge.keywords["summary"]
+    assert ("rank_keyword", "notes", "com.remote", "us", "en", 30) in api.calls
+    assert bridge.keywords["rows"] == [
+        {
+            "rank": 1,
+            "iconUrl": "",
+            "title": "Remote App",
+            "appId": "com.remote",
+            "developer": "-",
+            "rating": "-",
+            "installs": "-",
+            "hit": True,
+        }
+    ]
+    assert bridge._keyword_result_remote is True
+
+    progress_events = []
+    bridge.coverageProgress.connect(
+        lambda message, fraction: progress_events.append((message, fraction))
+    )
+    bridge.discoverCoverage("com.remote", "us", "en", False)
+    _wait_idle(app, bridge)
+    assert bridge.coverage["rows"][0]["keyword"] == "notes"
+    assert bridge.coverage["rows"][0]["rank"] == 1
+    assert ("覆盖检测 1/1：notes", 1.0) not in progress_events
+
+    call_names = [call[0] for call in api.calls]
+    for expected in (
+        "search_cached",
+        "cached_app_detail",
+        "list_app_snapshots",
+        "list_cached_reviews",
+        "fetch_chart_cached",
+        "rank_keyword",
+        "cached_coverage",
+    ):
+        assert expected in call_names
+    for blocked in (
+        "search",
+        "app_detail",
+        "similar_apps",
+        "permissions",
+        "reviews",
+        "fetch_chart",
+        "cached_keyword_rank",
+        "analyze_coverage_stream",
+    ):
+        assert blocked not in call_names
+
+
+def test_qml_bridge_waits_search_refresh_job_on_cache_miss():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    calls = {"search_cached": 0}
+
+    def search_cached(keyword, country="us", lang="en", limit=50):
+        calls["search_cached"] += 1
+        api.calls.append(("search_cached", keyword, country, lang, limit))
+        if calls["search_cached"] == 1:
+            return []
+        return [AppSummary(app_id="com.refreshed", title="Refreshed App", has_iap=False)]
+
+    api.search_cached = search_cached
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.searchApps("notes", "us", "en", "10")
+    _wait_idle(app, bridge)
+
+    assert bridge.search["rows"][0]["appId"] == "com.refreshed"
+    assert calls["search_cached"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "search" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_refreshes_incomplete_search_cache_for_display_fields():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    calls = {"search_cached": 0}
+
+    def search_cached(keyword, country="us", lang="en", limit=50):
+        calls["search_cached"] += 1
+        api.calls.append(("search_cached", keyword, country, lang, limit))
+        if calls["search_cached"] == 1:
+            return [
+                AppSummary(
+                    app_id="com.hotshotai",
+                    title="Hotshot AI: Photo Generator",
+                    category="PHOTOGRAPHY",
+                    summary="Create AI meme photos.",
+                    price="0",
+                    icon_url="https://example.test/icon.png",
+                )
+            ]
+        return [
+            AppSummary(
+                app_id="com.hotshotai",
+                title="Hotshot AI: Photo Generator",
+                developer="Hotshot Studio",
+                category="PHOTOGRAPHY",
+                summary="Create AI meme photos.",
+                rating=4.7,
+                ratings_count=1200,
+                installs="100K+",
+                price="0",
+                icon_url="https://example.test/icon.png",
+            )
+        ]
+
+    api.search_cached = search_cached
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.searchApps("hotshotai", "us", "en", "10")
+    _wait_idle(app, bridge)
+
+    row = bridge.search["rows"][0]
+    assert row["title"] == "Hotshot AI: Photo Generator"
+    assert row["developer"] == "Hotshot Studio"
+    assert row["rating"] == 4.7
+    assert row["ratings"] == "1,200"
+    assert row["installs"] == "100K+"
+    assert row["category"] == "PHOTOGRAPHY"
+    assert row["summary"] == "Create AI meme photos."
+    assert calls["search_cached"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "search" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_refreshes_app_detail_cache_on_miss():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def cached_detail(app_id, country="us", lang="en"):
+        cache_reads["count"] += 1
+        api.calls.append(("cached_app_detail", app_id, country, lang))
+        if cache_reads["count"] == 1:
+            raise RuntimeError("cache miss")
+        return AppDetail(
+            app_id=app_id,
+            title="Synced Cache Detail",
+            developer="Remote Dev",
+            rating=4.9,
+            free=True,
+        )
+
+    api.cached_app_detail = cached_detail
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert bridge.detail["loaded"] is True
+    assert bridge.detail["title"] == "Synced Cache Detail"
+    assert cache_reads["count"] == 2
+    assert (
+        "request_refresh",
+        "app",
+        {"app_id": "com.remote", "country": "us", "lang": "en"},
+    ) in api.calls
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+    assert "app_detail" not in [call[0] for call in api.calls]
+
+
+def test_qml_bridge_refreshes_incomplete_app_detail_cache():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def cached_detail(app_id, country="us", lang="en"):
+        api.calls.append(("cached_app_detail", app_id, country, lang))
+        return AppDetail(
+            app_id=app_id,
+            title="Shallow Cache Detail",
+            summary="Only summary fields came back.",
+            android_version="ANDROID",
+            icon_url="https://example.test/icon.png",
+            free=True,
+        )
+
+    api.cached_app_detail = cached_detail
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert bridge.detail["loaded"] is True
+    assert bridge.detail["title"] == "Shallow Cache Detail"
+    assert (
+        "request_refresh",
+        "app",
+        {"app_id": "com.remote", "country": "us", "lang": "en"},
+    ) in api.calls
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_waits_chart_refresh_job_on_cache_miss():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def fetch_chart_cached(chart_type, category, country, lang, limit):
+        cache_reads["count"] += 1
+        api.calls.append(("fetch_chart_cached", chart_type, category, country, lang, limit))
+        if cache_reads["count"] == 1:
+            return []
+        return [
+            ChartItem(
+                app_id="com.refreshed.chart",
+                title="Refreshed Chart App",
+                rank=7,
+                chart_type=chart_type,
+                category=category,
+                country=country,
+                lang=lang,
+            )
+        ]
+
+    api.fetch_chart_cached = fetch_chart_cached
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchChart("top_free", "", "us", "en", "10")
+    _wait_idle(app, bridge)
+
+    assert bridge.charts["rows"][0]["appId"] == "com.refreshed.chart"
+    assert bridge.charts["rows"][0]["rank"] == 7
+    assert cache_reads["count"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "chart" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_ignores_stale_app_detail_result():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def cached_detail(app_id, country="us", lang="en"):
+        api.calls.append(("cached_app_detail", app_id, country, lang))
+        if app_id == "com.slow":
+            time.sleep(0.2)
+            return AppDetail(app_id=app_id, title="Slow Detail", rating=4.0)
+        return AppDetail(app_id=app_id, title="Fast Detail", rating=4.8)
+
+    api.cached_app_detail = cached_detail
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchAppDetail("com.slow", "ca", "fr")
+    bridge.fetchAppDetail("com.fast", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert bridge.detail["appId"] == "com.fast"
+    assert bridge.detail["title"] == "Fast Detail"
+
+
+def test_qml_bridge_blocks_app_store_local_source_in_api_mode():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.setPlatform("app_store")
+    app.processEvents()
+
+    assert bridge.platform == "google_play"
+    assert errors
+    assert "后端接口尚未接入" in errors[-1]
+
+
+def test_qml_bridge_dashboard_ignores_optional_recent_keyword_api_error():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def fail_recent_keywords(*, app_id="", country="", lang="", limit=8):
+        api.calls.append(("list_recent_keyword_ranks", app_id, country, lang, limit))
+        raise RuntimeError("internal error (STORE_INTEL_INTERNAL_ERROR)")
+
+    api.list_recent_keyword_ranks = fail_recent_keywords
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshDashboard()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.dashboard["stats"][0]["value"] == 1
+    assert bridge.dashboard["keywordName"] == ""
+    assert bridge.dashboard["keywordValues"] == []
+
+
+def test_qml_bridge_dashboard_tolerates_snapshot_without_rating():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def list_recent_app_snapshots(limit=8):
+        api.calls.append(("list_recent_app_snapshots", limit))
+        return [
+            SimpleNamespace(
+                platform="google_play",
+                app_id="com.remote",
+                country="us",
+                lang="en",
+                captured_at="2026-06-18T00:00:00Z",
+                title="Remote App",
+            )
+        ]
+
+    api.list_recent_app_snapshots = list_recent_app_snapshots
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshDashboard()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.dashboard["ratingLabels"] == ["06-18 00:00"]
+    assert bridge.dashboard["ratingValues"] == [0]
+
+
+def test_qml_bridge_tracking_tolerates_app_without_tag():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def list_tracked_apps():
+        api.calls.append(("list_tracked_apps",))
+        return [
+            SimpleNamespace(
+                app_id="com.remote",
+                title="Remote App",
+                country="us",
+                lang="en",
+                frequency="daily",
+                enabled=True,
+                last_synced_at="2026-06-18T00:00:00Z",
+            )
+        ]
+
+    api.list_tracked_apps = list_tracked_apps
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshTracking()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.tracking["apps"][0]["tag"] == "-"
+    assert bridge.tracking["apps"][0]["nextSync"] == "已到期"
+
+
+def test_qml_bridge_detail_ignores_optional_extra_api_errors():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def fail_snapshots(app_id, country="us", lang="en", limit=80):
+        api.calls.append(("list_app_snapshots", app_id, country, lang, limit))
+        raise TimeoutError("timed out")
+
+    def fail_alerts(*, app_id=None, limit=8):
+        api.calls.append(("list_alerts", limit, {"app_id": app_id}))
+        raise TimeoutError("timed out")
+
+    def fail_reviews(app_id, limit=10):
+        api.calls.append(("list_cached_reviews", app_id, limit))
+        raise TimeoutError("timed out")
+
+    api.list_app_snapshots = fail_snapshots
+    api.list_alerts = fail_alerts
+    api.list_cached_reviews = fail_reviews
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.detail["loaded"] is True
+    assert bridge.detail["title"] == "Remote Detail"
+    assert bridge.detail["recentAlerts"] == []
+    assert bridge.detail["recentReviews"] == []
+    assert bridge.detail["ratingValues"] == [4.6]
+
+
+def test_qml_bridge_history_ignores_optional_recent_keyword_api_error():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def fail_recent_keywords(*, app_id="", country="", lang="", limit=8):
+        api.calls.append(("list_recent_keyword_ranks", app_id, country, lang, limit))
+        raise RuntimeError("internal error (STORE_INTEL_INTERNAL_ERROR)")
+
+    api.list_recent_keyword_ranks = fail_recent_keywords
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshHistory()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.history["apps"][0]["appId"] == "com.remote"
+    assert bridge.history["snapshots"][0]["version"] == "1.0.0"
+    assert bridge.history["keywords"] == []
+
+
+def test_qml_bridge_reports_keyword_rank_api_failure_without_refresh_job():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    rank_calls = {"count": 0}
+
+    def rank_keyword(keyword, app_id, country="us", lang="en", limit=100):
+        rank_calls["count"] += 1
+        api.calls.append(("rank_keyword", keyword, app_id, country, lang, limit))
+        raise RuntimeError("internal error (STORE_INTEL_INTERNAL_ERROR)")
+
+    api.rank_keyword = rank_keyword
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.fetchKeywordRank("notes", "com.remote", "us", "en", "10")
+    _wait_idle(app, bridge)
+
+    assert errors == ["服务器没有返回可用的关键词排名数据。"]
+    assert bridge.keywords["rows"] == []
+    assert rank_calls["count"] == 1
+    assert [
+        call[-1] for call in api.calls if call[0] == "rank_keyword"
+    ] == [30]
+    assert not any(
+        call[0] == "request_refresh" and call[1] == "keyword_rank" for call in api.calls
+    )
+    assert not any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_waits_coverage_refresh_job_on_cache_miss():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def cached_coverage(app_id, country="us", lang="en", deep=False):
+        cache_reads["count"] += 1
+        api.calls.append(("cached_coverage", app_id, country, lang, deep))
+        if cache_reads["count"] == 1:
+            return SimpleNamespace(
+                platform="google_play",
+                app_id=app_id,
+                canonical_app_id=app_id,
+                country=country,
+                lang=lang,
+                candidates=[],
+                candidate_count=0,
+                covered=[],
+                checked_limit=50,
+            )
+        return SimpleNamespace(
+            platform="google_play",
+            app_id=app_id,
+            canonical_app_id=app_id,
+            country=country,
+            lang=lang,
+            candidates=["refreshed"],
+            candidate_count=1,
+            covered=[{"keyword": "refreshed", "rank": 3}],
+            checked_limit=50,
+        )
+
+    api.cached_coverage = cached_coverage
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.discoverCoverage("com.remote", "us", "en", False)
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert bridge.coverage["rows"][0]["keyword"] == "refreshed"
+    assert bridge.coverage["rows"][0]["rank"] == 3
+    assert cache_reads["count"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "coverage" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_waits_reviews_refresh_job_on_cache_miss():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def list_cached_reviews(app_id, limit=10):
+        cache_reads["count"] += 1
+        api.calls.append(("list_cached_reviews", app_id, limit))
+        if cache_reads["count"] == 1:
+            return []
+        return [
+            ReviewItem(
+                app_id=app_id,
+                review_id="refreshed",
+                rating=5,
+                content="refreshed review",
+            )
+        ]
+
+    api.list_cached_reviews = list_cached_reviews
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchReviews("com.remote", "us", "en", "newest")
+    _wait_idle(app, bridge)
+
+    assert bridge.reviews["rows"][0]["content"] == "refreshed review"
+    assert cache_reads["count"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "reviews" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_detail_extras_refresh_reviews_on_empty_cache():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def list_cached_reviews(app_id, limit=10):
+        cache_reads["count"] += 1
+        api.calls.append(("list_cached_reviews", app_id, limit))
+        if cache_reads["count"] == 1:
+            return []
+        return [
+            ReviewItem(
+                app_id=app_id,
+                review_id="detail-refreshed",
+                rating=5,
+                content="detail refreshed review",
+            )
+        ]
+
+    api.list_cached_reviews = list_cached_reviews
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert bridge.detail["recentReviews"][0]["content"] == "detail refreshed review"
+    assert cache_reads["count"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "reviews" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+
+
+def test_qml_bridge_prefers_store_intel_api_for_tracking_settings_and_alerts():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.refreshDashboard()
+    bridge.refreshTracking()
+    bridge.refreshAlerts()
+    bridge.refreshSettings()
+    bridge.refreshHistory()
+    _wait_idle(app, bridge)
+    assert bridge.dashboard["stats"][3]["value"] == 2
+    assert bridge.dashboard["ratingValues"] == [4.5, 4.6]
+    assert bridge.dashboard["keywordName"] == "notes"
+    assert bridge.dashboard["keywordValues"] == [3, 1]
+    assert bridge.tracking["apps"][0]["appId"] == "com.remote"
+    assert bridge.tracking["keywords"][0]["rank"] == "#1"
+    assert bridge.tracking["charts"][0]["rank"] == "#2"
+    assert bridge.alerts["unread"] == 1
+    assert bridge.settings["default_country"] == "us"
+    assert bridge.history["snapshots"][0]["version"] == "1.0.0"
+    assert bridge.history["keywords"][0]["keyword"] == "notes"
+    assert bridge.history["keywords"][0]["rank"] == 1
+    tree = bridge.monitorTree()
+    assert tree["apps"][0]["appId"] == "com.remote"
+    assert tree["apps"][0]["keywords"][0]["rank"] == "#1"
+    assert tree["apps"][0]["charts"][0]["rank"] == "#2"
+    app_series = bridge.monitorSeries("app", "com.remote", "us", "en", "", 30)
+    assert app_series["charts"][0]["current"] == "4.60"
+    assert app_series["charts"][1]["values"] == [1200, 1300]
+    keyword_series = bridge.monitorSeries("keyword", "com.remote", "us", "en", "notes", 30)
+    assert keyword_series["charts"][0]["values"] == [3, 1]
+    chart_series = bridge.monitorSeries(
+        "chart", "com.remote", "us", "en", "top_free|APPLICATION", 30
+    )
+    assert chart_series["charts"][0]["values"] == [4, 2]
+
+    bridge.addApp("com.remote", "us", "en", "daily")
+    _wait_idle(app, bridge)
+    bridge.bulkImportApps("com.remote\ncom.bulk\nbad id\ncom.bulk", "us", "en", "weekly")
+    _wait_idle(app, bridge)
+    bridge.addChartApp("com.remote", "top_free", "APPLICATION", "us", "en")
+    _wait_idle(app, bridge)
+    bridge.addKeywordTracking("notes", "com.remote", "us", "en")
+    _wait_idle(app, bridge)
+    bridge.syncAll()
+    _wait_idle(app, bridge)
+    bridge.markAlertRead(7)
+    _wait_idle(app, bridge)
+    bridge.markAllAlertsRead()
+    _wait_idle(app, bridge)
+    bridge.cleanupHistory()
+    _wait_idle(app, bridge)
+    bridge.setMonitorFrequency("app", "com.remote", "us", "en", "", "weekly")
+    _wait_idle(app, bridge)
+    bridge.setMonitorTag("app", "com.remote", "us", "en", "", "core")
+    _wait_idle(app, bridge)
+    bridge.setMonitorFrequency("keyword", "com.remote", "us", "en", "notes", "manual")
+    _wait_idle(app, bridge)
+    bridge.syncMonitor("app", "com.remote", "us", "en", "")
+    _wait_idle(app, bridge)
+    bridge.toggleMonitor("app", "com.remote", "us", "en", "")
+    _wait_idle(app, bridge)
+    bridge.removeMonitor("app", "com.remote", "us", "en", "")
+    _wait_idle(app, bridge)
+    bridge.syncMonitor("keyword", "com.remote", "us", "en", "notes")
+    _wait_idle(app, bridge)
+    bridge.toggleMonitor("keyword", "com.remote", "us", "en", "notes")
+    _wait_idle(app, bridge)
+    bridge.removeMonitor("keyword", "com.remote", "us", "en", "notes")
+    _wait_idle(app, bridge)
+    bridge.syncMonitor("chart", "com.remote", "us", "en", "top_free|APPLICATION")
+    _wait_idle(app, bridge)
+    bridge.toggleMonitor("chart", "com.remote", "us", "en", "top_free|APPLICATION")
+    _wait_idle(app, bridge)
+    bridge.removeMonitor("chart", "com.remote", "us", "en", "top_free|APPLICATION")
+    _wait_idle(app, bridge)
+
+    bridge.fetchAppDetail("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+    assert bridge.detail["historyLabels"][-1] == now_iso()[5:10]
+    assert bridge.detail["recentReviews"][0]["content"] == "cached review"
+    bridge.saveDetailSnapshot("us", "en")
+    _wait_idle(app, bridge)
+    assert bridge.detail["title"] == "Remote Detail"
+
+    call_names = [call[0] for call in api.calls]
+    assert ("add_tracked_app", "com.bulk", "us", "en", "weekly", "") in api.calls
+    for expected in (
+        "get_settings",
+        "list_tracked_apps",
+        "list_tracked_keywords",
+        "list_tracked_chart_apps",
+        "list_alerts",
+        "unread_count",
+        "list_recent_keyword_ranks",
+        "list_keyword_rank_history",
+        "add_tracked_app",
+        "add_tracked_chart_app",
+        "add_tracked_keyword",
+        "request_refresh",
+        "mark_alerts_read",
+        "cleanup_history",
+        "set_tracked_app_frequency",
+        "set_tracked_app_tag",
+        "set_tracked_keyword_frequency",
+        "remove_tracked_app",
+        "set_tracked_app_enabled",
+        "remove_tracked_keyword",
+        "set_tracked_keyword_enabled",
+        "remove_tracked_chart_app",
+        "set_tracked_chart_app_enabled",
+    ):
+        assert expected in call_names
+    for blocked in (
+        "sync_all",
+        "sync_tracked_keyword_now",
+        "sync_tracked_chart_app_now",
+        "sync_app_now",
+    ):
+        assert blocked not in call_names
+    refresh_kinds = [call[1] for call in api.calls if call[0] == "request_refresh"]
+    assert refresh_kinds.count("all") == 1
+    assert refresh_kinds.count("app") >= 2
+    assert refresh_kinds.count("keyword") == 1
+    assert refresh_kinds.count("chart") == 1

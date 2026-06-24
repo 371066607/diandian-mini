@@ -1,4 +1,4 @@
-# 点点数据 Mini
+# catch-radar
 
 基于 PySide6 + SQLite 的本地桌面客户端，用于抓取和查看 Google Play 应用情报。
 
@@ -30,25 +30,25 @@ ruff check .    # 静态检查
 
 ## 下载即用
 
-到 [Releases](https://github.com/371066607/diandian-mini/releases) 下载对应平台整合包，解压双击即用（无需装 Python）：
+到 [Releases](https://github.com/371066607/catch-radar/releases) 下载对应平台整合包，解压双击即用（无需装 Python）：
 
-- **macOS**：`macos` 标签下的 `DiandianMini-macos.zip` → 解压双击 `DiandianMini.app`
-  - 首次打开若提示「无法验证开发者」，右键 App 选「打开」，或终端 `xattr -cr DiandianMini.app`
-- **Windows**：`windows` 标签下的 `DiandianMini-windows.zip` → 解压双击 `DiandianMini.exe`
+- **macOS**：`macos` 标签下的 `CatchRadar-macos.zip` → 解压双击 `CatchRadar.app`
+  - 首次打开若提示「无法验证开发者」，右键 App 选「打开」，或终端 `xattr -cr CatchRadar.app`
+- **Windows**：`windows` 标签下的 `CatchRadar-windows.zip` → 解压双击 `CatchRadar.exe`
 
 ## 打包
 
-本地打包成 macOS 应用（生成 `dist/DiandianMini.app`）：
+本地打包成 macOS 应用（生成 `dist/CatchRadar.app`）：
 
 ```bash
-sh scripts/build_macos.sh   # 自动生成 code_version.txt 并用 DiandianMini.spec 打包
+sh scripts/build_macos.sh   # 自动生成 code_version.txt 并用 CatchRadar.spec 打包
 ```
 
 ## 版本与数据目录
 
 - **版本号**用 commit 时间戳整数，构建时写入 `code_version.txt` 一起打进包；显示为 `年.月.日.时分`。
 - **打包版的数据**（SQLite 库、日志）放在 app 之外的用户目录
-  （macOS `~/Library/Application Support/DiandianMini`，Windows `%LOCALAPPDATA%\DiandianMini`），
+  （macOS `~/Library/Application Support/CatchRadar`，Windows `%LOCALAPPDATA%\CatchRadar`），
   这样更新覆盖 app 也不会丢数据。开发态仍用项目 `data/`。
 
 ## 更新功能

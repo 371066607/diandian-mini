@@ -2,7 +2,7 @@
 
 你将基于已有 v1.0 Python PySide6 桌面应用继续开发 v1.1。
 
-请严格遵循 `diandian_mini_desktop_v1_1_spec_integrated.md`。
+请严格遵循 `catch_radar_desktop_v1_1_spec_integrated.md`。
 
 重点注意：
 

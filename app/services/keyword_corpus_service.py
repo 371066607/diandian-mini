@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 # this one machine. Empty = pure local mode (behaviour unchanged). Only keywords +
 # locale + source + confirmed are ever sent; never an app id or any user identifier.
 # Defaults are the shipped values; either can be overridden by env (handy for tests —
-# set DIANDIAN_CORPUS_URL="" to force pure-local — and for pointing at a local
+# set CATCH_RADAR_CORPUS_URL="" to force pure-local — and for pointing at a local
 # `wrangler dev` instance during development).
 CORPUS_API_URL = os.environ.get(
-    "DIANDIAN_CORPUS_URL", "https://diandian-corpus.371066607.workers.dev"
+    "CATCH_RADAR_CORPUS_URL", "https://catch-radar-corpus.371066607.workers.dev"
 )
-CORPUS_API_KEY = os.environ.get("DIANDIAN_CORPUS_KEY", "970907")
+CORPUS_API_KEY = os.environ.get("CATCH_RADAR_CORPUS_KEY", "970907")
 _REMOTE_TIMEOUT = 6.0  # seconds; best-effort — a slow/absent backend never blocks a scan
 
 
@@ -57,7 +57,7 @@ class KeywordCorpusService:
         req.add_header("content-type", "application/json")
         # Cloudflare 403s the default "Python-urllib/x" UA as a bot — present a normal
         # one so the corpus calls get through (curl/browsers are fine, urllib isn't).
-        req.add_header("user-agent", "DiandianMini-corpus/1.0")
+        req.add_header("user-agent", "CatchRadar-corpus/1.0")
         if CORPUS_API_KEY:
             req.add_header("x-api-key", CORPUS_API_KEY)
         try:

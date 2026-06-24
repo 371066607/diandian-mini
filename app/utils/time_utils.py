@@ -26,10 +26,22 @@ def is_sync_due(last_synced_at: str | None, frequency: str | None, now: datetime
     if not last_synced_at:
         return True
     try:
-        last = datetime.fromisoformat(last_synced_at)
+        last = _parse_iso_datetime(last_synced_at)
     except (ValueError, TypeError):
         return True
-    return (now or datetime.now()) - last >= timedelta(hours=interval)
+    current = now or datetime.now(last.tzinfo)
+    if last.tzinfo is not None and current.tzinfo is None:
+        current = current.replace(tzinfo=last.tzinfo)
+    elif last.tzinfo is None and current.tzinfo is not None:
+        current = current.replace(tzinfo=None)
+    return current - last >= timedelta(hours=interval)
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    return datetime.fromisoformat(normalized)
 
 
 def format_datetime(value: datetime | None) -> str:

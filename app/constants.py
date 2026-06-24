@@ -1,6 +1,7 @@
-APP_TITLE = "点点数据 Mini - Google Play 情报工具"
+APP_TITLE = "catch-radar - Google Play 情报工具"
 # owner/name of the GitHub repo the in-app update checker queries for new releases
-GITHUB_REPO = "371066607/diandian-mini"
+GITHUB_REPO = "371066607/catch-radar"
+DEFAULT_STOREINTEL_API_URL = "http://127.0.0.1:8081"
 WINDOW_WIDTH = 1440
 WINDOW_HEIGHT = 900
 
@@ -24,7 +25,7 @@ DEFAULT_SETTINGS = {
     "scheduler_enabled": "true",
     "daily_sync_time": "09:00",
     "request_delay_seconds": "1",
-    "database_path": "./data/diandian_mini.sqlite3",
+    "database_path": "./data/catch_radar.sqlite3",
     "proxy": "",
     "theme": "slate",  # UI 主题（含亮/暗），可在设置页切换：light / sand / slate / violet / teal
     # --- Coverage scan proxy pool (覆盖词扫描多 IP 并发，仅在配置了代理时启用) ---

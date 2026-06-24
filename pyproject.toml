@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "diandian-mini-desktop"
+name = "catch-radar-desktop"
 version = "0.1.0"
-description = "点点数据 Mini Google Play 情报桌面客户端"
+description = "catch-radar Google Play 情报桌面客户端"
 requires-python = ">=3.12"
 
 [tool.ruff]

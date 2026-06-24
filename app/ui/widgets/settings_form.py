@@ -308,7 +308,7 @@ class SettingsFormWidget(QWidget):
             "scheduler_enabled": "true" if self.scheduler_enabled.isChecked() else "false",
             "daily_sync_time": sync_time,
             "request_delay_seconds": request_delay,
-            "database_path": self.database_path.text().strip() or "./data/diandian_mini.sqlite3",
+            "database_path": self.database_path.text().strip() or "./data/catch_radar.sqlite3",
             "proxy": proxy_value,
             "alert_rating_drop": _format_float(self.alert_rating_drop.value()),
             "alert_growth_percent": _format_float(self.alert_growth_percent.value()),

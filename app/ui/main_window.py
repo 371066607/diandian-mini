@@ -102,7 +102,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 24, 16, 20)
         layout.setSpacing(8)
 
-        logo = QLabel("点点数据 Mini")
+        logo = QLabel("catch-radar")
         logo.setStyleSheet("font-size: 18px; font-weight: 800; color: white;")
         layout.addWidget(logo)
         layout.addSpacing(12)

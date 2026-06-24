@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-点点数据 Mini (DiandianMini) — a local desktop client (PySide6 + SQLite) that scrapes and displays Google Play app intelligence: app details, reviews, ranking charts, keyword ranks, and tracked-app monitoring with alerts. UI strings, log messages, and error text are in Chinese.
+catch-radar (CatchRadar) — a local desktop client (PySide6 + SQLite) that scrapes and displays Google Play app intelligence: app details, reviews, ranking charts, keyword ranks, and tracked-app monitoring with alerts. UI strings, log messages, and error text are in Chinese.
 
 ## Commands
 
@@ -22,7 +22,7 @@ pytest tests/test_tracking_service.py::test_sync_keyword_now_persists_history_an
 ruff check .        # lint (line-length 100, target py312)
 ruff format .       # format
 
-pyinstaller --noconfirm --windowed --name DiandianMini main.py   # package desktop binary
+pyinstaller --noconfirm --windowed --name CatchRadar main.py   # package desktop binary
 ```
 
 `pyproject.toml` sets `pythonpath = ["."]` so tests import `app.*` without installation.
@@ -70,7 +70,7 @@ Key-value `settings` table. `DEFAULT_SETTINGS` (`app/constants.py`) is the fallb
 
 ## Runtime data & migrations
 
-- SQLite DB at `data/diandian_mini.sqlite3`; logs in `data/logs/`. `config.ensure_runtime_dirs()` creates these at startup.
+- SQLite DB at `data/catch_radar.sqlite3`; logs in `data/logs/`. `config.ensure_runtime_dirs()` creates these at startup.
 - `app/db/migrations.py:migrate()` (run at startup from `main.py`) calls `create_all()` for missing tables, then **additively** adds any missing columns via `ALTER TABLE ... ADD COLUMN`, inferring the SQLite affinity from the model column type. It is best-effort per column (each in its own transaction, failures logged not raised) and only ever *adds* — column **renames/retypes/drops** still need manual handling. Type affinity is coarse (INTEGER/REAL/TEXT); constraints and defaults are not reproduced on added columns.
 
 ## Testing conventions
