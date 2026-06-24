@@ -79,6 +79,36 @@ jobs:
       - name: Build .app
         run: $PY -m PyInstaller --noconfirm --clean CatchRadar.spec
 
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE_P12_BASE64" ]; then
+            echo "SIGNING_ENABLED=false" >> "$GITHUB_ENV"
+            echo "No Developer ID certificate secret configured; building unsigned DMG."
+            exit 0
+          fi
+          echo "SIGNING_ENABLED=true" >> "$GITHUB_ENV"
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codesign.keychain-db"
+          python3 -c 'import base64, os, sys; sys.stdout.buffer.write(base64.b64decode(os.environ["MACOS_CERTIFICATE_P12_BASE64"]))' > "$CERT_PATH"
+          security create-keychain -p "$MACOS_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$MACOS_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[ "]//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$MACOS_CERTIFICATE_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
       - name: Verify architecture
         # 防回归：产物必须正好是本 matrix 期望的架构，避免误发架构不符、用户打不开的包。
         run: |
@@ -89,6 +119,25 @@ jobs:
             exit 1
           fi
 
+      - name: Sign .app with Developer ID
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          if [ "$SIGNING_ENABLED" != "true" ]; then
+            echo "Skipping codesign because signing secrets are not configured."
+            exit 0
+          fi
+          if [ -z "$MACOS_CODESIGN_IDENTITY" ]; then
+            echo "::error::MACOS_CODESIGN_IDENTITY secret is required when signing is enabled." >&2
+            exit 1
+          fi
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements scripts/macos-entitlements.plist \
+            --sign "$MACOS_CODESIGN_IDENTITY" \
+            dist/CatchRadar.app
+          codesign --verify --deep --strict --verbose=2 dist/CatchRadar.app
+          spctl --assess --type execute --verbose=2 dist/CatchRadar.app || true
+
       - name: Smoke-test bundled binary
         # x86_64 二进制在 ARM 上由 Rosetta 自动执行，无需 arch 前缀。
         run: ./dist/CatchRadar.app/Contents/MacOS/CatchRadar --smoke-test
@@ -98,12 +147,16 @@ jobs:
           # `hdiutil: create failed - Resource busy` is a known transient flake on
           # macOS runners (Spotlight/fsevents briefly holding dist/). Let the bundle
           # settle, then retry a few times before giving up.
+          rm -rf dmg-stage
+          mkdir -p dmg-stage
+          cp -R dist/CatchRadar.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
           sync
           sleep 3
           for attempt in 1 2 3 4 5; do
             if hdiutil create \
                 -volname "CatchRadar" \
-                -srcfolder dist/CatchRadar.app \
+                -srcfolder dmg-stage \
                 -ov -format UDZO \
                 "dist/${{ matrix.asset }}"; then
               echo "DMG created on attempt $attempt"
@@ -117,6 +170,32 @@ jobs:
             sleep 8
           done
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
+
+      - name: Sign, notarize, and staple DMG
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [ "$SIGNING_ENABLED" != "true" ]; then
+            echo "Skipping notarization because signing secrets are not configured."
+            exit 0
+          fi
+          dmg="dist/${{ matrix.asset }}"
+          codesign --force --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$dmg"
+          codesign --verify --verbose=2 "$dmg"
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            echo "::error::APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD secrets are required for notarization." >&2
+            exit 1
+          fi
+          xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v6
