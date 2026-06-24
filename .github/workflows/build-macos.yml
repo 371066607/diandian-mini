@@ -171,6 +171,13 @@ jobs:
           done
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
+      - name: Upload signed DMG artifact before notarization
+        uses: actions/upload-artifact@v6
+        with:
+          name: dmg-${{ matrix.label }}-signed
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
       - name: Sign, notarize, and staple DMG
         env:
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
