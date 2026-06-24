@@ -3,6 +3,7 @@
 # code_version.txt (commit timestamp) is bundled so the app knows its own version and
 # the update checker can compare against the published code patch.
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -23,6 +24,9 @@ try:
     hiddenimports += _cc_hidden
 except Exception:
     pass
+
+exe_icon = "assets/catchradar.ico" if sys.platform.startswith("win") else None
+bundle_icon = "assets/catchradar.icns" if os.path.exists("assets/catchradar.icns") else None
 
 a = Analysis(
     ["main.py"],
@@ -55,6 +59,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=exe_icon,
 )
 coll = COLLECT(
     exe,
@@ -68,6 +73,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="CatchRadar.app",
-    icon=None,
+    icon=bundle_icon,
     bundle_identifier="com.catchradar.app",
 )
