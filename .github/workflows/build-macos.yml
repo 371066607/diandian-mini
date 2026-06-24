@@ -172,7 +172,7 @@ jobs:
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
       - name: Sign, notarize, and staple DMG
-        timeout-minutes: 45
+        timeout-minutes: 150
         env:
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -196,7 +196,7 @@ jobs:
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --wait \
-            --timeout 30m \
+            --timeout 2h \
             --verbose
           echo "Stapling notarization ticket to $dmg..."
           xcrun stapler staple "$dmg"
