@@ -172,6 +172,7 @@ jobs:
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
       - name: Sign, notarize, and staple DMG
+        timeout-minutes: 45
         env:
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -189,11 +190,15 @@ jobs:
             echo "::error::APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD secrets are required for notarization." >&2
             exit 1
           fi
+          echo "Submitting $dmg for Apple notarization..."
           xcrun notarytool submit "$dmg" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --wait
+            --wait \
+            --timeout 30m \
+            --verbose
+          echo "Stapling notarization ticket to $dmg..."
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
 
