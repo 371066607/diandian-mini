@@ -172,7 +172,6 @@ jobs:
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
       - name: Sign, notarize, and staple DMG
-        timeout-minutes: 150
         env:
           MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -226,10 +225,8 @@ jobs:
           fi
           echo "Notary submission id: $submission_id"
 
-          accepted=false
-          deadline=$((SECONDS + 7200))
           poll_attempt=1
-          while [ "$SECONDS" -lt "$deadline" ]; do
+          while true; do
             info_json="$RUNNER_TEMP/notary-info-${{ matrix.label }}.json"
             if xcrun notarytool info "$submission_id" \
                 --apple-id "$APPLE_ID" \
@@ -249,7 +246,6 @@ jobs:
               echo "Notary status: $status"
               case "$status" in
                 Accepted)
-                  accepted=true
                   break
                   ;;
                 Invalid|Rejected)
@@ -268,16 +264,6 @@ jobs:
             poll_attempt=$((poll_attempt + 1))
             sleep 60
           done
-          if [ "$accepted" != "true" ]; then
-            echo "::error::Apple notarization did not complete within 2 hours." >&2
-            xcrun notarytool info "$submission_id" \
-              --apple-id "$APPLE_ID" \
-              --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --output-format json \
-              --no-progress || true
-            exit 1
-          fi
           echo "Stapling notarization ticket to $dmg..."
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
