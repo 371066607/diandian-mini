@@ -171,6 +171,18 @@ jobs:
           done
           echo "DMG size: $(du -sh dist/${{ matrix.asset }} | cut -f1)"
 
+      - name: Sign DMG with Developer ID
+        env:
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          if [ "$SIGNING_ENABLED" != "true" ]; then
+            echo "Skipping DMG codesign because signing secrets are not configured."
+            exit 0
+          fi
+          dmg="dist/${{ matrix.asset }}"
+          codesign --force --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$dmg"
+          codesign --verify --verbose=2 "$dmg"
+
       - name: Upload signed DMG artifact before notarization
         uses: actions/upload-artifact@v6
         with:
@@ -178,9 +190,8 @@ jobs:
           path: dist/${{ matrix.asset }}
           if-no-files-found: error
 
-      - name: Sign, notarize, and staple DMG
+      - name: Notarize and staple DMG
         env:
-          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -190,8 +201,6 @@ jobs:
             exit 0
           fi
           dmg="dist/${{ matrix.asset }}"
-          codesign --force --timestamp --sign "$MACOS_CODESIGN_IDENTITY" "$dmg"
-          codesign --verify --verbose=2 "$dmg"
           if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
             echo "::error::APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_SPECIFIC_PASSWORD secrets are required for notarization." >&2
             exit 1
@@ -233,7 +242,9 @@ jobs:
           echo "Notary submission id: $submission_id"
 
           poll_attempt=1
-          while true; do
+          max_poll_attempts=60
+          notary_accepted=false
+          while [ "$poll_attempt" -le "$max_poll_attempts" ]; do
             info_json="$RUNNER_TEMP/notary-info-${{ matrix.label }}.json"
             if xcrun notarytool info "$submission_id" \
                 --apple-id "$APPLE_ID" \
@@ -253,6 +264,7 @@ jobs:
               echo "Notary status: $status"
               case "$status" in
                 Accepted)
+                  notary_accepted=true
                   break
                   ;;
                 Invalid|Rejected)
@@ -271,6 +283,10 @@ jobs:
             poll_attempt=$((poll_attempt + 1))
             sleep 60
           done
+          if [ "$notary_accepted" != "true" ]; then
+            echo "::error::Apple notarization stayed In Progress after ${max_poll_attempts} minutes. Submission id: $submission_id" >&2
+            exit 124
+          fi
           echo "Stapling notarization ticket to $dmg..."
           xcrun stapler staple "$dmg"
           xcrun stapler validate "$dmg"
