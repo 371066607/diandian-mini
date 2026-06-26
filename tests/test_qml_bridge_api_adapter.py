@@ -1405,6 +1405,7 @@ def test_qml_bridge_streams_coverage_on_cache_miss():
     assert not errors
     assert bridge.coverage["rows"][0]["keyword"] == "notes"
     assert bridge.coverage["rows"][0]["rank"] == 1
+    assert ("暂无缓存，正在同步分析...", 0.0) in progress_events
     assert ("覆盖检测 1/1：notes", 1.0) in progress_events
     assert cache_reads["count"] == 1
     assert any(call[0] == "analyze_coverage_stream" and call[5] is False for call in api.calls)

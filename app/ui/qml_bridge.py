@@ -2021,6 +2021,7 @@ class QmlBridge(QObject):
                         except Exception:
                             result = None
                         if not self._has_coverage_cache_data(result):
+                            self.coverageProgress.emit("暂无缓存，正在同步分析...", 0.0)
                             result = api.analyze_coverage_stream(
                                 app_id=app_id,
                                 country=country,
