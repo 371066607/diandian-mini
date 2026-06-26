@@ -697,6 +697,36 @@ def test_store_intel_api_client_emits_request_logs(api_server):
     assert "missing" in logs[2]["error"]
 
 
+def test_store_intel_api_client_keeps_full_log_payloads():
+    logs = []
+    client = StoreIntelApiClient("http://store.test", log_sink=logs.append)
+    response = {
+        "items": [{"keyword": f"keyword-{index}", "rank": index} for index in range(40)],
+        "proxy": "http://secret",
+    }
+
+    client._emit_log(
+        method="GET",
+        path="/api/store-intel/keyword-coverage/cache",
+        query={"app_id": "com.demo"},
+        body=None,
+        response=response,
+        raw_response="",
+        status=200,
+        code=200,
+        ok=True,
+        error="",
+        started=0,
+    )
+
+    log = logs[0]
+    assert log["response"].endswith("...")
+    assert "keyword-39" not in log["response"]
+    assert "keyword-39" in log["response_full"]
+    assert "http://secret" not in log["response_full"]
+    assert '"proxy":"***"' in log["response_full"]
+
+
 def test_store_intel_api_client_treats_null_items_as_empty_list(api_server):
     client = StoreIntelApiClient(f"http://127.0.0.1:{api_server.server_port}")
 

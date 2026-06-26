@@ -1540,15 +1540,15 @@ ApplicationWindow {
 
                     LogValueBlock {
                         title: "Query 参数"
-                        value: String(apiLogDialog.entry.query || "")
+                        value: String(apiLogDialog.entry.queryFull || apiLogDialog.entry.query || "")
                     }
                     LogValueBlock {
                         title: "请求 Body"
-                        value: String(apiLogDialog.entry.body || "")
+                        value: String(apiLogDialog.entry.bodyFull || apiLogDialog.entry.body || "")
                     }
                     LogValueBlock {
                         title: "返回 Data"
-                        value: String(apiLogDialog.entry.response || "")
+                        value: String(apiLogDialog.entry.responseFull || apiLogDialog.entry.response || "")
                     }
                     LogValueBlock {
                         title: "错误"

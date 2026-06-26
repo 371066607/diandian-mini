@@ -1057,8 +1057,11 @@ class StoreIntelApiClient:
             "method": method.upper(),
             "path": path,
             "query": self._payload_preview(query),
+            "query_full": self._payload_text(query),
             "body": self._payload_preview(body),
+            "body_full": self._payload_text(body),
             "response": self._payload_preview(response) if response is not None else raw_response,
+            "response_full": self._payload_text(response) if response is not None else raw_response,
             "status": status if status is not None else "-",
             "code": code if code is not None else "-",
             "duration_ms": elapsed_ms,
@@ -1072,6 +1075,15 @@ class StoreIntelApiClient:
             pass
 
     def _payload_preview(self, value: Any) -> str:
+        return self._payload_text(value, list_limit=20, max_chars=240)
+
+    def _payload_text(
+        self,
+        value: Any,
+        *,
+        list_limit: int | None = None,
+        max_chars: int | None = None,
+    ) -> str:
         if value is None:
             return ""
         sensitive = {"authorization", "password", "token", "secret", "api_key", "key", "proxy"}
@@ -1086,12 +1098,13 @@ class StoreIntelApiClient:
                         result[key] = sanitize(child)
                 return result
             if isinstance(item, list):
-                return [sanitize(child) for child in item[:20]]
+                children = item if list_limit is None else item[:list_limit]
+                return [sanitize(child) for child in children]
             return item
 
         text = json.dumps(sanitize(value), ensure_ascii=False, separators=(",", ":"))
-        if len(text) > 240:
-            return text[:237] + "..."
+        if max_chars is not None and len(text) > max_chars:
+            return text[: max_chars - 3] + "..."
         return text
 
     def _text_preview(self, text: str) -> str:
