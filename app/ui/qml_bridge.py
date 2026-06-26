@@ -1780,7 +1780,7 @@ class QmlBridge(QObject):
                 self._request_api_refresh(
                     api,
                     "chart",
-                    chart_type=self._chart_context["chart_type"],
+                    collection=self._chart_context["chart_type"],
                     category=self._chart_context["category"],
                     country=self._chart_context["country"],
                     lang=self._chart_context["lang"],

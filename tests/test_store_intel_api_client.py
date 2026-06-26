@@ -656,6 +656,24 @@ def test_store_intel_api_client_sends_desktop_user_agent(api_server):
     assert set(api_server.user_agents) == {"CatchRadar/desktop"}
 
 
+def test_store_intel_api_client_sends_chart_refresh_collection(api_server):
+    client = StoreIntelApiClient(f"http://127.0.0.1:{api_server.server_port}")
+
+    client.request_refresh(
+        "chart",
+        chart_type="top_free",
+        category="ENTERTAINMENT",
+        country="us",
+        lang="en",
+        limit=100,
+    )
+
+    _method, path, body = api_server.requests[-1]
+    assert path == "/api/store-intel/refresh-jobs"
+    assert body["collection"] == "top_free"
+    assert "chart_type" not in body
+
+
 def test_store_intel_api_client_emits_request_logs(api_server):
     logs = []
     client = StoreIntelApiClient(

@@ -719,6 +719,8 @@ class StoreIntelApiClient:
 
     def request_refresh(self, kind: str, **kwargs) -> SimpleNamespace:
         body = {"kind": kind, **{key: value for key, value in kwargs.items() if value is not None}}
+        if kind == "chart" and "chart_type" in body and "collection" not in body:
+            body["collection"] = body.pop("chart_type")
         data = self._request("POST", "/api/store-intel/refresh-jobs", body=body)
         return self._namespace(data)
 
