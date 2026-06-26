@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -2002,41 +2003,25 @@ class QmlBridge(QObject):
             try:
                 candidates, canonical = cached_pool or (None, None)
                 if api is not None:
-                    if deep:
-                        result = api.analyze_coverage_stream(
+                    try:
+                        result = api.cached_coverage(
                             app_id,
                             country=country,
                             lang=lang,
-                            limit=50,
                             deep=deep,
-                            candidates=candidates,
-                            canonical_app_id=canonical,
-                            progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
                         )
-                    else:
-                        try:
-                            result = api.cached_coverage(
-                                app_id,
-                                country=country,
-                                lang=lang,
-                                deep=deep,
-                            )
-                        except Exception:
-                            result = None
-                        if not self._has_coverage_cache_data(result):
-                            self.coverageProgress.emit("暂无缓存，正在同步分析...", 0.0)
-                            result = api.analyze_coverage_stream(
-                                app_id=app_id,
-                                country=country,
-                                lang=lang,
-                                limit=50,
-                                deep=deep,
-                                candidates=candidates,
-                                canonical_app_id=canonical,
-                                progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
-                            )
-                        if not self._has_coverage_cache_data(result):
-                            raise RuntimeError("服务器没有返回可用的覆盖词数据。")
+                    except Exception:
+                        result = None
+                    if not self._has_coverage_cache_data(result):
+                        result = self._refresh_api_coverage_cache(
+                            api,
+                            app_id=app_id,
+                            country=country,
+                            lang=lang,
+                            deep=deep,
+                        )
+                    if not self._has_coverage_cache_data(result):
+                        raise RuntimeError("服务器没有返回可用的覆盖词数据。")
                 else:
                     result = self.services["keyword_coverage_service"].analyze_coverage(
                         platform,
@@ -2069,6 +2054,54 @@ class QmlBridge(QObject):
             or getattr(result, "candidates", [])
             or getattr(result, "covered", [])
         )
+
+    def _refresh_api_coverage_cache(
+        self,
+        api,
+        *,
+        app_id: str,
+        country: str,
+        lang: str,
+        deep: bool,
+    ):
+        self.coverageProgress.emit("暂无缓存，已开始后台分析...", 0.05)
+        job = api.request_refresh(
+            "coverage",
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            limit=50,
+            deep=deep,
+        )
+        job_id = getattr(job, "job_id", "") or getattr(job, "id", "")
+        if job_id:
+            self.coverageProgress.emit("后台分析中，请稍候...", 0.25)
+            job = api.wait_refresh_job(
+                job_id,
+                timeout=300.0 if deep else 180.0,
+                interval=2.0,
+            )
+        if str(getattr(job, "status", "")).lower() == "failed":
+            message = getattr(job, "error", "") or getattr(job, "message", "")
+            raise RuntimeError(message or "服务器覆盖词分析任务失败。")
+
+        self.coverageProgress.emit("后台分析完成，正在读取缓存...", 0.9)
+        deadline = time.monotonic() + 30.0
+        result = None
+        while time.monotonic() <= deadline:
+            try:
+                result = api.cached_coverage(
+                    app_id,
+                    country=country,
+                    lang=lang,
+                    deep=deep,
+                )
+            except Exception:
+                result = None
+            if self._has_coverage_cache_data(result):
+                return result
+            time.sleep(1.0)
+        return result
 
     def _coverage_concurrency(self) -> int:
         """Max parallel workers for a proxy-backed coverage scan (clamped 1..16)."""

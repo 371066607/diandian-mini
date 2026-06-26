@@ -2834,11 +2834,12 @@ ApplicationWindow {
                         text: root.isAppStore ? "" : "com.whatsapp"
                         placeholderText: root.isAppStore ? "App ID（如 587366035）/ Bundle ID" : "com.whatsapp"
                         width: 300
+                        enabled: !coveragePage.cov.running
                         // Same gate as the button — Enter must not start a second concurrent scan
                         onAccepted: if (!coveragePage.cov.running) root.bridge.discoverCoverage(text, covCountry.text, covLang.text, covDeep.checked)
                     }
-                    Field { id: covCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
-                    Field { id: covLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
+                    Field { id: covCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90; enabled: !coveragePage.cov.running }
+                    Field { id: covLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90; enabled: !coveragePage.cov.running }
                     AppCheck {
                         id: covDeep
                         text: "深度挖掘"

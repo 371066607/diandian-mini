@@ -1359,7 +1359,7 @@ def test_qml_bridge_reports_keyword_rank_api_failure_without_refresh_job():
     assert not any(call[0] == "wait_refresh_job" for call in api.calls)
 
 
-def test_qml_bridge_streams_coverage_on_cache_miss():
+def test_qml_bridge_waits_coverage_refresh_job_on_cache_miss():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
     cache_reads = {"count": 0}
@@ -1367,15 +1367,27 @@ def test_qml_bridge_streams_coverage_on_cache_miss():
     def cached_coverage(app_id, country="us", lang="en", deep=False):
         cache_reads["count"] += 1
         api.calls.append(("cached_coverage", app_id, country, lang, deep))
+        if cache_reads["count"] == 1:
+            return SimpleNamespace(
+                platform="google_play",
+                app_id=app_id,
+                canonical_app_id=app_id,
+                country=country,
+                lang=lang,
+                candidates=[],
+                candidate_count=0,
+                covered=[],
+                checked_limit=50,
+            )
         return SimpleNamespace(
             platform="google_play",
             app_id=app_id,
             canonical_app_id=app_id,
             country=country,
             lang=lang,
-            candidates=[],
-            candidate_count=0,
-            covered=[],
+            candidates=["notes"],
+            candidate_count=1,
+            covered=[{"keyword": "notes", "rank": 1}],
             checked_limit=50,
         )
 
@@ -1405,17 +1417,52 @@ def test_qml_bridge_streams_coverage_on_cache_miss():
     assert not errors
     assert bridge.coverage["rows"][0]["keyword"] == "notes"
     assert bridge.coverage["rows"][0]["rank"] == 1
-    assert ("暂无缓存，正在同步分析...", 0.0) in progress_events
-    assert ("覆盖检测 1/1：notes", 1.0) in progress_events
-    assert cache_reads["count"] == 1
-    assert any(call[0] == "analyze_coverage_stream" and call[5] is False for call in api.calls)
-    assert not any(call[0] == "request_refresh" and call[1] == "coverage" for call in api.calls)
-    assert not any(call[0] == "wait_refresh_job" for call in api.calls)
+    assert ("暂无缓存，已开始后台分析...", 0.05) in progress_events
+    assert ("后台分析完成，正在读取缓存...", 0.9) in progress_events
+    assert cache_reads["count"] == 2
+    assert not any(call[0] == "analyze_coverage_stream" for call in api.calls)
+    assert any(
+        call[0] == "request_refresh"
+        and call[1] == "coverage"
+        and call[2]["deep"] is False
+        for call in api.calls
+    )
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
 
 
-def test_qml_bridge_uses_stream_for_deep_remote_coverage():
+def test_qml_bridge_uses_refresh_job_for_deep_remote_coverage():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def cached_coverage(app_id, country="us", lang="en", deep=False):
+        cache_reads["count"] += 1
+        api.calls.append(("cached_coverage", app_id, country, lang, deep))
+        if cache_reads["count"] == 1:
+            return SimpleNamespace(
+                platform="google_play",
+                app_id=app_id,
+                canonical_app_id=app_id,
+                country=country,
+                lang=lang,
+                candidates=[],
+                candidate_count=0,
+                covered=[],
+                checked_limit=50,
+            )
+        return SimpleNamespace(
+            platform="google_play",
+            app_id=app_id,
+            canonical_app_id=app_id,
+            country=country,
+            lang=lang,
+            candidates=["notes"],
+            candidate_count=1,
+            covered=[{"keyword": "notes", "rank": 1}],
+            checked_limit=50,
+        )
+
+    api.cached_coverage = cached_coverage
     bridge = QmlBridge(
         database=None,
         services={
@@ -1438,19 +1485,19 @@ def test_qml_bridge_uses_stream_for_deep_remote_coverage():
 
     assert bridge.coverage["rows"][0]["keyword"] == "notes"
     assert bridge.coverage["rows"][0]["rank"] == 1
-    assert ("覆盖检测 1/1：notes", 1.0) in progress_events
-    assert (
-        "analyze_coverage_stream",
-        "com.remote",
-        "us",
-        "en",
-        50,
-        True,
-        (),
-        "",
-    ) in api.calls
-    assert not any(call[0] == "cached_coverage" for call in api.calls)
-    assert not any(call[0] == "request_refresh" and call[1] == "coverage" for call in api.calls)
+    assert ("暂无缓存，已开始后台分析...", 0.05) in progress_events
+    assert cache_reads["count"] == 2
+    assert not any(call[0] == "analyze_coverage_stream" for call in api.calls)
+    assert any(
+        call[0] == "request_refresh"
+        and call[1] == "coverage"
+        and call[2]["deep"] is True
+        for call in api.calls
+    )
+    assert any(
+        call[0] == "wait_refresh_job" and call[2] == 300.0 and call[3] == 2.0
+        for call in api.calls
+    )
 
 
 def test_qml_bridge_waits_reviews_refresh_job_on_cache_miss():
