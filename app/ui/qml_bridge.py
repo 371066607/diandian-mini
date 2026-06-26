@@ -7,6 +7,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Property, QThreadPool, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QApplication
 
 from app.config import DATA_DIR
 from app.constants import DEFAULT_SETTINGS
@@ -67,6 +68,7 @@ class QmlBridge(QObject):
         self._input_history: dict[str, list[str]] = self._load_input_history()
         self._update_status = ""
         self._pending_update: Any | None = None
+        self._last_update_prompt_key = ""
         self._coverage: dict[str, Any] = self._coverage_state()
         # Candidate pools from finished scans, keyed by (platform, app_id, country, lang, deep)
         # — a re-scan of the same identity reuses them instead of re-paying the detail +
@@ -89,6 +91,7 @@ class QmlBridge(QObject):
         self._reviews: dict[str, Any] = {"rows": [], "summary": "等待抓取评论"}
         self._history: dict[str, Any] = {"apps": [], "snapshots": [], "keywords": []}
         self._search_items: list[Any] = []
+        self._search_request_id = 0
         self._detail_item: Any | None = None
         self._detail_context: dict[str, str] = {}
         self._detail_gen = 0
@@ -163,6 +166,15 @@ class QmlBridge(QObject):
     def _api_mode_enabled(self) -> bool:
         client = self.services.get("store_intel_api_client")
         return client is not None and bool(getattr(client, "enabled", False))
+
+    @Slot(str)
+    def copyText(self, text: str) -> None:
+        text = "" if text is None else str(text)
+        if not text:
+            self.errorMessage.emit("没有可复制的内容。")
+            return
+        QApplication.clipboard().setText(text)
+        self.statusMessage.emit("已复制到剪贴板。")
 
     @Slot(str)
     def setPlatform(self, platform: str) -> None:
@@ -348,35 +360,70 @@ class QmlBridge(QObject):
             self._set_update_status("更新服务不可用。")
             return
         self._set_update_status("正在检查更新...")
-        self._run(service.check, self._on_update_checked, label="正在检查更新...", busy=False)
+        self._run(
+            service.check,
+            lambda result: self._on_update_checked(result, quiet=False),
+            label="正在检查更新...",
+            busy=False,
+        )
 
-    def _on_update_checked(self, result) -> None:
+    @Slot()
+    def checkUpdatesQuietly(self) -> None:
+        service = self.services.get("update_service")
+        if service is None:
+            return
+        self._run(
+            service.check,
+            lambda result: self._on_update_checked(result, quiet=True),
+            label="正在后台检查更新...",
+            busy=False,
+        )
+
+    def _update_prompt_key(self, result) -> str:
+        if result.mode == "git":
+            return f"git:{getattr(result, 'behind', 0)}"
+        return f"patch:{getattr(result, 'latest_version', 0)}"
+
+    def _emit_update_prompt(self, result, title: str, message: str, *, quiet: bool) -> None:
+        key = self._update_prompt_key(result)
+        if quiet and key and key == self._last_update_prompt_key:
+            return
+        self._last_update_prompt_key = key
+        self._pending_update = result
+        self.updatePrompt.emit(title, message)
+
+    def _on_update_checked(self, result, *, quiet: bool = False) -> None:
         if getattr(result, "error", None):
-            self._set_update_status(f"检查更新失败：{result.error}")
+            if not quiet:
+                self._set_update_status(f"检查更新失败：{result.error}")
             return
         if result.mode == "git":
             if result.up_to_date:
                 self._pending_update = None
-                self._set_update_status("已是最新（源码 / 开发版）。")
+                if not quiet:
+                    self._set_update_status("已是最新（源码 / 开发版）。")
                 return
-            self._pending_update = result
             self._set_update_status(f"发现新版本（落后 {result.behind} 个提交）。")
-            self.updatePrompt.emit(
+            self._emit_update_prompt(
+                result,
                 "检查更新",
                 f"发现新版本（落后 {result.behind} 个提交）。\n现在 git pull 更新并重启吗？",
+                quiet=quiet,
             )
             return
         if result.up_to_date or not result.can_patch:
             self._pending_update = None
-            self._set_update_status(f"已是最新版本（{result.local_label}）。")
+            if not quiet:
+                self._set_update_status(f"已是最新版本（{result.local_label}）。")
             return
-        self._pending_update = result
         self._set_update_status(f"发现新版本 {result.latest_label}。")
         changelog = f"{result.changelog}\n\n" if result.changelog else ""
-        self.updatePrompt.emit(
+        self._emit_update_prompt(
+            result,
             "发现新版本 🎉",
             f"当前 {result.local_label} → 最新 {result.latest_label}\n\n{changelog}"
             "只下载几百 KB 代码补丁，完成后自动重启，登录态与数据都保留。\n现在更新吗？",
+            quiet=quiet,
         )
 
     @Slot()
@@ -1397,11 +1444,13 @@ class QmlBridge(QObject):
         self._remember_input("search_keyword", keyword)
         api = self._store_intel_api()
         store = None if api is not None else self._active_store()
+        country_value = country.strip() or "us"
+        lang_value = lang.strip() or "en"
+        limit_value = safe_int(limit, 50)
+        self._search_request_id += 1
+        request_id = self._search_request_id
 
         def search():
-            country_value = country.strip() or "us"
-            lang_value = lang.strip() or "en"
-            limit_value = safe_int(limit, 50)
             if api is None:
                 return {
                     "items": store.search(
@@ -1418,7 +1467,8 @@ class QmlBridge(QObject):
                 lang=lang_value,
                 limit=limit_value,
             )
-            if not items or not all(self._has_search_display_data(item) for item in items):
+            had_cached_items = bool(items)
+            if not items:
                 self._request_api_refresh(
                     api,
                     "search",
@@ -1433,11 +1483,35 @@ class QmlBridge(QObject):
                     lang=lang_value,
                     limit=limit_value,
                 )
-            return {"items": items, "queued": False}
+            return {
+                "items": items,
+                "queued": False,
+                "request_id": request_id,
+                "refresh_in_background": had_cached_items and not all(
+                    self._has_search_display_data(item) for item in items
+                ),
+            }
+
+        def finish(payload):
+            self._set_search_result_payload(payload)
+            if (
+                api is not None
+                and isinstance(payload, dict)
+                and payload.get("refresh_in_background")
+                and payload.get("request_id") == self._search_request_id
+            ):
+                self._refresh_search_cache_in_background(
+                    api,
+                    request_id,
+                    keyword,
+                    country_value,
+                    lang_value,
+                    limit_value,
+                )
 
         self._run(
             search,
-            self._set_search_result_payload,
+            finish,
             label="正在搜索应用...",
         )
 
@@ -1528,6 +1602,16 @@ class QmlBridge(QObject):
                     country=context["country"],
                     lang=context["lang"],
                 )
+                try:
+                    refreshed = api.cached_app_detail(
+                        app_id,
+                        country=context["country"],
+                        lang=context["lang"],
+                    )
+                    if self._has_app_detail_data(refreshed):
+                        cached = refreshed
+                except Exception:
+                    pass
             return {
                 "detail": cached,
                 "queued": False,
@@ -2063,7 +2147,6 @@ class QmlBridge(QObject):
                     app_id=ctx["app_id"],
                     country=ctx["country"],
                     lang=ctx["lang"],
-                    sort=ctx.get("sort", "newest"),
                     limit=50,
                 )
                 items = api.list_cached_reviews(ctx["app_id"], limit=50)
@@ -2154,6 +2237,55 @@ class QmlBridge(QObject):
             message = getattr(job, "error", "") or getattr(job, "message", "")
             raise RuntimeError(message or "服务器刷新任务失败。")
         return job
+
+    def _refresh_search_cache_in_background(
+        self,
+        api,
+        request_id: int,
+        keyword: str,
+        country: str,
+        lang: str,
+        limit: int,
+    ) -> None:
+        def refresh():
+            self._request_api_refresh(
+                api,
+                "search",
+                query=keyword,
+                country=country,
+                lang=lang,
+                limit=limit,
+            )
+            return {
+                "items": api.search_cached(
+                    keyword,
+                    country=country,
+                    lang=lang,
+                    limit=limit,
+                ),
+                "request_id": request_id,
+            }
+
+        def finish(payload):
+            if not isinstance(payload, dict) or payload.get("request_id") != self._search_request_id:
+                return
+            items = payload.get("items") or []
+            if not items:
+                return
+            if self._search_items_signature(items) == self._search_items_signature(
+                self._search_items
+            ):
+                self.statusMessage.emit("搜索结果已是最新。")
+                return
+            self._set_search_results(items)
+            self.statusMessage.emit("搜索结果已刷新。")
+
+        self._run(
+            refresh,
+            finish,
+            label="正在后台刷新搜索结果...",
+            busy=False,
+        )
 
     def _finish_worker(self, worker: Worker, busy: bool) -> None:
         if worker in self._workers:
@@ -2644,6 +2776,26 @@ class QmlBridge(QObject):
         self._set_search_results(payload)
 
     @staticmethod
+    def _search_items_signature(items) -> tuple:
+        fields = (
+            "app_id",
+            "title",
+            "developer",
+            "rating",
+            "ratings_count",
+            "installs",
+            "price",
+            "has_iap",
+            "category",
+            "summary",
+            "icon_url",
+        )
+        return tuple(
+            tuple(getattr(item, field, None) for field in fields)
+            for item in (items or [])
+        )
+
+    @staticmethod
     def _has_search_display_data(item) -> bool:
         if item is None or not getattr(item, "app_id", ""):
             return False
@@ -3117,16 +3269,7 @@ class QmlBridge(QObject):
             "reviewsValues": reviews_values,
             "installsValues": installs_values,
             "recentAlerts": [self._alert_row(alert) for alert in alerts],
-            "recentReviews": [
-                {
-                    "time": (getattr(r, "review_created_at", "") or "")[:10],
-                    "rating": getattr(r, "rating", None)
-                    if getattr(r, "rating", None) is not None
-                    else "-",
-                    "content": (getattr(r, "content", "") or "").strip().replace("\n", " ")[:120],
-                }
-                for r in reviews
-            ],
+            "recentReviews": [self._review_row(r) for r in reviews],
         }
 
     def _list_cached_reviews(self, api, app_id: str, country: str, lang: str, limit: int):
@@ -3139,10 +3282,49 @@ class QmlBridge(QObject):
             app_id=app_id,
             country=country,
             lang=lang,
-            sort="newest",
             limit=limit,
         )
         return api.list_cached_reviews(app_id, limit=limit)
+
+    @staticmethod
+    def _compact_text(value: Any, limit: int = 0) -> str:
+        text = "" if value is None else str(value)
+        text = " ".join(text.split())
+        if limit > 0 and len(text) > limit:
+            return text[: limit - 1] + "…"
+        return text
+
+    def _review_row(self, item) -> dict[str, Any]:
+        raw = getattr(item, "raw", None) or {}
+        raw_text = ""
+        if raw:
+            try:
+                raw_text = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
+            except TypeError:
+                raw_text = str(raw)
+        rating = getattr(item, "rating", None)
+        helpful = getattr(item, "helpful_count", None)
+        review_created_at = getattr(item, "review_created_at", "") or ""
+        captured_at = getattr(item, "captured_at", "") or ""
+        content = getattr(item, "content", "") or ""
+        return {
+            "platform": getattr(item, "platform", "") or "-",
+            "appId": getattr(item, "app_id", "") or "-",
+            "country": getattr(item, "country", "") or "-",
+            "lang": getattr(item, "lang", "") or "-",
+            "reviewId": getattr(item, "review_id", "") or "-",
+            "user": getattr(item, "user_name", "") or "-",
+            "rating": rating if rating is not None else "-",
+            "version": getattr(item, "app_version", "") or "-",
+            "helpful": helpful if helpful is not None else "-",
+            "time": review_created_at[:10] or "-",
+            "reviewCreatedAt": review_created_at[:19].replace("T", " ") or "-",
+            "capturedAt": captured_at[:19].replace("T", " ") or "-",
+            "content": self._compact_text(content),
+            "contentFull": str(content),
+            "rawText": self._compact_text(raw_text, 500),
+            "rawFull": raw_text,
+        }
 
     def _apply_detail_extras(self, gen: int, extras: dict[str, Any]) -> None:
         if gen != self._detail_gen or not self._detail.get("loaded"):
@@ -3304,21 +3486,7 @@ class QmlBridge(QObject):
         self._emit_reviews(f"共 {len(self._reviews_items)} 条评论")
 
     def _emit_reviews(self, summary: str) -> None:
-        rows = [
-            {
-                "user": getattr(item, "user_name", "") or "-",
-                "rating": (
-                    getattr(item, "rating", None)
-                    if getattr(item, "rating", None) is not None
-                    else 0
-                ),
-                "version": getattr(item, "app_version", "") or "-",
-                "time": (getattr(item, "review_created_at", "") or "-")[:16].replace("T", " "),
-                "content": getattr(item, "content", "") or "",
-                "helpful": getattr(item, "helpful_count", None) or 0,
-            }
-            for item in self._reviews_items
-        ]
+        rows = [self._review_row(item) for item in self._reviews_items]
         self._reviews = {
             "rows": rows,
             "summary": summary,

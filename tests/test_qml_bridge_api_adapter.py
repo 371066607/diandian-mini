@@ -580,6 +580,19 @@ class FakeReviews:
         return []
 
 
+class FakeUpdateService:
+    def __init__(self, result):
+        self.result = result
+        self.calls = 0
+
+    def current_label(self):
+        return "开发版"
+
+    def check(self):
+        self.calls += 1
+        return self.result
+
+
 def _wait_idle(app, bridge, timeout=10.0):
     deadline = time.time() + timeout
     while bridge._workers and time.time() < deadline:
@@ -588,6 +601,48 @@ def _wait_idle(app, bridge, timeout=10.0):
     for _ in range(5):
         app.processEvents()
     assert not bridge._workers, "a bridge worker did not finish in time"
+
+
+def test_qml_bridge_quiet_update_check_prompts_once_per_version():
+    app = QApplication.instance() or QApplication([])
+    update_service = FakeUpdateService(
+        SimpleNamespace(
+            mode="patch",
+            error=None,
+            up_to_date=False,
+            can_patch=True,
+            local_label="2026.06.24.1000",
+            latest_label="2026.06.24.1100",
+            latest_version=2,
+            changelog="修复关键词排名显示",
+        )
+    )
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": FakeApi(),
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+            "update_service": update_service,
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    prompts = []
+    bridge.updatePrompt.connect(lambda title, message: prompts.append((title, message)))
+
+    bridge.checkUpdatesQuietly()
+    _wait_idle(app, bridge)
+    bridge.dismissUpdate()
+    bridge.checkUpdatesQuietly()
+    _wait_idle(app, bridge)
+
+    assert update_service.calls == 2
+    assert len(prompts) == 1
+    assert "发现新版本" in prompts[0][0]
+    assert "修复关键词排名显示" in prompts[0][1]
 
 
 def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
@@ -780,6 +835,76 @@ def test_qml_bridge_refreshes_incomplete_search_cache_for_display_fields():
     assert any(call[0] == "wait_refresh_job" for call in api.calls)
 
 
+def test_qml_bridge_shows_incomplete_search_cache_before_background_refresh():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    calls = {"search_cached": 0}
+
+    def search_cached(keyword, country="us", lang="en", limit=50):
+        calls["search_cached"] += 1
+        api.calls.append(("search_cached", keyword, country, lang, limit))
+        if calls["search_cached"] == 1:
+            return [
+                AppSummary(
+                    app_id="com.hauljoy.aiadvice",
+                    title="Hauljoy AI: Shopping Assistant",
+                    category="SHOPPING",
+                    summary="AI shopping helper.",
+                )
+            ]
+        return [
+            AppSummary(
+                app_id="com.hauljoy.aiadvice",
+                title="Hauljoy AI: Shopping Assistant",
+                developer="Hauljoy",
+                category="SHOPPING",
+                summary="AI shopping helper.",
+                rating=4.8,
+                ratings_count=2400,
+                installs="10K+",
+            )
+        ]
+
+    def wait_refresh_job(job_id, *, timeout=60.0, interval=1.0):
+        api.calls.append(("wait_refresh_job", job_id, timeout, interval))
+        time.sleep(0.2)
+        return SimpleNamespace(job_id=job_id, status="completed")
+
+    api.search_cached = search_cached
+    api.wait_refresh_job = wait_refresh_job
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.searchApps("hauljoy", "us", "en", "10")
+    deadline = time.time() + 2.0
+    while not bridge.search["rows"] and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    assert bridge.search["rows"][0]["appId"] == "com.hauljoy.aiadvice"
+    assert bridge.search["rows"][0]["developer"] == "-"
+    assert bridge.search["rows"][0]["rating"] == "-"
+
+    _wait_idle(app, bridge)
+
+    assert bridge.search["rows"][0]["developer"] == "Hauljoy"
+    assert bridge.search["rows"][0]["rating"] == 4.8
+    assert bridge.search["rows"][0]["ratings"] == "2,400"
+    assert bridge.search["rows"][0]["installs"] == "10K+"
+    assert calls["search_cached"] == 2
+    assert any(call[0] == "request_refresh" and call[1] == "search" for call in api.calls)
+
+
 def test_qml_bridge_refreshes_app_detail_cache_on_miss():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
@@ -830,15 +955,34 @@ def test_qml_bridge_refreshes_app_detail_cache_on_miss():
 def test_qml_bridge_refreshes_incomplete_app_detail_cache():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
+    cache_reads = {"count": 0}
 
     def cached_detail(app_id, country="us", lang="en"):
+        cache_reads["count"] += 1
         api.calls.append(("cached_app_detail", app_id, country, lang))
+        if cache_reads["count"] == 1:
+            return AppDetail(
+                app_id=app_id,
+                title="Shallow Cache Detail",
+                summary="Only summary fields came back.",
+                android_version="ANDROID",
+                icon_url="https://example.test/icon.png",
+                free=True,
+            )
         return AppDetail(
             app_id=app_id,
-            title="Shallow Cache Detail",
-            summary="Only summary fields came back.",
+            title="Refreshed Cache Detail",
+            summary="Fresh complete detail.",
+            developer="Remote Dev",
+            rating=4.8,
+            ratings_count=2400,
+            reviews_count=120,
+            installs="10K+",
+            min_installs=10000,
+            real_installs=12345,
             android_version="ANDROID",
             icon_url="https://example.test/icon.png",
+            has_iap=False,
             free=True,
         )
 
@@ -860,7 +1004,13 @@ def test_qml_bridge_refreshes_incomplete_app_detail_cache():
     _wait_idle(app, bridge)
 
     assert bridge.detail["loaded"] is True
-    assert bridge.detail["title"] == "Shallow Cache Detail"
+    assert bridge.detail["title"] == "Refreshed Cache Detail"
+    assert bridge.detail["developer"] == "Remote Dev"
+    metrics = {row["label"]: row["value"] for row in bridge.detail["metrics"]}
+    assert metrics["评分"] == "4.80"
+    assert metrics["评分数"] == "2,400"
+    assert metrics["安装量"] == "10K+"
+    assert cache_reads["count"] == 2
     assert (
         "request_refresh",
         "app",
@@ -1323,9 +1473,17 @@ def test_qml_bridge_detail_extras_refresh_reviews_on_empty_cache():
         return [
             ReviewItem(
                 app_id=app_id,
+                country="us",
+                lang="en",
                 review_id="detail-refreshed",
+                user_name="Ana",
                 rating=5,
+                app_version="1.2.3",
+                helpful_count=7,
+                review_created_at="2026-06-21T10:11:12Z",
+                captured_at="2026-06-23T13:36:41Z",
                 content="detail refreshed review",
+                raw={"userImage": "https://example.test/avatar.png", "score": 5},
             )
         ]
 
@@ -1347,6 +1505,15 @@ def test_qml_bridge_detail_extras_refresh_reviews_on_empty_cache():
     _wait_idle(app, bridge)
 
     assert bridge.detail["recentReviews"][0]["content"] == "detail refreshed review"
+    assert bridge.detail["recentReviews"][0]["country"] == "us"
+    assert bridge.detail["recentReviews"][0]["lang"] == "en"
+    assert bridge.detail["recentReviews"][0]["reviewId"] == "detail-refreshed"
+    assert bridge.detail["recentReviews"][0]["user"] == "Ana"
+    assert bridge.detail["recentReviews"][0]["version"] == "1.2.3"
+    assert bridge.detail["recentReviews"][0]["helpful"] == 7
+    assert bridge.detail["recentReviews"][0]["reviewCreatedAt"] == "2026-06-21 10:11:12"
+    assert bridge.detail["recentReviews"][0]["capturedAt"] == "2026-06-23 13:36:41"
+    assert "userImage" in bridge.detail["recentReviews"][0]["rawText"]
     assert cache_reads["count"] == 2
     assert any(call[0] == "request_refresh" and call[1] == "reviews" for call in api.calls)
     assert any(call[0] == "wait_refresh_job" for call in api.calls)
@@ -1489,3 +1656,45 @@ def test_qml_bridge_prefers_store_intel_api_for_tracking_settings_and_alerts():
     assert refresh_kinds.count("app") >= 2
     assert refresh_kinds.count("keyword") == 1
     assert refresh_kinds.count("chart") == 1
+
+
+def test_qml_bridge_reviews_refresh_payload_matches_backend_schema():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    cache_reads = {"count": 0}
+
+    def list_cached_reviews(app_id, limit=10):
+        cache_reads["count"] += 1
+        api.calls.append(("list_cached_reviews", app_id, limit))
+        if cache_reads["count"] == 1:
+            return []
+        return [ReviewItem(app_id=app_id, review_id="cached", rating=4, content="cached review")]
+
+    api.list_cached_reviews = list_cached_reviews
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchReviews("com.remote", "us", "en", "newest")
+    _wait_idle(app, bridge)
+
+    review_refreshes = [
+        call for call in api.calls if call[0] == "request_refresh" and call[1] == "reviews"
+    ]
+    assert review_refreshes == [
+        (
+            "request_refresh",
+            "reviews",
+            {"app_id": "com.remote", "country": "us", "lang": "en", "limit": 50},
+        )
+    ]
+    assert bridge.reviews["rows"][0]["content"] == "cached review"

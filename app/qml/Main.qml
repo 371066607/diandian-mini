@@ -17,6 +17,62 @@ ApplicationWindow {
     required property string appTitle
     readonly property bool isAppStore: bridge.platform === "app_store"
     readonly property string platformLabel: isAppStore ? "App Store" : "Google Play"
+    readonly property var googlePlayChartCategories: [
+        "APPLICATION",
+        "ANDROID_WEAR",
+        "ART_AND_DESIGN",
+        "AUTO_AND_VEHICLES",
+        "BEAUTY",
+        "BOOKS_AND_REFERENCE",
+        "BUSINESS",
+        "COMICS",
+        "COMMUNICATION",
+        "DATING",
+        "EDUCATION",
+        "ENTERTAINMENT",
+        "EVENTS",
+        "FINANCE",
+        "FOOD_AND_DRINK",
+        "HEALTH_AND_FITNESS",
+        "HOUSE_AND_HOME",
+        "LIBRARIES_AND_DEMO",
+        "LIFESTYLE",
+        "MAPS_AND_NAVIGATION",
+        "MEDICAL",
+        "MUSIC_AND_AUDIO",
+        "NEWS_AND_MAGAZINES",
+        "PARENTING",
+        "PERSONALIZATION",
+        "PHOTOGRAPHY",
+        "PRODUCTIVITY",
+        "SHOPPING",
+        "SOCIAL",
+        "SPORTS",
+        "TOOLS",
+        "TRAVEL_AND_LOCAL",
+        "VIDEO_PLAYERS",
+        "WATCH_FACE",
+        "WEATHER",
+        "FAMILY",
+        "GAME",
+        "GAME_ACTION",
+        "GAME_ADVENTURE",
+        "GAME_ARCADE",
+        "GAME_BOARD",
+        "GAME_CARD",
+        "GAME_CASINO",
+        "GAME_CASUAL",
+        "GAME_EDUCATIONAL",
+        "GAME_MUSIC",
+        "GAME_PUZZLE",
+        "GAME_RACING",
+        "GAME_ROLE_PLAYING",
+        "GAME_SIMULATION",
+        "GAME_SPORTS",
+        "GAME_STRATEGY",
+        "GAME_TRIVIA",
+        "GAME_WORD"
+    ]
     property string currentPage: "dashboard"
     property bool apiLogPanelCollapsed: false
     readonly property int apiLogPanelExpandedWidth: 380
@@ -32,7 +88,7 @@ ApplicationWindow {
         { key: "charts", label: "榜单", subtitle: "Top Free / Paid / Grossing 榜单抓取" },
         { key: "keywords", label: "关键词", subtitle: "关键词排名查询与历史保存" },
         { key: "coverage", label: "覆盖词", subtitle: "发现哪些关键词能搜到你的 App（覆盖关键词）" },
-        { key: "tracking", label: "监控", subtitle: "管理本地监控任务，同步应用和关键词" },
+        { key: "tracking", label: "监控", subtitle: "管理监控对象，查看后端每日同步结果" },
         { key: "history", label: "历史", subtitle: "本地快照和排名历史" },
         { key: "alerts", label: "提醒", subtitle: "全部监控告警与筛选" },
         { key: "settings", label: "设置", subtitle: "默认国家、语言、数据库路径和调度配置" }
@@ -94,6 +150,24 @@ ApplicationWindow {
             root.coverageProgressText = message
             root.coverageProgressValue = fraction
         }
+    }
+
+    Component.onCompleted: updateStartupCheckTimer.start()
+
+    Timer {
+        id: updateStartupCheckTimer
+        interval: 6000
+        repeat: false
+        onTriggered: root.bridge.checkUpdatesQuietly()
+    }
+
+    Timer {
+        id: updateAutoCheckTimer
+        interval: 30 * 60 * 1000
+        repeat: true
+        running: true
+        triggeredOnStart: false
+        onTriggered: root.bridge.checkUpdatesQuietly()
     }
 
     // --- design tokens ---
@@ -714,157 +788,209 @@ ApplicationWindow {
         property int tableHeight: 260
         property int rowHeight: 44
         property int selectedIndex: -1
+        property int minContentWidth: 0
         // row[emphasizeKey] truthy -> bold text; row[highlightKey] truthy -> tinted row + accent bar
         property string emphasizeKey: ""
         property string highlightKey: ""
         signal activated(int rowIndex, var rowData)
         signal selectionChanged(int rowIndex, var rowData)
         onRowsChanged: selectedIndex = -1
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 0
-            Repeater {
-                model: tableCard.columns
-                Label {
-                    text: modelData.label
-                    color: root.cBody
-                    font.pixelSize: 12
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    Layout.preferredWidth: modelData.width || 120
-                    Layout.fillWidth: modelData.fill === true
-                    leftPadding: 8
-                    rightPadding: 8
-                }
+        function naturalContentWidth() {
+            var total = 0
+            var cols = tableCard.columns || []
+            for (var i = 0; i < cols.length; i++) {
+                total += cols[i].width || (cols[i].fill === true ? 240 : 120)
             }
+            return Math.max(tableCard.minContentWidth, total)
         }
 
-        Rectangle {
+        Flickable {
+            id: tableFlick
             Layout.fillWidth: true
-            height: 1
-            color: root.cLine
-        }
-
-        ListView {
-            id: tableList
-            model: tableCard.rows || []
+            Layout.preferredHeight: headerRow.implicitHeight + 1 + tableCard.tableHeight
+            contentWidth: Math.max(width, tableCard.naturalContentWidth())
+            contentHeight: tableBody.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
-            Layout.fillWidth: true
-            Layout.preferredHeight: tableCard.tableHeight
+            interactive: contentWidth > width
 
-            delegate: Rectangle {
-                id: rowDelegate
-                property var rowData: modelData
-                property int rowNumber: index
-                property bool emphasized: tableCard.emphasizeKey.length > 0 && rowData[tableCard.emphasizeKey] === true
-                property bool highlighted: tableCard.highlightKey.length > 0 && rowData[tableCard.highlightKey] === true
-                width: ListView.view.width
-                height: tableCard.rowHeight
-                color: tableCard.selectedIndex === rowNumber
-                       ? root.cBlueSoft
-                       : (rowHover.hovered ? root.cBlueSoft
-                          : (highlighted ? root.cBlueSoft : (rowNumber % 2 === 0 ? root.cSurface : root.cChipBg)))
+            Column {
+                id: tableBody
+                width: tableFlick.contentWidth
+                height: headerRow.implicitHeight + 1 + tableCard.tableHeight
 
-                Behavior on color { ColorAnimation { duration: 120 } }
-                HoverHandler { id: rowHover }
-                TapHandler {
-                    acceptedButtons: Qt.LeftButton
-                    onTapped: {
-                        tableCard.selectedIndex = rowDelegate.rowNumber
-                        tableCard.selectionChanged(rowDelegate.rowNumber, rowDelegate.rowData)
-                    }
-                    onDoubleTapped: {
-                        tableCard.selectedIndex = rowDelegate.rowNumber
-                        tableCard.activated(rowDelegate.rowNumber, rowDelegate.rowData)
+                RowLayout {
+                    id: headerRow
+                    width: parent.width
+                    spacing: 0
+                    Repeater {
+                        model: tableCard.columns
+                        Label {
+                            text: modelData.label
+                            color: root.cBody
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            Layout.preferredWidth: modelData.width || 120
+                            Layout.fillWidth: modelData.fill === true
+                            leftPadding: 8
+                            rightPadding: 8
+                        }
                     }
                 }
 
                 Rectangle {
-                    visible: rowDelegate.highlighted
-                    width: 3
-                    height: parent.height
-                    color: root.cBlue
+                    width: parent.width
+                    height: 1
+                    color: root.cLine
                 }
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 0
-                    anchors.rightMargin: 0
-                    spacing: 0
-                    Repeater {
-                        model: tableCard.columns
-                        Item {
-                            id: cell
-                            property var cellValue: rowDelegate.rowData[modelData.key]
-                            property string cellType: modelData.type || "text"
-                            Layout.preferredWidth: modelData.width || 120
-                            Layout.fillWidth: modelData.fill === true
-                            Layout.fillHeight: true
+                ListView {
+                    id: tableList
+                    width: parent.width
+                    height: tableCard.tableHeight
+                    model: tableCard.rows || []
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
 
-                            // plain text (default)
-                            Label {
-                                visible: cell.cellType === "text"
-                                anchors.fill: parent
-                                text: cell.cellValue === undefined || cell.cellValue === null ? "" : cell.cellValue
-                                color: modelData.color || root.cBody
-                                font.pixelSize: 12
-                                font.weight: rowDelegate.emphasized ? Font.DemiBold : Font.Normal
-                                elide: Text.ElideRight
-                                verticalAlignment: Text.AlignVCenter
-                                leftPadding: 8
-                                rightPadding: 8
+                    delegate: Rectangle {
+                        id: rowDelegate
+                        property var rowData: modelData
+                        property int rowNumber: index
+                        property bool emphasized: tableCard.emphasizeKey.length > 0 && rowData[tableCard.emphasizeKey] === true
+                        property bool highlighted: tableCard.highlightKey.length > 0 && rowData[tableCard.highlightKey] === true
+                        width: ListView.view.width
+                        height: tableCard.rowHeight
+                        color: tableCard.selectedIndex === rowNumber
+                               ? root.cBlueSoft
+                               : (rowHover.hovered ? root.cBlueSoft
+                                  : (highlighted ? root.cBlueSoft : (rowNumber % 2 === 0 ? root.cSurface : root.cChipBg)))
+
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        HoverHandler { id: rowHover }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            onTapped: {
+                                tableCard.selectedIndex = rowDelegate.rowNumber
+                                tableCard.selectionChanged(rowDelegate.rowNumber, rowDelegate.rowData)
                             }
-
-                            // app icon loaded from URL
-                            RoundedImage {
-                                visible: cell.cellType === "icon"
-                                anchors.verticalCenter: parent.verticalCenter
-                                x: 8
-                                width: Math.min(parent.height - 12, 36)
-                                height: width
-                                cornerRadius: 8
-                                source: cell.cellType === "icon" && cell.cellValue ? cell.cellValue : ""
-                                fallbackText: String(rowDelegate.rowData.title || "·")
+                            onDoubleTapped: {
+                                tableCard.selectedIndex = rowDelegate.rowNumber
+                                tableCard.activated(rowDelegate.rowNumber, rowDelegate.rowData)
                             }
+                        }
 
-                            // colored pill; color comes from row[colorKey]
-                            Badge {
-                                visible: cell.cellType === "badge" && String(cell.cellValue || "").length > 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                x: 8
-                                text: cell.cellValue === undefined || cell.cellValue === null ? "" : String(cell.cellValue)
-                                tint: modelData.colorKey && rowDelegate.rowData[modelData.colorKey]
-                                      ? rowDelegate.rowData[modelData.colorKey] : root.cBlue
-                                subtle: true
-                            }
+                        Rectangle {
+                            visible: rowDelegate.highlighted
+                            width: 3
+                            height: parent.height
+                            color: root.cBlue
+                        }
 
-                            // 1-5 star rating
-                            Row {
-                                visible: cell.cellType === "stars"
-                                anchors.verticalCenter: parent.verticalCenter
-                                x: 8
-                                spacing: 0
-                                Repeater {
-                                    model: 5
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 0
+                            anchors.rightMargin: 0
+                            spacing: 0
+                            Repeater {
+                                model: tableCard.columns
+                                Item {
+                                    id: cell
+                                    property var cellValue: rowDelegate.rowData[modelData.key]
+                                    property string cellType: modelData.type || "text"
+                                    Layout.preferredWidth: modelData.width || 120
+                                    Layout.fillWidth: modelData.fill === true
+                                    Layout.fillHeight: true
+
+                                    // plain text (default)
                                     Label {
-                                        text: "★"
+                                        visible: cell.cellType === "text"
+                                        anchors.fill: parent
+                                        text: cell.cellValue === undefined || cell.cellValue === null ? "" : cell.cellValue
+                                        color: modelData.color || root.cBody
                                         font.pixelSize: 12
-                                        color: index < Number(cell.cellValue || 0) ? root.cAmber : root.cLine
+                                        font.weight: rowDelegate.emphasized ? Font.DemiBold : Font.Normal
+                                        elide: Text.ElideRight
+                                        verticalAlignment: Text.AlignVCenter
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                    }
+
+                                    MouseArea {
+                                        id: copyMouse
+                                        visible: cell.cellType === "text" && modelData.copyable === true
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton
+                                        hoverEnabled: true
+                                        cursorShape: Qt.IBeamCursor
+                                        onDoubleClicked: {
+                                            var copyKey = modelData.copyKey || modelData.key
+                                            var value = rowDelegate.rowData[copyKey]
+                                            if (value === undefined || value === null || String(value).length === 0) {
+                                                root.bridge.copyText("")
+                                            } else {
+                                                root.bridge.copyText(String(value))
+                                            }
+                                        }
+                                        ToolTip.visible: copyMouse.containsMouse
+                                        ToolTip.delay: 600
+                                        ToolTip.text: "双击复制"
+                                    }
+
+                                    // app icon loaded from URL
+                                    RoundedImage {
+                                        visible: cell.cellType === "icon"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 8
+                                        width: Math.min(parent.height - 12, 36)
+                                        height: width
+                                        cornerRadius: 8
+                                        source: cell.cellType === "icon" && cell.cellValue ? cell.cellValue : ""
+                                        fallbackText: String(rowDelegate.rowData.title || "·")
+                                    }
+
+                                    // colored pill; color comes from row[colorKey]
+                                    Badge {
+                                        visible: cell.cellType === "badge" && String(cell.cellValue || "").length > 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 8
+                                        text: cell.cellValue === undefined || cell.cellValue === null ? "" : String(cell.cellValue)
+                                        tint: modelData.colorKey && rowDelegate.rowData[modelData.colorKey]
+                                              ? rowDelegate.rowData[modelData.colorKey] : root.cBlue
+                                        subtle: true
+                                    }
+
+                                    // 1-5 star rating
+                                    Row {
+                                        visible: cell.cellType === "stars"
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        x: 8
+                                        spacing: 0
+                                        Repeater {
+                                            model: 5
+                                            Label {
+                                                text: "★"
+                                                font.pixelSize: 12
+                                                color: index < Number(cell.cellValue || 0) ? root.cAmber : root.cLine
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+
+                    Label {
+                        anchors.centerIn: parent
+                        visible: tableList.count === 0
+                        text: tableCard.emptyText
+                        color: root.cFaint
+                    }
                 }
             }
 
-            Label {
-                anchors.centerIn: parent
-                visible: tableList.count === 0
-                text: tableCard.emptyText
-                color: root.cFaint
+            ScrollBar.horizontal: ScrollBar {
+                policy: tableFlick.contentWidth > tableFlick.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
             }
         }
     }
@@ -1737,28 +1863,36 @@ ApplicationWindow {
                     HistoryField { id: trackAppId; historyKey: "app_id"; placeholderText: "com.whatsapp"; width: 240 }
                     Field { id: trackCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: trackLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
-                    QuietCombo {
-                        id: trackFreq
-                        width: 100
-                        textRole: "label"
-                        valueRole: "value"
-                        model: [
-                            { label: "每日", value: "daily" },
-                            { label: "每周", value: "weekly" },
-                            { label: "手动", value: "manual" }
-                        ]
-                    }
                     Field { id: trackTag; placeholderText: "标签"; width: 120 }
-                    PrimaryButton { text: "添加 App 监控"; onClicked: root.bridge.addApp(trackAppId.text, trackCountry.text, trackLang.text, trackFreq.currentValue) }
-                    SecondaryButton { text: "同步全部"; onClicked: root.bridge.syncAll() }
-                    SecondaryButton { text: "同步到期项"; onClicked: root.bridge.syncDue() }
+                    PrimaryButton { text: "添加 App 监控"; onClicked: root.bridge.addApp(trackAppId.text, trackCountry.text, trackLang.text, "daily") }
+                    SecondaryButton { text: "刷新列表"; onClicked: root.bridge.refreshTracking() }
                 }
                 ToolbarFlow {
                     HistoryField { id: chartAppId; historyKey: "app_id"; placeholderText: "com.whatsapp"; width: 220 }
                     QuietCombo { id: chartCollection; width: 130; model: ["top_free", "top_paid", "top_grossing"] }
-                    Field { id: chartCategory; text: "APPLICATION"; width: 140 }
-                    SecondaryButton { text: "添加榜单监控"; onClicked: root.bridge.addChartApp(chartAppId.text, chartCollection.currentText, chartCategory.text, trackCountry.text, trackLang.text) }
-                    SecondaryButton { text: "刷新"; onClicked: root.bridge.refreshTracking() }
+                    QuietCombo {
+                        id: chartCategoryCombo
+                        width: 210
+                        visible: !root.isAppStore
+                        model: root.googlePlayChartCategories
+                        currentIndex: 0
+                    }
+                    Field {
+                        id: chartCategory
+                        visible: root.isAppStore
+                        placeholderText: "genre（如 6014）"
+                        width: 140
+                    }
+                    SecondaryButton {
+                        text: "添加榜单监控"
+                        onClicked: root.bridge.addChartApp(
+                            chartAppId.text,
+                            chartCollection.currentText,
+                            root.isAppStore ? chartCategory.text : chartCategoryCombo.currentText,
+                            trackCountry.text,
+                            trackLang.text
+                        )
+                    }
                 }
                 ToolbarFlow {
                     TextArea {
@@ -1779,7 +1913,7 @@ ApplicationWindow {
                             Behavior on border.color { ColorAnimation { duration: 120 } }
                         }
                     }
-                    SecondaryButton { text: "批量导入 App"; onClicked: root.bridge.bulkImportApps(bulkAppIds.text, trackCountry.text, trackLang.text, trackFreq.currentValue) }
+                    SecondaryButton { text: "批量导入 App"; onClicked: root.bridge.bulkImportApps(bulkAppIds.text, trackCountry.text, trackLang.text, "daily") }
                 }
             }
 
@@ -1955,16 +2089,8 @@ ApplicationWindow {
                             }
                             Item { Layout.fillWidth: true }
                             SecondaryButton {
-                                text: "设置频率"
-                                onClicked: root.bridge.setMonitorFrequency(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, trackFreq.currentValue)
-                            }
-                            SecondaryButton {
                                 text: "设置标签"
                                 onClicked: root.bridge.setMonitorTag(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, trackTag.text)
-                            }
-                            SecondaryButton {
-                                text: "同步选中"
-                                onClicked: root.bridge.syncMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key)
                             }
                             SecondaryButton {
                                 text: "启用/禁用"
@@ -2550,11 +2676,23 @@ ApplicationWindow {
                 visible: detailPage.d.loaded === true && !root.isAppStore
                 rows: detailPage.d.recentReviews || []
                 tableHeight: 230
+                rowHeight: 52
+                minContentWidth: 2240
                 emptyText: "暂无落库评论，可在监控同步后查看"
                 columns: [
-                    { label: "时间", key: "time", width: 100 },
+                    { label: "用户", key: "user", width: 150 },
                     { label: "评分", key: "rating", width: 96, type: "stars" },
-                    { label: "内容", key: "content", fill: true }
+                    { label: "评论时间", key: "reviewCreatedAt", width: 150 },
+                    { label: "内容", key: "content", width: 420, copyable: true, copyKey: "contentFull" },
+                    { label: "平台", key: "platform", width: 96 },
+                    { label: "App ID", key: "appId", width: 170 },
+                    { label: "国家", key: "country", width: 64 },
+                    { label: "语言", key: "lang", width: 64 },
+                    { label: "Review ID", key: "reviewId", width: 260 },
+                    { label: "版本", key: "version", width: 120 },
+                    { label: "有用", key: "helpful", width: 64 },
+                    { label: "抓取时间", key: "capturedAt", width: 150 },
+                    { label: "Raw", key: "rawText", width: 520, copyable: true, copyKey: "rawFull" }
                 ]
             }
         }
@@ -2569,11 +2707,33 @@ ApplicationWindow {
             Card {
                 ToolbarFlow {
                     Field { id: chartType; text: "top_free"; width: 160 }
-                    HistoryField { id: chartCat; historyKey: "chart_category"; placeholderText: root.isAppStore ? "genre（如 6014 = 游戏）" : "category"; width: 160 }
+                    QuietCombo {
+                        id: chartCatCombo
+                        width: 210
+                        visible: !root.isAppStore
+                        model: root.googlePlayChartCategories
+                        currentIndex: 0
+                    }
+                    HistoryField {
+                        id: chartCat
+                        visible: root.isAppStore
+                        historyKey: "chart_category"
+                        placeholderText: "genre（如 6014 = 游戏）"
+                        width: 180
+                    }
                     Field { id: chartCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 100 }
                     Field { id: chartLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 100 }
                     Field { id: chartLimit; text: "100"; width: 100 }
-                    PrimaryButton { text: "获取榜单"; onClicked: root.bridge.fetchChart(chartType.text, chartCat.text, chartCountry.text, chartLang.text, chartLimit.text) }
+                    PrimaryButton {
+                        text: "获取榜单"
+                        onClicked: root.bridge.fetchChart(
+                            chartType.text,
+                            root.isAppStore ? chartCat.text : chartCatCombo.currentText,
+                            chartCountry.text,
+                            chartLang.text,
+                            chartLimit.text
+                        )
+                    }
                     SecondaryButton { text: "保存榜单快照"; onClicked: root.bridge.saveChartSnapshot() }
                     SecondaryButton { text: "打开详情"; onClicked: root.bridge.openChartResult(chartTable.selectedIndex, chartCountry.text, chartLang.text) }
                 }
@@ -2771,14 +2931,22 @@ ApplicationWindow {
                 title: "评论列表 · " + root.bridge.reviews.summary
                 rows: root.rows(root.bridge.reviews, "rows")
                 tableHeight: 540
-                rowHeight: 48
+                rowHeight: 52
+                minContentWidth: 2240
                 columns: [
-                    { label: "用户", key: "user", width: 120 },
-                    { label: "星级", key: "rating", width: 92, type: "stars" },
-                    { label: "版本", key: "version", width: 84 },
-                    { label: "时间", key: "time", width: 118 },
-                    { label: "内容", key: "content", fill: true },
-                    { label: "有用", key: "helpful", width: 56 }
+                    { label: "用户", key: "user", width: 150 },
+                    { label: "星级", key: "rating", width: 96, type: "stars" },
+                    { label: "评论时间", key: "reviewCreatedAt", width: 150 },
+                    { label: "内容", key: "content", width: 420, copyable: true, copyKey: "contentFull" },
+                    { label: "平台", key: "platform", width: 96 },
+                    { label: "App ID", key: "appId", width: 170 },
+                    { label: "国家", key: "country", width: 64 },
+                    { label: "语言", key: "lang", width: 64 },
+                    { label: "Review ID", key: "reviewId", width: 260 },
+                    { label: "版本", key: "version", width: 120 },
+                    { label: "有用", key: "helpful", width: 64 },
+                    { label: "抓取时间", key: "capturedAt", width: 150 },
+                    { label: "Raw", key: "rawText", width: 520, copyable: true, copyKey: "rawFull" }
                 ]
             }
         }
