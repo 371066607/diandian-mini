@@ -363,6 +363,7 @@ class StoreIntelApiClient:
                 "lang": lang,
                 "deep": str(deep).lower(),
             },
+            timeout=min(self.timeout, 5.0),
         )
         return self._namespace(data)
 
@@ -390,6 +391,7 @@ class StoreIntelApiClient:
                 "candidates": candidates or [],
                 "canonical_app_id": canonical_app_id or "",
             },
+            timeout=max(self.timeout, 180.0 if deep else 90.0),
         ):
             event_type = str(event.get("type") or "")
             if event_type == "progress":
@@ -889,6 +891,7 @@ class StoreIntelApiClient:
         *,
         query: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         if not self.enabled:
             raise StoreIntelApiError("StoreIntel API 未配置。")
@@ -928,7 +931,7 @@ class StoreIntelApiClient:
             )
 
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=timeout or self.timeout) as response:
                 status = getattr(response, "status", None)
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
@@ -970,6 +973,7 @@ class StoreIntelApiClient:
         path: str,
         *,
         body: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ):
         if not self.enabled:
             raise StoreIntelApiError("StoreIntel API 未配置。")
@@ -984,7 +988,7 @@ class StoreIntelApiClient:
         ok = False
         error = ""
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=timeout or self.timeout) as response:
                 status = getattr(response, "status", None)
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").strip()

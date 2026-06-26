@@ -1999,32 +1999,40 @@ class QmlBridge(QObject):
             try:
                 candidates, canonical = cached_pool or (None, None)
                 if api is not None:
-                    try:
-                        result = api.cached_coverage(
+                    if deep:
+                        result = api.analyze_coverage_stream(
                             app_id,
                             country=country,
                             lang=lang,
+                            limit=50,
                             deep=deep,
+                            candidates=candidates,
+                            canonical_app_id=canonical,
+                            progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
                         )
-                    except Exception:
-                        result = None
-                    if not self._has_coverage_cache_data(result):
-                        self._request_api_refresh(
-                            api,
-                            "coverage",
-                            app_id=app_id,
-                            country=country,
-                            lang=lang,
-                            deep=deep,
-                        )
-                        result = api.cached_coverage(
-                            app_id,
-                            country=country,
-                            lang=lang,
-                            deep=deep,
-                        )
-                    if not self._has_coverage_cache_data(result):
-                        raise RuntimeError("服务器没有返回可用的覆盖词数据。")
+                    else:
+                        try:
+                            result = api.cached_coverage(
+                                app_id,
+                                country=country,
+                                lang=lang,
+                                deep=deep,
+                            )
+                        except Exception:
+                            result = None
+                        if not self._has_coverage_cache_data(result):
+                            result = api.analyze_coverage_stream(
+                                app_id=app_id,
+                                country=country,
+                                lang=lang,
+                                limit=50,
+                                deep=deep,
+                                candidates=candidates,
+                                canonical_app_id=canonical,
+                                progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
+                            )
+                        if not self._has_coverage_cache_data(result):
+                            raise RuntimeError("服务器没有返回可用的覆盖词数据。")
                 else:
                     result = self.services["keyword_coverage_service"].analyze_coverage(
                         platform,
