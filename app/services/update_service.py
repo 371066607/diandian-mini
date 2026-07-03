@@ -115,21 +115,27 @@ class UpdateService:
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
 
-        # curl fallback — same as _request_text; handles IncompleteRead / RemoteDisconnected
+        # curl fallback — same as _request_text; handles IncompleteRead / RemoteDisconnected.
+        # curl exits 0 even on a 4xx/5xx response (the transport itself succeeded), so the
+        # HTTP status has to be checked explicitly — otherwise a 404 body (no "codever" in
+        # it) silently parses into an empty/zero result instead of surfacing as a failure.
         curl = shutil.which("curl")
         if curl:
             try:
                 result = proc.run(
-                    [curl, "-sS", "-L", "--http1.1",
+                    [curl, "-sS", "-L", "--http1.1", "-w", "\n%{http_code}",
                      "-H", f"Accept: {headers['Accept']}",
                      "-H", f"User-Agent: {headers['User-Agent']}",
                      url],
                     capture_output=True, text=True, timeout=30,
                 )
                 if result.returncode == 0 and result.stdout:
-                    return json.loads(result.stdout)
-            except Exception:  # noqa: BLE001
-                pass
+                    body, _, status = result.stdout.rpartition("\n")
+                    if status.strip() == "200" and body:
+                        return json.loads(body)
+                    last_exc = RuntimeError(f"GitHub API request failed: HTTP {status.strip() or '?'}")
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
 
         raise last_exc  # type: ignore[misc]
 

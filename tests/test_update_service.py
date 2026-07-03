@@ -1,6 +1,8 @@
 import io
 import zipfile
 
+import pytest
+
 import bootstrap
 from app.services.update_service import UpdateService
 
@@ -57,6 +59,43 @@ def test_check_patch_up_to_date(monkeypatch):
     service._fetch_code_release = lambda: {"body": "codever:200"}
     result = service._check_patch()
     assert result.up_to_date and not result.can_patch
+
+
+def test_fetch_code_release_raises_when_curl_fallback_gets_http_404(monkeypatch):
+    # urllib fails outright (e.g. TLS/network hiccup) so it falls through to the curl
+    # fallback. curl itself exits 0 on a 404 (the transport succeeded, only the HTTP
+    # status is bad) and returns GitHub's error JSON — that must not be mistaken for a
+    # real release body, or a nonexistent-repo 404 silently reads as "no update".
+    service = UpdateService(repo="371066607/does-not-exist")
+    monkeypatch.setattr(
+        "app.services.update_service.urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("simulated network failure")),
+    )
+    monkeypatch.setattr("app.services.update_service.shutil.which", lambda name: "/usr/bin/curl")
+
+    class FakeCurlResult:
+        returncode = 0
+        stdout = '{"message": "Not Found", "documentation_url": "https://docs.github.com/x"}\n404'
+
+    monkeypatch.setattr(
+        "app.services.update_service.proc.run", lambda *a, **k: FakeCurlResult()
+    )
+
+    with pytest.raises(Exception):
+        service._fetch_code_release()
+
+
+def test_check_patch_surfaces_error_instead_of_masking_it_as_up_to_date(monkeypatch):
+    service = UpdateService()
+    monkeypatch.setattr(service, "current_version", lambda: 1782489690)
+
+    def boom():
+        raise RuntimeError("GitHub API request failed: HTTP 404")
+
+    monkeypatch.setattr(service, "_fetch_code_release", boom)
+    result = service._check_patch()
+    assert not result.up_to_date
+    assert result.error and "404" in result.error
 
 
 def test_download_and_apply_patch(tmp_path, monkeypatch):
