@@ -1,7 +1,11 @@
+import pytest
+
 from app.db.database import Database
+from app.db.models import KeywordRankModel
 from app.db.repositories import KeywordRankRepository
 from app.schemas.app_schema import AppSummary
 from app.schemas.keyword_schema import KeywordRankResult
+from app.services.google_play_service import ServiceError
 from app.services.keyword_service import KeywordService
 
 
@@ -44,17 +48,26 @@ def test_keyword_rank_matches_app_id_case_insensitively():
     assert result.rank == 2
 
 
-def test_keyword_save_result_roundtrip(tmp_path):
+def test_keyword_save_result_raises_when_retired(tmp_path):
+    """save_result() is a retired-feature stub now (live scraper write path removed);
+    calling it must always raise ServiceError instead of persisting a row."""
     database = Database(str(tmp_path / "keyword.sqlite3"))
     database.create_all()
     service = KeywordService(FakeGooglePlayService(), database=database)
 
-    result = service.rank("vpn", "com.b")  # rank() already persists once (today)
-    service.save_result(result)  # same calendar day -> per-day dedup updates, no new row
-    history = service.history("vpn", "com.b", "us", "en")
+    result = KeywordRankResult(
+        keyword="vpn",
+        app_id="com.b",
+        country="us",
+        lang="en",
+        found=True,
+        rank=2,
+        checked_limit=100,
+        captured_at="2026-06-01T09:00:00",
+    )
 
-    assert len(history) == 1
-    assert history[-1].rank == 2
+    with pytest.raises(ServiceError):
+        service.save_result(result)
 
 
 def test_keyword_latest_returns_most_recent_rank(tmp_path):
@@ -62,8 +75,9 @@ def test_keyword_latest_returns_most_recent_rank(tmp_path):
     database.create_all()
     repo = KeywordRankRepository()
 
-    def _result(rank, captured_at):
-        return KeywordRankResult(
+    def _row(rank, captured_at):
+        return KeywordRankModel(
+            platform="google_play",
             keyword="messenger",
             app_id="com.whatsapp",
             country="us",
@@ -75,8 +89,8 @@ def test_keyword_latest_returns_most_recent_rank(tmp_path):
         )
 
     with database.session() as session:
-        repo.save(session, _result(10, "2026-06-01T09:00:00"))
-        repo.save(session, _result(3, "2026-06-03T09:00:00"))
+        session.add(_row(10, "2026-06-01T09:00:00"))
+        session.add(_row(3, "2026-06-03T09:00:00"))
 
     with database.session() as session:
         latest = repo.latest(session, "messenger", "com.whatsapp", "us", "en")

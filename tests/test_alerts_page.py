@@ -1,6 +1,9 @@
 from app.db.database import Database
+from app.db.models import AlertModel
 from app.db.repositories import AlertRepository
 from app.services.alert_service import AlertService
+from app.utils.normalize import dump_json
+from app.utils.time_utils import now_iso
 
 
 def _make_db(tmp_path):
@@ -9,14 +12,31 @@ def _make_db(tmp_path):
     return database
 
 
+def _add_alert(session, alert_type, severity, message, **payload):
+    """Construct an AlertModel directly (AlertRepository.create was retired
+    along with the live-scrape write path it existed to serve)."""
+    session.add(
+        AlertModel(
+            type=alert_type,
+            severity=severity,
+            message=message,
+            payload_json=dump_json(payload),
+            title=payload.get("title"),
+            app_id=payload.get("app_id"),
+            is_read=0,
+            created_at=now_iso(),
+        )
+    )
+
+
 def _seed(database):
     """Insert a fixed spread of alerts across app_id / type / severity / is_read."""
     repo = AlertRepository()
     with database.session() as session:
-        repo.create(session, "rating_drop", "high", "A 评分下降", app_id="com.a")
-        repo.create(session, "version_changed", "medium", "A 版本变化", app_id="com.a")
-        repo.create(session, "reviews_growth", "low", "B 评论增长", app_id="com.b")
-        repo.create(session, "fetch_failed", "high", "无 app 告警")  # app_id None
+        _add_alert(session, "rating_drop", "high", "A 评分下降", app_id="com.a")
+        _add_alert(session, "version_changed", "medium", "A 版本变化", app_id="com.a")
+        _add_alert(session, "reviews_growth", "low", "B 评论增长", app_id="com.b")
+        _add_alert(session, "fetch_failed", "high", "无 app 告警")  # app_id None
     # Mark the second-created alert (com.a / version_changed) read via its id.
     with database.session() as session:
         all_alerts = repo.list_filtered(session)

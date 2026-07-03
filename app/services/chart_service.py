@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.db.repositories import ChartRepository
+from app.services.google_play_service import ServiceError, _FEATURE_RETIRED_MESSAGE
 
 
 class ChartService:
@@ -8,7 +8,6 @@ class ChartService:
         self.database = database
         self.google_play_service = google_play_service
         self.app_store_service = app_store_service
-        self.repository = ChartRepository()
 
     def fetch(
         self,
@@ -40,12 +39,4 @@ class ChartService:
         )
 
     def save(self, chart_type: str, category: str | None, country: str, lang: str, items):
-        with self.database.session() as session:
-            return self.repository.save_snapshot(
-                session,
-                chart_type,
-                category,
-                country,
-                lang,
-                items,
-            )
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)

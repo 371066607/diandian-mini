@@ -58,13 +58,22 @@ def _make_window_immersive(window) -> None:
         ns = ctypes.c_void_p(ns)
         # styleMask |= NSWindowStyleMaskFullSizeContentView (1 << 15)
         mask = msg(ctypes.c_ulong, [ctypes.c_void_p, ctypes.c_void_p], ns, "styleMask")
-        msg(None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong],
-            ns, "setStyleMask:", mask | (1 << 15))
-        msg(None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool],
-            ns, "setTitlebarAppearsTransparent:", True)
+        msg(
+            None,
+            [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong],
+            ns,
+            "setStyleMask:",
+            mask | (1 << 15),
+        )
+        msg(
+            None,
+            [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool],
+            ns,
+            "setTitlebarAppearsTransparent:",
+            True,
+        )
         # NSWindowTitleHidden = 1
-        msg(None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long],
-            ns, "setTitleVisibility:", 1)
+        msg(None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long], ns, "setTitleVisibility:", 1)
     except Exception:
         pass
 
@@ -75,7 +84,9 @@ def run_qml_app(database, services, logger, argv: list[str]) -> int:
     QQuickStyle.setStyle("Fusion")
 
     bridge = QmlBridge(database=database, services=services, logger=logger)
-    services["tracking_service"].set_notifier(bridge.notify)
+    tracking_service = services.get("tracking_service")
+    if tracking_service is not None:
+        tracking_service.set_notifier(bridge.notify)
 
     engine = QQmlApplicationEngine()
     engine.setInitialProperties({"bridge": bridge, "appTitle": APP_TITLE})

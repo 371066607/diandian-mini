@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.db.repositories import KeywordRankRepository
 from app.schemas.keyword_schema import KeywordRankResult
+from app.services.google_play_service import ServiceError, _FEATURE_RETIRED_MESSAGE
 from app.utils.normalize import locate_rank
 from app.utils.time_utils import now_iso
 
@@ -75,8 +76,7 @@ class KeywordService:
         if self.database is None or not tracked_keywords:
             return {}
         keys = [
-            (kw.keyword, kw.app_id, kw.country, kw.lang, kw.platform)
-            for kw in tracked_keywords
+            (kw.keyword, kw.app_id, kw.country, kw.lang, kw.platform) for kw in tracked_keywords
         ]
         with self.database.session() as session:
             return self.repository.latest_bulk(session, keys)
@@ -94,9 +94,4 @@ class KeywordService:
             )
 
     def save_result(self, result: KeywordRankResult) -> bool:
-        """Persist a rank result with per-day dedup. Returns True if it was the first sync
-        of the day (a new row), False if it overwrote an existing same-day row."""
-        if self.database is None:
-            raise RuntimeError("当前 KeywordService 未配置数据库，无法保存结果。")
-        with self.database.session() as session:
-            return self.repository.upsert_for_day(session, result)
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)

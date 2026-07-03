@@ -6,11 +6,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
+from sqlalchemy import select
+
 from app.db.database import Database
-from app.db.repositories import AlertRepository
+from app.db.models import AlertModel, AppSnapshotModel, TrackedAppModel
 from app.schemas.app_schema import AppDetail
 from app.services.settings_service import SettingsService
 from app.services.tracking_service import MonitorHealth, TrackingService, _trend
+from app.utils.install_parser import parse_install_range
+from app.utils.normalize import bool_to_int, dump_json
 from app.utils.time_utils import now_iso
 
 
@@ -38,8 +42,29 @@ def _make_service(tmp_path):
 
 
 def _save(service, detail, country="us", lang="en"):
+    # SnapshotRepository.save_detail was retired along with the scraper write path;
+    # build the ORM row directly the same way it used to (see git history of
+    # SnapshotRepository._snapshot_values in app/db/repositories.py).
+    min_installs, max_installs = parse_install_range(detail.installs)
     with service.database.session() as session:
-        service.snapshot_repository.save_detail(session, detail, country, lang)
+        session.add(
+            AppSnapshotModel(
+                captured_at=now_iso(),
+                platform=detail.platform,
+                app_id=detail.app_id,
+                country=country,
+                lang=lang,
+                title=detail.title,
+                rating=detail.rating,
+                reviews_count=detail.reviews_count,
+                installs=detail.installs,
+                min_installs=detail.min_installs or min_installs,
+                max_installs=max_installs,
+                free=bool_to_int(detail.free),
+                has_iap=bool_to_int(detail.has_iap),
+                screenshots_json=dump_json(detail.screenshots),
+            )
+        )
 
 
 # --- _trend pure function ------------------------------------------------
@@ -69,14 +94,20 @@ def test_monitor_overview_one_dto_per_enabled_app_with_full_fields(tmp_path):
     _save(service, _detail(rating=4.0, reviews=100, installs="500,000+"))
     _save(service, _detail(rating=4.5, reviews=250, installs="1,000,000+"))
     # An unread alert for this app.
+    # AlertRepository.create was retired along with the scraper write path; build the
+    # ORM row directly the way it used to (see git history of AlertRepository.create
+    # in app/db/repositories.py).
     with database.session() as session:
-        AlertRepository().create(
-            session,
-            "rating_drop",
-            "high",
-            "评分下降",
-            app_id="com.example",
-            title="Example",
+        session.add(
+            AlertModel(
+                type="rating_drop",
+                severity="high",
+                message="评分下降",
+                payload_json=dump_json({"app_id": "com.example", "title": "Example"}),
+                title="Example",
+                app_id="com.example",
+                created_at=now_iso(),
+            )
         )
 
     overview = service.monitor_overview()
@@ -138,11 +169,19 @@ def test_fail_status_three_states(tmp_path, failures, expected):
     _save(service, _detail(app_id="com.fail"))
     # escalate_after default is 3.
     assert service._escalate_after() == 3
+    # TrackingRepository.record_app_failure was retired along with the scraper write
+    # path; set the column directly the way repeated failure calls used to.
     with database.session() as session:
-        for _ in range(failures):
-            service.tracking_repository.record_app_failure(
-                session, "com.fail", "us", "en", now_iso()
+        model = session.execute(
+            select(TrackedAppModel).where(
+                TrackedAppModel.app_id == "com.fail",
+                TrackedAppModel.country == "us",
+                TrackedAppModel.lang == "en",
             )
+        ).scalar_one()
+        model.consecutive_failures = failures
+        if failures:
+            model.last_failed_at = now_iso()
     health = service.monitor_overview()[0]
     assert health.consecutive_failures == failures
     assert health.fail_status == expected

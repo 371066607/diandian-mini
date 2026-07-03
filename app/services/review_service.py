@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.db.repositories import ReviewRepository
+from app.services.google_play_service import ServiceError, _FEATURE_RETIRED_MESSAGE
 
 
 class ReviewService:
@@ -19,8 +20,7 @@ class ReviewService:
         )
 
     def save(self, app_id: str, country: str, lang: str, items):
-        with self.database.session() as session:
-            return self.repository.save_reviews(session, app_id, country, lang, items)
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)
 
     def list_cached(self, app_id: str, limit: int = 100):
         with self.database.session() as session:
@@ -34,22 +34,6 @@ class ReviewService:
         limit: int = 50,
         max_rating: int = 2,
     ):
-        """Fetch the newest reviews, persist them (dedup), and return the NEW low-star
-        (``rating <= max_rating``) ones — the input to negative-review alerting. Reviews
-        are an enhancement to the sync, so the caller treats any error here as non-fatal."""
-        items, _token = self.fetch(app_id, country, lang, sort="newest")
-        items = list(items)[:limit]
-        if not items:
-            return []
-        with self.database.session() as session:
-            existing = self.repository.existing_review_ids(
-                session, app_id, [item.review_id for item in items]
-            )
-            self.repository.save_reviews(session, app_id, country, lang, items)
-        return [
-            item
-            for item in items
-            if item.review_id not in existing
-            and item.rating is not None
-            and item.rating <= max_rating
-        ]
+        """Retired: this feature depended on the scrape-persist flow, which has been
+        removed. Always raises ``ServiceError``."""
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)

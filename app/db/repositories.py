@@ -7,7 +7,6 @@ from app.db.models import (
     AlertModel,
     AppSnapshotModel,
     ChartRankSnapshotModel,
-    ChartSnapshotModel,
     KeywordCorpusModel,
     KeywordRankModel,
     ReviewModel,
@@ -16,13 +15,6 @@ from app.db.models import (
     TrackedChartAppModel,
     TrackedKeywordModel,
 )
-from app.schemas.app_schema import AppDetail
-from app.schemas.chart_rank_schema import ChartRankResult
-from app.schemas.chart_schema import ChartItem
-from app.schemas.keyword_schema import KeywordRankResult
-from app.schemas.review_schema import ReviewItem
-from app.utils.install_parser import parse_install_range
-from app.utils.normalize import bool_to_int, dump_json
 from app.utils.time_utils import now_iso
 
 
@@ -98,19 +90,6 @@ class AlertRepository:
         stmt = stmt.order_by(desc(AlertModel.created_at)).limit(limit)
         return session.execute(stmt).scalars().all()
 
-    def create(self, session, alert_type: str, severity: str, message: str, **payload) -> None:
-        session.add(
-            AlertModel(
-                type=alert_type,
-                severity=severity,
-                message=message,
-                payload_json=dump_json(payload),
-                title=payload.get("title"),
-                app_id=payload.get("app_id"),
-                created_at=now_iso(),
-            )
-        )
-
     def mark_all_read(self, session) -> int:
         result = session.execute(
             update(AlertModel).where(AlertModel.is_read == 0).values(is_read=1)
@@ -152,31 +131,7 @@ class AlertRepository:
     def mark_read_by_ids(self, session, ids: list[int]) -> int:
         if not ids:
             return 0
-        result = session.execute(
-            update(AlertModel).where(AlertModel.id.in_(ids)).values(is_read=1)
-        )
-        return max(result.rowcount, 0)
-
-    def cleanup(self, session, cutoff_iso: str, min_keep: int) -> int:
-        """Delete read alerts older than ``cutoff_iso`` beyond the most-recent
-        ``min_keep`` per app. Unread alerts (is_read=0) are NEVER deleted, and the
-        newest ``min_keep`` rows per app are always kept regardless of age."""
-        result = session.execute(
-            text(
-                """
-                DELETE FROM alerts WHERE id IN (
-                  SELECT id FROM (
-                    SELECT id, created_at, is_read,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY app_id ORDER BY created_at DESC
-                      ) AS rn
-                    FROM alerts
-                  ) WHERE rn > :min_keep AND created_at < :cutoff AND is_read = 1
-                )
-                """
-            ),
-            {"min_keep": min_keep, "cutoff": cutoff_iso},
-        )
+        result = session.execute(update(AlertModel).where(AlertModel.id.in_(ids)).values(is_read=1))
         return max(result.rowcount, 0)
 
 
@@ -187,109 +142,6 @@ class SnapshotRepository:
     def list_recent(self, session, limit: int = 8) -> list[AppSnapshotModel]:
         stmt = select(AppSnapshotModel).order_by(desc(AppSnapshotModel.captured_at)).limit(limit)
         return session.execute(stmt).scalars().all()
-
-    def _snapshot_values(self, detail: AppDetail, country: str, lang: str) -> dict:
-        """All snapshot column values EXCEPT ``captured_at`` (the caller stamps that),
-        so insert and same-day upsert share one field mapping."""
-        min_installs, max_installs = parse_install_range(detail.installs)
-        return {
-            "platform": detail.platform,
-            "app_id": detail.app_id,
-            "country": country,
-            "lang": lang,
-            "title": detail.title,
-            "developer": detail.developer,
-            "category": detail.category,
-            "rating": detail.rating,
-            "ratings_count": detail.ratings_count,
-            "reviews_count": detail.reviews_count,
-            "installs": detail.installs,
-            "min_installs": detail.min_installs or min_installs,
-            "max_installs": max_installs,
-            "real_installs": detail.real_installs,
-            "price": detail.price,
-            "free": bool_to_int(detail.free),
-            "has_iap": bool_to_int(detail.has_iap),
-            "version": detail.version,
-            "updated": detail.updated,
-            "released": detail.released,
-            "android_version": detail.android_version,
-            "content_rating": detail.content_rating,
-            "description": detail.description,
-            "summary": detail.summary,
-            "changelog": detail.changelog,
-            "icon_url": detail.icon_url,
-            "screenshots_json": dump_json(detail.screenshots),
-            "contains_ads": bool_to_int(detail.contains_ads),
-            "ad_supported": bool_to_int(detail.ad_supported),
-            "daily_installs": detail.daily_installs,
-            "min_daily_installs": detail.min_daily_installs,
-            "real_daily_installs": detail.real_daily_installs,
-            "monthly_installs": detail.monthly_installs,
-            "min_monthly_installs": detail.min_monthly_installs,
-            "real_monthly_installs": detail.real_monthly_installs,
-            "app_age_days": detail.app_age_days,
-            "genre_id": detail.genre_id,
-            "developer_id": detail.developer_id,
-            "currency": detail.currency,
-            "sale": bool_to_int(detail.sale),
-            "original_price": detail.original_price,
-            "developer_email": detail.developer_email,
-            "developer_website": detail.developer_website,
-            "developer_address": detail.developer_address,
-            "developer_phone": detail.developer_phone,
-            "publisher_country": detail.publisher_country,
-            "privacy_policy": detail.privacy_policy,
-            "header_image": detail.header_image,
-            "video": detail.video,
-            "content_rating_description": detail.content_rating_description,
-            "available": bool_to_int(detail.available),
-            "max_android_api": detail.max_android_api,
-            "min_android_api": detail.min_android_api,
-            "app_bundle": detail.app_bundle,
-            "histogram_json": dump_json(detail.histogram),
-            "categories_json": dump_json(detail.categories),
-            "permissions_json": dump_json(detail.permissions),
-            "data_safety_json": dump_json(detail.data_safety),
-            "raw_json": dump_json(detail.raw),
-        }
-
-    def save_detail(self, session, detail: AppDetail, country: str, lang: str) -> None:
-        session.add(
-            AppSnapshotModel(captured_at=now_iso(), **self._snapshot_values(detail, country, lang))
-        )
-
-    def upsert_for_day(
-        self, session, detail: AppDetail, country: str, lang: str, now: str | None = None
-    ) -> bool:
-        """Keep at most one snapshot per calendar day per (app_id, country, lang): insert
-        today's row, or overwrite an existing same-day row with the latest fetch.
-
-        Returns True if a NEW row was inserted (the first sync of the day), False if an
-        existing same-day row was updated — the caller uses this to run the alert diff only
-        once per day, so repeated same-day syncs don't re-emit the same alerts.
-        """
-        stamp = now or now_iso()
-        day = stamp[:10]
-        existing = session.execute(
-            select(AppSnapshotModel)
-            .where(
-                AppSnapshotModel.app_id == detail.app_id,
-                AppSnapshotModel.country == country,
-                AppSnapshotModel.lang == lang,
-                func.substr(AppSnapshotModel.captured_at, 1, 10) == day,
-            )
-            .order_by(desc(AppSnapshotModel.captured_at))
-            .limit(1)
-        ).scalar_one_or_none()
-        values = self._snapshot_values(detail, country, lang)
-        if existing is not None:
-            for key, value in values.items():
-                setattr(existing, key, value)
-            existing.captured_at = stamp
-            return False
-        session.add(AppSnapshotModel(captured_at=stamp, **values))
-        return True
 
     def previous_distinct_day(
         self, session, app_id: str, country: str, lang: str, before_day: str | None = None
@@ -383,74 +235,8 @@ class SnapshotRepository:
         )
         return session.execute(stmt).scalars().first()
 
-    def cleanup(self, session, cutoff_iso: str, min_keep: int) -> int:
-        """Delete snapshots older than ``cutoff_iso`` beyond the most-recent
-        ``min_keep`` per (app_id, country, lang). The newest ``min_keep`` rows per
-        object are always kept regardless of age, so trends never go empty."""
-        result = session.execute(
-            text(
-                """
-                DELETE FROM app_snapshots WHERE id IN (
-                  SELECT id FROM (
-                    SELECT id, captured_at,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY app_id, country, lang ORDER BY captured_at DESC
-                      ) AS rn
-                    FROM app_snapshots
-                  ) WHERE rn > :min_keep AND captured_at < :cutoff
-                )
-                """
-            ),
-            {"min_keep": min_keep, "cutoff": cutoff_iso},
-        )
-        return max(result.rowcount, 0)
-
 
 class ReviewRepository:
-    def save_reviews(
-        self,
-        session,
-        app_id: str,
-        country: str,
-        lang: str,
-        items: list[ReviewItem],
-    ) -> int:
-        count = 0
-        for item in items:
-            existing = session.execute(
-                select(ReviewModel).where(
-                    ReviewModel.platform == item.platform,
-                    ReviewModel.app_id == app_id,
-                    ReviewModel.review_id == item.review_id,
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                continue
-            # on_conflict_do_nothing guards the race where two concurrent saves of the
-            # same review both pass the existence check and then both flush, which would
-            # otherwise raise a UNIQUE IntegrityError at commit.
-            stmt = (
-                sqlite_insert(ReviewModel)
-                .values(
-                    platform=item.platform,
-                    app_id=app_id,
-                    country=country,
-                    lang=lang,
-                    review_id=item.review_id,
-                    user_name=item.user_name,
-                    rating=item.rating,
-                    content=item.content,
-                    app_version=item.app_version,
-                    helpful_count=item.helpful_count,
-                    review_created_at=item.review_created_at,
-                    captured_at=now_iso(),
-                    raw_json=dump_json(item.raw),
-                )
-                .on_conflict_do_nothing(index_elements=["platform", "app_id", "review_id"])
-            )
-            count += max(session.execute(stmt).rowcount, 0)
-        return count
-
     def list_by_app(self, session, app_id: str, limit: int = 100) -> list[ReviewModel]:
         stmt = (
             select(ReviewModel)
@@ -471,122 +257,8 @@ class ReviewRepository:
         )
         return set(session.execute(stmt).scalars().all())
 
-    def cleanup(self, session, cutoff_iso: str, min_keep: int) -> int:
-        """Delete reviews older than ``cutoff_iso`` beyond the newest ``min_keep`` per app
-        (mirrors the snapshot/keyword retention; reviews have no read-state to protect)."""
-        result = session.execute(
-            text(
-                """
-                DELETE FROM reviews WHERE id IN (
-                  SELECT id FROM (
-                    SELECT id, captured_at,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY app_id ORDER BY captured_at DESC
-                      ) AS rn
-                    FROM reviews
-                  ) WHERE rn > :min_keep AND captured_at < :cutoff
-                )
-                """
-            ),
-            {"min_keep": min_keep, "cutoff": cutoff_iso},
-        )
-        return max(result.rowcount, 0)
-
-
-class ChartRepository:
-    def save_snapshot(
-        self,
-        session,
-        chart_type: str,
-        category: str | None,
-        country: str,
-        lang: str,
-        items: list[ChartItem],
-    ) -> int:
-        captured_at = now_iso()
-        for item in items:
-            session.add(
-                ChartSnapshotModel(
-                    platform=item.platform,
-                    chart_type=chart_type,
-                    category=category,
-                    country=country,
-                    lang=lang,
-                    captured_at=captured_at,
-                    rank=item.rank,
-                    app_id=item.app_id,
-                    title=item.title,
-                    developer=item.developer,
-                    rating=item.rating,
-                    installs=item.installs,
-                    icon_url=item.icon_url,
-                    raw_json=dump_json(item.raw),
-                )
-            )
-        return len(items)
-
 
 class KeywordRankRepository:
-    def save(self, session, result: KeywordRankResult) -> None:
-        session.add(
-            KeywordRankModel(
-                platform=result.platform,
-                keyword=result.keyword,
-                app_id=result.app_id,
-                country=result.country,
-                lang=result.lang,
-                rank=result.rank,
-                found=1 if result.found else 0,
-                checked_limit=result.checked_limit,
-                captured_at=result.captured_at,
-                raw_json=dump_json([item.model_dump(mode="json") for item in result.results]),
-            )
-        )
-
-    def upsert_for_day(self, session, result: KeywordRankResult, now: str | None = None) -> bool:
-        """Keep at most one rank row per calendar day per (platform, keyword, app_id,
-        country, lang): insert today's row or overwrite an existing same-day row. Returns
-        True when a NEW row was inserted (first sync of the day) — mirrors
-        SnapshotRepository.upsert_for_day."""
-        stamp = now or result.captured_at or now_iso()
-        day = stamp[:10]
-        existing = session.execute(
-            select(KeywordRankModel)
-            .where(
-                KeywordRankModel.platform == result.platform,
-                KeywordRankModel.keyword == result.keyword,
-                KeywordRankModel.app_id == result.app_id,
-                KeywordRankModel.country == result.country,
-                KeywordRankModel.lang == result.lang,
-                func.substr(KeywordRankModel.captured_at, 1, 10) == day,
-            )
-            .order_by(desc(KeywordRankModel.captured_at))
-            .limit(1)
-        ).scalar_one_or_none()
-        raw_json = dump_json([item.model_dump(mode="json") for item in result.results])
-        if existing is not None:
-            existing.rank = result.rank
-            existing.found = 1 if result.found else 0
-            existing.checked_limit = result.checked_limit
-            existing.raw_json = raw_json
-            existing.captured_at = stamp
-            return False
-        session.add(
-            KeywordRankModel(
-                platform=result.platform,
-                keyword=result.keyword,
-                app_id=result.app_id,
-                country=result.country,
-                lang=result.lang,
-                rank=result.rank,
-                found=1 if result.found else 0,
-                checked_limit=result.checked_limit,
-                captured_at=stamp,
-                raw_json=raw_json,
-            )
-        )
-        return True
-
     def previous_distinct_day(
         self,
         session,
@@ -725,73 +397,8 @@ class KeywordRankRepository:
         stmt = select(KeywordRankModel).order_by(desc(KeywordRankModel.captured_at)).limit(limit)
         return session.execute(stmt).scalars().all()
 
-    def cleanup(self, session, cutoff_iso: str, min_keep: int) -> int:
-        """Delete keyword-rank rows older than ``cutoff_iso`` beyond the most-recent
-        ``min_keep`` per (keyword, app_id, country, lang). The newest ``min_keep`` rows
-        per object are always kept regardless of age."""
-        result = session.execute(
-            text(
-                """
-                DELETE FROM keyword_ranks WHERE id IN (
-                  SELECT id FROM (
-                    SELECT id, captured_at,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY keyword, app_id, country, lang
-                        ORDER BY captured_at DESC
-                      ) AS rn
-                    FROM keyword_ranks
-                  ) WHERE rn > :min_keep AND captured_at < :cutoff
-                )
-                """
-            ),
-            {"min_keep": min_keep, "cutoff": cutoff_iso},
-        )
-        return max(result.rowcount, 0)
-
 
 class ChartRankRepository:
-    def upsert_for_day(self, session, result: ChartRankResult, now: str | None = None) -> bool:
-        """Keep at most one rank row per calendar day per
-        (app_id, collection, category, country, lang): insert today's row or overwrite an
-        existing same-day row. Returns True when a NEW row was inserted (first sync of the
-        day) — mirrors KeywordRankRepository.upsert_for_day."""
-        stamp = now or result.captured_at or now_iso()
-        day = stamp[:10]
-        existing = session.execute(
-            select(ChartRankSnapshotModel)
-            .where(
-                ChartRankSnapshotModel.app_id == result.app_id,
-                ChartRankSnapshotModel.collection == result.collection,
-                ChartRankSnapshotModel.category == result.category,
-                ChartRankSnapshotModel.country == result.country,
-                ChartRankSnapshotModel.lang == result.lang,
-                func.substr(ChartRankSnapshotModel.captured_at, 1, 10) == day,
-            )
-            .order_by(desc(ChartRankSnapshotModel.captured_at))
-            .limit(1)
-        ).scalar_one_or_none()
-        if existing is not None:
-            existing.rank = result.rank
-            existing.found = 1 if result.found else 0
-            existing.checked_limit = result.checked_limit
-            existing.captured_at = stamp
-            return False
-        session.add(
-            ChartRankSnapshotModel(
-                platform=result.platform,
-                app_id=result.app_id,
-                collection=result.collection,
-                category=result.category,
-                country=result.country,
-                lang=result.lang,
-                rank=result.rank,
-                found=1 if result.found else 0,
-                checked_limit=result.checked_limit,
-                captured_at=stamp,
-            )
-        )
-        return True
-
     def previous_distinct_day(
         self,
         session,
@@ -865,29 +472,6 @@ class ChartRankRepository:
         )
         return session.execute(stmt).scalars().first()
 
-    def cleanup(self, session, cutoff_iso: str, min_keep: int) -> int:
-        """Delete chart-rank rows older than ``cutoff_iso`` beyond the most-recent
-        ``min_keep`` per (app_id, collection, category, country, lang). The newest
-        ``min_keep`` rows per object are always kept regardless of age."""
-        result = session.execute(
-            text(
-                """
-                DELETE FROM chart_rank_snapshots WHERE id IN (
-                  SELECT id FROM (
-                    SELECT id, captured_at,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY app_id, collection, category, country, lang
-                        ORDER BY captured_at DESC
-                      ) AS rn
-                    FROM chart_rank_snapshots
-                  ) WHERE rn > :min_keep AND captured_at < :cutoff
-                )
-                """
-            ),
-            {"min_keep": min_keep, "cutoff": cutoff_iso},
-        )
-        return max(result.rowcount, 0)
-
 
 class TrackingRepository:
     def add_app(
@@ -916,9 +500,7 @@ class TrackingRepository:
         # UNIQUE IntegrityError at commit. ON CONFLICT DO UPDATE makes it safe and
         # keeps the existing title/created_at while re-enabling the row. ``frequency`` is
         # only set on a re-add when explicitly given, else the existing cadence is kept.
-        frequency_set = (
-            insert_stmt.excluded.frequency if frequency else TrackedAppModel.frequency
-        )
+        frequency_set = insert_stmt.excluded.frequency if frequency else TrackedAppModel.frequency
         upsert = insert_stmt.on_conflict_do_update(
             index_elements=["platform", "app_id", "country", "lang"],
             set_={
@@ -954,19 +536,6 @@ class TrackingRepository:
     def list_apps(self, session) -> list[TrackedAppModel]:
         stmt = select(TrackedAppModel).order_by(desc(TrackedAppModel.updated_at))
         return session.execute(stmt).scalars().all()
-
-    def update_sync_time(self, session, app_id: str, country: str, lang: str, value: str) -> None:
-        model = session.execute(
-            select(TrackedAppModel).where(
-                TrackedAppModel.app_id == app_id,
-                TrackedAppModel.country == country,
-                TrackedAppModel.lang == lang,
-            )
-        ).scalar_one_or_none()
-        if model is None:
-            return
-        model.last_synced_at = value
-        model.updated_at = value
 
     def set_app_enabled(
         self,
@@ -1101,22 +670,6 @@ class TrackingRepository:
         session.delete(model)
         return 1
 
-    def update_keyword_sync_time(
-        self,
-        session,
-        keyword: str,
-        app_id: str,
-        country: str,
-        lang: str,
-        value: str,
-        platform: str = "google_play",
-    ) -> None:
-        model = self._keyword_row(session, keyword, app_id, country, lang, platform)
-        if model is None:
-            return
-        model.last_synced_at = value
-        model.updated_at = value
-
     def set_keyword_enabled(
         self,
         session,
@@ -1151,112 +704,6 @@ class TrackingRepository:
         model.updated_at = now_iso()
         return model.frequency
 
-    # --- Sync failure tracking -------------------------------------------------
-    # Counters are bumped with an atomic SQL ``COALESCE(x,0)+1`` (never read-then-write)
-    # so concurrent syncs can't lose increments; legacy rows with a NULL column (added by
-    # the additive migration without a default) are coalesced to 0.
-
-    def record_app_failure(self, session, app_id: str, country: str, lang: str, when: str) -> int:
-        stmt = (
-            update(TrackedAppModel)
-            .where(
-                TrackedAppModel.app_id == app_id,
-                TrackedAppModel.country == country,
-                TrackedAppModel.lang == lang,
-            )
-            .values(
-                consecutive_failures=func.coalesce(TrackedAppModel.consecutive_failures, 0) + 1,
-                last_failed_at=when,
-                updated_at=when,
-            )
-            .returning(TrackedAppModel.consecutive_failures)
-        )
-        row = session.execute(stmt).first()
-        return row[0] if row else 1  # untracked app (no row) — treat as first failure
-
-    def record_app_success(self, session, app_id: str, country: str, lang: str) -> int:
-        """Reset the app's failure counter, returning the PRIOR count so the caller can
-        tell whether it was escalated (and thus owes a recovery alert)."""
-        prior = session.execute(
-            select(func.coalesce(TrackedAppModel.consecutive_failures, 0)).where(
-                TrackedAppModel.app_id == app_id,
-                TrackedAppModel.country == country,
-                TrackedAppModel.lang == lang,
-            )
-        ).scalar()
-        if prior:
-            session.execute(
-                update(TrackedAppModel)
-                .where(
-                    TrackedAppModel.app_id == app_id,
-                    TrackedAppModel.country == country,
-                    TrackedAppModel.lang == lang,
-                )
-                .values(consecutive_failures=0)
-            )
-        return prior or 0
-
-    def record_keyword_failure(
-        self,
-        session,
-        keyword: str,
-        app_id: str,
-        country: str,
-        lang: str,
-        when: str,
-        platform: str = "google_play",
-    ) -> int:
-        stmt = (
-            update(TrackedKeywordModel)
-            .where(
-                TrackedKeywordModel.platform == platform,
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-            .values(
-                consecutive_failures=func.coalesce(TrackedKeywordModel.consecutive_failures, 0) + 1,
-                last_failed_at=when,
-                updated_at=when,
-            )
-            .returning(TrackedKeywordModel.consecutive_failures)
-        )
-        row = session.execute(stmt).first()
-        return row[0] if row else 1
-
-    def record_keyword_success(
-        self,
-        session,
-        keyword: str,
-        app_id: str,
-        country: str,
-        lang: str,
-        platform: str = "google_play",
-    ) -> int:
-        prior = session.execute(
-            select(func.coalesce(TrackedKeywordModel.consecutive_failures, 0)).where(
-                TrackedKeywordModel.platform == platform,
-                TrackedKeywordModel.keyword == keyword,
-                TrackedKeywordModel.app_id == app_id,
-                TrackedKeywordModel.country == country,
-                TrackedKeywordModel.lang == lang,
-            )
-        ).scalar()
-        if prior:
-            session.execute(
-                update(TrackedKeywordModel)
-                .where(
-                    TrackedKeywordModel.platform == platform,
-                    TrackedKeywordModel.keyword == keyword,
-                    TrackedKeywordModel.app_id == app_id,
-                    TrackedKeywordModel.country == country,
-                    TrackedKeywordModel.lang == lang,
-                )
-                .values(consecutive_failures=0)
-            )
-        return prior or 0
-
     # --- Chart-app monitors (mirror keyword monitors) --------------------------
 
     def add_chart_app(
@@ -1286,9 +733,7 @@ class TrackingRepository:
             insert_stmt.excluded.frequency if frequency else TrackedChartAppModel.frequency
         )
         upsert = insert_stmt.on_conflict_do_update(
-            index_elements=[
-                "platform", "app_id", "collection", "category", "country", "lang"
-            ],
+            index_elements=["platform", "app_id", "collection", "category", "country", "lang"],
             set_={"enabled": 1, "frequency": frequency_set, "updated_at": now},
         )
         session.execute(upsert)
@@ -1330,30 +775,6 @@ class TrackingRepository:
         session.delete(model)
         return 1
 
-    def update_chart_sync_time(
-        self,
-        session,
-        app_id: str,
-        collection: str,
-        category: str | None,
-        country: str,
-        lang: str,
-        value: str,
-    ) -> None:
-        model = session.execute(
-            select(TrackedChartAppModel).where(
-                TrackedChartAppModel.app_id == app_id,
-                TrackedChartAppModel.collection == collection,
-                TrackedChartAppModel.category == category,
-                TrackedChartAppModel.country == country,
-                TrackedChartAppModel.lang == lang,
-            )
-        ).scalar_one_or_none()
-        if model is None:
-            return
-        model.last_synced_at = value
-        model.updated_at = value
-
     def set_chart_app_enabled(
         self,
         session,
@@ -1379,135 +800,9 @@ class TrackingRepository:
         model.updated_at = now_iso()
         return bool(model.enabled)
 
-    def record_chart_failure(
-        self,
-        session,
-        app_id: str,
-        collection: str,
-        category: str | None,
-        country: str,
-        lang: str,
-        when: str,
-    ) -> int:
-        stmt = (
-            update(TrackedChartAppModel)
-            .where(
-                TrackedChartAppModel.app_id == app_id,
-                TrackedChartAppModel.collection == collection,
-                TrackedChartAppModel.category == category,
-                TrackedChartAppModel.country == country,
-                TrackedChartAppModel.lang == lang,
-            )
-            .values(
-                consecutive_failures=func.coalesce(
-                    TrackedChartAppModel.consecutive_failures, 0
-                )
-                + 1,
-                last_failed_at=when,
-                updated_at=when,
-            )
-            .returning(TrackedChartAppModel.consecutive_failures)
-        )
-        row = session.execute(stmt).first()
-        return row[0] if row else 1
-
-    def record_chart_success(
-        self,
-        session,
-        app_id: str,
-        collection: str,
-        category: str | None,
-        country: str,
-        lang: str,
-    ) -> int:
-        prior = session.execute(
-            select(func.coalesce(TrackedChartAppModel.consecutive_failures, 0)).where(
-                TrackedChartAppModel.app_id == app_id,
-                TrackedChartAppModel.collection == collection,
-                TrackedChartAppModel.category == category,
-                TrackedChartAppModel.country == country,
-                TrackedChartAppModel.lang == lang,
-            )
-        ).scalar()
-        if prior:
-            session.execute(
-                update(TrackedChartAppModel)
-                .where(
-                    TrackedChartAppModel.app_id == app_id,
-                    TrackedChartAppModel.collection == collection,
-                    TrackedChartAppModel.category == category,
-                    TrackedChartAppModel.country == country,
-                    TrackedChartAppModel.lang == lang,
-                )
-                .values(consecutive_failures=0)
-            )
-        return prior or 0
-
 
 class KeywordCorpusRepository:
     """Stateless access to the self-accumulating keyword pool (keyword_corpus)."""
-
-    def upsert_many(
-        self,
-        session,
-        platform: str,
-        country: str,
-        lang: str,
-        items: list[tuple[str, str, bool]],
-    ) -> int:
-        """``items`` are (keyword, source, confirmed). Inserts keywords new to this
-        locale and, for ones already present, bumps hit_count / last_seen_at and
-        upgrades confirmed. Returns how many NEW keywords were added."""
-        # collapse the batch: dedupe by keyword, keep the strongest confirmed flag
-        batch: dict[str, tuple[str, bool]] = {}
-        for keyword, source, confirmed in items:
-            kw = (keyword or "").strip()
-            if not kw:
-                continue
-            prev = batch.get(kw)
-            batch[kw] = (
-                prev[0] if prev else source,
-                bool(confirmed) or (prev[1] if prev else False),
-            )
-        if not batch:
-            return 0
-
-        now = now_iso()
-        existing = {
-            row.keyword: row
-            for row in session.execute(
-                select(KeywordCorpusModel).where(
-                    KeywordCorpusModel.platform == platform,
-                    KeywordCorpusModel.country == country,
-                    KeywordCorpusModel.lang == lang,
-                    KeywordCorpusModel.keyword.in_(list(batch.keys())),
-                )
-            ).scalars()
-        }
-        added = 0
-        for kw, (source, confirmed) in batch.items():
-            row = existing.get(kw)
-            if row is None:
-                session.add(
-                    KeywordCorpusModel(
-                        platform=platform,
-                        country=country,
-                        lang=lang,
-                        keyword=kw,
-                        source=source,
-                        confirmed=1 if confirmed else 0,
-                        hit_count=1,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                    )
-                )
-                added += 1
-            else:
-                row.hit_count = (row.hit_count or 0) + 1
-                row.last_seen_at = now
-                if confirmed and not row.confirmed:
-                    row.confirmed = 1
-        return added
 
     def fetch(
         self,

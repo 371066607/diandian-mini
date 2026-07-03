@@ -2,29 +2,11 @@ import pytest
 
 from app.db.database import Database
 from app.schemas.app_schema import AppDetail, AppSummary
-from app.schemas.keyword_schema import KeywordRankResult
 from app.services.alert_service import AlertService
+from app.services.google_play_service import ServiceError
 from app.services.keyword_service import KeywordService
 from app.services.settings_service import SettingsService
 from app.services.tracking_service import TrackingService
-
-_KW_YESTERDAY = "2020-01-01T08:00:00"
-
-
-def _seed_yesterday_rank(ts, keyword, app_id, rank):
-    """Write a prior-day keyword rank so today's sync has a real day-over-day baseline
-    (keyword_ranks is now one-row-per-day, so two same-day syncs no longer model a change)."""
-    with ts.database.session() as session:
-        ts.tracking_repository.add_keyword(session, keyword, app_id, "us", "en")
-        ts.keyword_service.repository.upsert_for_day(
-            session,
-            KeywordRankResult(
-                keyword=keyword, app_id=app_id, country="us", lang="en",
-                found=rank is not None, rank=rank, checked_limit=100,
-                captured_at=_KW_YESTERDAY, results=[],
-            ),
-            now=_KW_YESTERDAY,
-        )
 
 
 class SearchOnlyGooglePlayService:
@@ -33,11 +15,6 @@ class SearchOnlyGooglePlayService:
             AppSummary(app_id="com.telegram", title="Telegram"),
             AppSummary(app_id="com.whatsapp", title="WhatsApp"),
         ]
-
-
-class FailingGooglePlayService:
-    def app_detail(self, app_id, country="us", lang="en"):
-        raise RuntimeError("store unavailable")
 
 
 class DetailGooglePlayService:
@@ -53,7 +30,10 @@ class DetailGooglePlayService:
         )
 
 
-def test_sync_keyword_now_persists_history_and_sync_time(tmp_path):
+def test_sync_keyword_now_raises_retired_error(tmp_path):
+    # The live-network keyword sync path was retired; sync_keyword_now is now an
+    # unconditional raising stub. This guards against an accidental regression back
+    # to silent success.
     database = Database(str(tmp_path / "tracking.sqlite3"))
     database.create_all()
     keyword_service = KeywordService(SearchOnlyGooglePlayService(), database=database)
@@ -67,183 +47,59 @@ def test_sync_keyword_now_persists_history_and_sync_time(tmp_path):
     )
 
     tracking_service.add_keyword("messenger", "com.whatsapp", "us", "en")
-    result = tracking_service.sync_keyword_now("messenger", "com.whatsapp", "us", "en")
-    tracked_keywords = tracking_service.list_keywords()
-    history = keyword_service.history("messenger", "com.whatsapp", "us", "en")
-
-    assert result.rank == 2
-    assert tracked_keywords[0].last_synced_at is not None
-    assert len(history) == 1
-    assert history[0].rank == 2
+    with pytest.raises(ServiceError):
+        tracking_service.sync_keyword_now("messenger", "com.whatsapp", "us", "en")
 
 
-def test_sync_app_now_records_fetch_failure_alert(tmp_path):
+def test_sync_app_now_raises_retired_error(tmp_path):
+    # The live-network app sync path was retired; sync_app_now is now an unconditional
+    # raising stub, regardless of what the underlying google_play_service would do.
     database = Database(str(tmp_path / "tracking-failure.sqlite3"))
     database.create_all()
     alert_service = AlertService(database)
     tracking_service = TrackingService(
         database=database,
-        google_play_service=FailingGooglePlayService(),
+        google_play_service=DetailGooglePlayService(),
         alert_service=alert_service,
     )
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ServiceError):
         tracking_service.sync_app_now("com.whatsapp", "us", "en")
-
-    alerts = alert_service.recent_alerts(limit=5)
-    assert len(alerts) == 1
-    assert alerts[0].type == "fetch_failed"
-    assert "store unavailable" in alerts[0].message
-
-
-class FailingKeywordService:
-    def rank(self, keyword, app_id, country="us", lang="en", limit=100):
-        raise RuntimeError("search blocked")
-
-
-def test_sync_keyword_now_records_fetch_failure_alert(tmp_path):
-    database = Database(str(tmp_path / "kw-failure.sqlite3"))
-    database.create_all()
-    alert_service = AlertService(database)
-    tracking_service = TrackingService(
-        database=database,
-        google_play_service=DetailGooglePlayService(),
-        keyword_service=FailingKeywordService(),
-        alert_service=alert_service,
-    )
-
-    with pytest.raises(RuntimeError):
-        tracking_service.sync_keyword_now("messenger", "com.whatsapp", "us", "en")
-
-    alerts = alert_service.recent_alerts(limit=5)
-    assert len(alerts) == 1
-    assert alerts[0].type == "fetch_failed"
-    assert "search blocked" in alerts[0].message
-    assert "messenger" in alerts[0].message
-
-
-class ScriptedSearchService:
-    """search() returns a 20-app list with the target placed at a scripted 1-based
-    position on each successive call (None = absent / not ranked)."""
-
-    TARGET = "com.whatsapp"
-
-    def __init__(self, positions):
-        self._positions = list(positions)
-        self._call = 0
-
-    def search(self, keyword, country="us", lang="en", limit=50):
-        pos = self._positions[self._call]
-        self._call += 1
-        items = []
-        for i in range(1, 21):
-            if pos is not None and i == pos:
-                items.append(AppSummary(app_id=self.TARGET, title="WhatsApp"))
-            else:
-                items.append(AppSummary(app_id=f"com.filler{i}", title=f"F{i}"))
-        return items
-
-
-def _build_keyword_tracking(tmp_path, name, positions, settings_overrides=None):
-    database = Database(str(tmp_path / f"{name}.sqlite3"))
-    database.create_all()
-    settings_service = SettingsService(database)
-    settings_service.ensure_defaults()
-    if settings_overrides:
-        settings_service.set_many(settings_overrides)
-    alert_service = AlertService(database, settings_service=settings_service)
-    keyword_service = KeywordService(ScriptedSearchService(positions), database=database)
-    tracking_service = TrackingService(
-        database=database,
-        google_play_service=DetailGooglePlayService(),
-        keyword_service=keyword_service,
-        alert_service=alert_service,
-        settings_service=settings_service,
-    )
-    return tracking_service, alert_service
-
-
-def test_keyword_rank_alerts_cover_key_transitions(tmp_path):
-    # (name, yesterday_pos, today_pos, expected alert type)
-    cases = [
-        ("rise_in_band", 8, 3, "keyword_rank_up"),  # delta 5 within top band
-        ("fall_in_band", 3, 9, "keyword_rank_down"),  # delta 6 within top band
-        ("into_top", 14, 6, "keyword_top_entered"),
-        ("out_of_top", 5, 18, "keyword_top_dropped"),
-        ("entered", None, 7, "keyword_entered"),
-        ("dropped", 4, None, "keyword_dropped"),
-    ]
-    for name, baseline, today, expected_type in cases:
-        ts, alerts = _build_keyword_tracking(tmp_path, name, [today])  # one sync today
-        _seed_yesterday_rank(ts, "messenger", "com.whatsapp", baseline)
-        ts.sync_keyword_now("messenger", "com.whatsapp", "us", "en")  # today vs yesterday
-        recent = alerts.recent_alerts(limit=5)
-        assert len(recent) == 1, f"{name}: expected exactly one alert, got {len(recent)}"
-        assert recent[0].type == expected_type, f"{name}: got {recent[0].type}"
-        assert recent[0].app_id == "com.whatsapp"
-        assert "messenger" in recent[0].message
-
-
-def test_keyword_rank_small_move_does_not_alert(tmp_path):
-    # A 2-position move inside the band is below threshold — no noise.
-    ts, alerts = _build_keyword_tracking(tmp_path, "small_move", [6])
-    _seed_yesterday_rank(ts, "messenger", "com.whatsapp", 4)
-    ts.sync_keyword_now("messenger", "com.whatsapp", "us", "en")
-    assert alerts.unread_count() == 0
-
-
-def test_keyword_same_day_resync_does_not_realert(tmp_path):
-    # First today-sync alerts (vs yesterday); a second same-day sync must NOT re-alert.
-    ts, alerts = _build_keyword_tracking(tmp_path, "kw_sameday", [3, 3])
-    _seed_yesterday_rank(ts, "messenger", "com.whatsapp", 8)
-    ts.sync_keyword_now("messenger", "com.whatsapp", "us", "en")  # 8 -> 3 rise
-    assert alerts.unread_count() == 1
-    ts.sync_keyword_now("messenger", "com.whatsapp", "us", "en")  # same day, no new alert
-    assert alerts.unread_count() == 1
-    # yesterday's seed + ONE today row (two same-day syncs collapsed into one)
-    assert len(ts.keyword_service.history("messenger", "com.whatsapp", "us", "en")) == 2
-
-
-def test_keyword_move_threshold_is_configurable(tmp_path):
-    # A 5-position move normally alerts; raising the threshold to 8 silences it.
-    ts, alerts = _build_keyword_tracking(
-        tmp_path, "kw_threshold", [8], settings_overrides={"alert_keyword_move": "8"}
-    )
-    _seed_yesterday_rank(ts, "messenger", "com.whatsapp", 3)
-    ts.sync_keyword_now("messenger", "com.whatsapp", "us", "en")
-    assert alerts.unread_count() == 0
-
-
-def test_rating_drop_threshold_is_configurable(tmp_path):
-    # A 0.3 drop clears the default 0.2 gate but not a configured 0.5 gate.
-    from app.db.repositories import SnapshotRepository
-
-    database = Database(str(tmp_path / "rating_threshold.sqlite3"))
-    database.create_all()
-    settings_service = SettingsService(database)
-    settings_service.ensure_defaults()
-    settings_service.set_many({"alert_rating_drop": "0.5"})
-    alert_service = AlertService(database, settings_service=settings_service)
-    repo = SnapshotRepository()
-
-    previous = AppDetail(app_id="com.x", title="X", rating=4.5)
-    current = AppDetail(app_id="com.x", title="X", rating=4.2)  # 0.3 drop
-    with database.session() as session:
-        repo.save_detail(session, previous, "us", "en")
-        prev_snapshot = repo.latest(session, "com.x", "us", "en")
-        created = alert_service.create_snapshot_alerts(session, prev_snapshot, current)
-    assert created == []
-    assert alert_service.unread_count() == 0
 
 
 def test_recent_alerts_filters_by_severity(tmp_path):
+    from app.db.models import AlertModel
+    from app.utils.time_utils import now_iso
+
     database = Database(str(tmp_path / "severity.sqlite3"))
     database.create_all()
     alert_service = AlertService(database)
     with database.session() as session:
-        alert_service.repository.create(session, "rating_drop", "high", "高1", app_id="com.a")
-        alert_service.repository.create(session, "ratings_growth", "medium", "中1", app_id="com.b")
-        alert_service.repository.create(session, "keyword_dropped", "high", "高2", app_id="com.c")
+        session.add_all(
+            [
+                AlertModel(
+                    type="rating_drop",
+                    severity="high",
+                    message="高1",
+                    app_id="com.a",
+                    created_at=now_iso(),
+                ),
+                AlertModel(
+                    type="ratings_growth",
+                    severity="medium",
+                    message="中1",
+                    app_id="com.b",
+                    created_at=now_iso(),
+                ),
+                AlertModel(
+                    type="keyword_dropped",
+                    severity="high",
+                    message="高2",
+                    app_id="com.c",
+                    created_at=now_iso(),
+                ),
+            ]
+        )
 
     assert len(alert_service.recent_alerts(limit=10)) == 3
     high = alert_service.recent_alerts(limit=10, severity="high")
@@ -257,9 +113,10 @@ class _DetailService:
         return AppDetail(app_id=app_id, title="T" + app_id, rating=4.4, reviews_count=10)
 
 
-def test_sync_all_apps_runs_in_parallel_without_lock_errors(tmp_path):
-    from app.db.repositories import SnapshotRepository
-
+def test_sync_all_apps_skips_every_item_since_sync_is_retired(tmp_path):
+    # sync_app_now is now an unconditional raising stub, so sync_all_apps must
+    # catch-and-skip every item and settle on a count of 0 (each failure logged,
+    # none propagated) instead of crashing the whole batch.
     database = Database(str(tmp_path / "sync-all.sqlite3"))
     database.create_all()
     tracking_service = TrackingService(
@@ -270,9 +127,7 @@ def test_sync_all_apps_runs_in_parallel_without_lock_errors(tmp_path):
     for app_id in ("com.a", "com.b", "com.c", "com.d", "com.e"):
         tracking_service.add_app(app_id, "us", "en")
 
-    assert tracking_service.sync_all_apps() == 5
-    with database.session() as session:
-        assert SnapshotRepository().count(session) == 5
+    assert tracking_service.sync_all_apps() == 0
 
 
 def test_is_sync_due_honors_cadence():
@@ -309,7 +164,9 @@ def test_is_sync_due_honors_cadence():
     )
 
 
-def test_due_only_sync_respects_frequency(tmp_path):
+def test_due_only_sync_returns_zero_since_sync_is_retired(tmp_path):
+    # Even when an app is due, sync_app_now always raises now, so both a due-only
+    # pass and a forced pass settle on 0 — cadence no longer matters, nothing syncs.
     database = Database(str(tmp_path / "due-only.sqlite3"))
     database.create_all()
     tracking_service = TrackingService(
@@ -319,11 +176,8 @@ def test_due_only_sync_respects_frequency(tmp_path):
     )
     tracking_service.add_app("com.daily", "us", "en", frequency="daily")
 
-    # Never synced -> due -> syncs once; immediately after it is no longer due.
-    assert tracking_service.sync_all_apps(due_only=True) == 1
     assert tracking_service.sync_all_apps(due_only=True) == 0
-    # A forced (manual "同步全部") run ignores cadence and syncs regardless.
-    assert tracking_service.sync_all_apps(due_only=False) == 1
+    assert tracking_service.sync_all_apps(due_only=False) == 0
 
 
 def test_manual_frequency_never_auto_syncs(tmp_path):
@@ -336,10 +190,11 @@ def test_manual_frequency_never_auto_syncs(tmp_path):
     )
     tracking_service.add_app("com.manual", "us", "en", frequency="manual")
 
-    # Manual items are skipped by the scheduler even on their very first (never-synced) run.
+    # Manual items are still skipped by the due-only scheduler regardless of retirement.
     assert tracking_service.sync_all_apps(due_only=True) == 0
-    # But a manual force-sync still works.
-    assert tracking_service.sync_all_apps(due_only=False) == 1
+    # A forced (manual "同步全部") run is attempted, but sync_app_now now always
+    # raises, so it settles on 0 too instead of actually syncing.
+    assert tracking_service.sync_all_apps(due_only=False) == 0
 
 
 def _bulk_tracking_service(tmp_path, name="bulk.sqlite3"):

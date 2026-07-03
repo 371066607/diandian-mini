@@ -6,6 +6,14 @@ running ``__main__``). So anything that must reach existing users through a code
 notably ADDING A NEW SERVICE to the registry — has to live here, under ``app/``. ``main.py``
 is just a thin launcher that imports and calls ``build_services``. Add new services here and
 thread them through, same as before.
+
+``build_services`` is a small dispatcher: it always builds the API-mode services via
+``build_api_services``, and only additionally builds the local-scraping service stack via
+``build_legacy_services`` when the StoreIntel API client is disabled (explicit legacy/offline
+mode). This keeps API-mode startup from constructing scrapers, keyword/chart/tracking
+services, etc. that API mode never calls. New services should go into whichever of the two
+builders matches where they're actually used; only add to ``build_services`` itself if the
+service genuinely depends on the mode decision (like ``scheduler`` does).
 """
 
 from __future__ import annotations
@@ -16,7 +24,6 @@ import uuid
 
 from app.constants import (
     AUTH_DEVICE_ID_SETTING,
-    DEFAULT_SETTINGS,
     DEFAULT_STOREINTEL_API_URL,
     DEV_STOREINTEL_API_URL,
 )
@@ -81,14 +88,41 @@ def _store_intel_device_id(settings_service: SettingsService) -> str:
     return device_id
 
 
-def build_services(database: Database) -> dict[str, object]:
+def build_api_services(database: Database) -> dict[str, object]:
+    """Build the services API mode (qml_bridge.py/controllers) actually calls.
+
+    Always constructed, regardless of mode: ``store_intel_api_client`` is how the mode
+    decision itself gets made (its ``.enabled`` flag), and the rest are cheap, mode-agnostic
+    services that both API and legacy mode rely on.
+    """
     settings_service = SettingsService(database)
     store_intel_api_url = _store_intel_api_url()
-    settings = (
-        settings_service.get_all() if store_intel_api_url is None else DEFAULT_SETTINGS.copy()
-    )
-    if store_intel_api_url is None:
-        apply_proxy_env(settings.get("proxy"))
+    monetization_service = MonetizationService()
+    update_service = UpdateService()
+    device_id = _store_intel_device_id(settings_service) if store_intel_api_url else None
+    store_intel_api_client = StoreIntelApiClient(store_intel_api_url, device_id=device_id)
+    return {
+        "settings_service": settings_service,
+        "store_intel_api_client": store_intel_api_client,
+        "monetization_service": monetization_service,
+        "update_service": update_service,
+    }
+
+
+def build_legacy_services(database: Database, shared: dict) -> dict[str, object]:
+    """Build the local-scraping service stack used only by explicit legacy/offline mode.
+
+    ``shared`` is the dict returned by ``build_api_services``; some of these constructors
+    need e.g. ``settings_service`` from it. Only called when
+    ``store_intel_api_client.enabled`` is False, since API mode never reaches these services
+    (every call site in qml_bridge.py/controllers is gated behind
+    ``if api is not None: return ... else: <uses these services>``, and the legacy
+    ``--widgets`` UI that calls them unconditionally is refused from starting when API mode
+    is enabled).
+    """
+    settings_service = shared["settings_service"]
+    settings = settings_service.get_all()
+    apply_proxy_env(settings.get("proxy"))
     google_play_service = GooglePlayService(
         request_delay_seconds=safe_float(settings.get("request_delay_seconds"), 1.0)
     )
@@ -103,7 +137,6 @@ def build_services(database: Database) -> dict[str, object]:
         app_store_service=app_store_service,
         keyword_corpus_service=keyword_corpus_service,
     )
-    monetization_service = MonetizationService()
     alert_service = AlertService(database, settings_service=settings_service)
     review_service = ReviewService(database=database, google_play_service=google_play_service)
     chart_rank_service = ChartRankService(google_play_service, database=database)
@@ -123,26 +156,8 @@ def build_services(database: Database) -> dict[str, object]:
         app_store_service=app_store_service,
     )
     history_retention_service = HistoryRetentionService(database, settings_service=settings_service)
-    update_service = UpdateService()
     export_service = ExportService(database)
-    device_id = _store_intel_device_id(settings_service) if store_intel_api_url else None
-    store_intel_api_client = StoreIntelApiClient(store_intel_api_url, device_id=device_id)
-    # API mode is the default desktop shape: the Go backend owns scheduled sync,
-    # refresh workers, persistence, and scraping. Local scheduling is kept only
-    # for explicit legacy/offline mode.
-    if store_intel_api_client.enabled:
-        scheduler = RemoteSchedulerProxy()
-    else:
-        # The scheduler invokes ``sync_tracked_job(tracking_service)`` (its ``args`` are
-        # fixed and scheduler.py is not edited here), so the daily cleanup is reached by
-        # attaching the retention service to tracking_service; sync_tracked_job picks it up
-        # via getattr.
-        tracking_service.retention_service = history_retention_service
-        scheduler = AppScheduler(
-            settings_service=settings_service, tracking_service=tracking_service
-        )
     return {
-        "settings_service": settings_service,
         "google_play_service": google_play_service,
         "app_store_service": app_store_service,
         "keyword_service": keyword_service,
@@ -150,14 +165,38 @@ def build_services(database: Database) -> dict[str, object]:
         "keyword_coverage_service": keyword_coverage_service,
         "keyword_corpus_service": keyword_corpus_service,
         "chart_rank_service": chart_rank_service,
-        "monetization_service": monetization_service,
         "tracking_service": tracking_service,
         "review_service": review_service,
         "chart_service": chart_service,
         "alert_service": alert_service,
         "history_retention_service": history_retention_service,
-        "scheduler": scheduler,
-        "update_service": update_service,
         "export_service": export_service,
-        "store_intel_api_client": store_intel_api_client,
     }
+
+
+def build_services(database: Database) -> dict[str, object]:
+    """Mode dispatcher: always builds API-mode services, and additionally builds the
+    local-scraping stack only when running in legacy/offline mode.
+
+    API mode is the default desktop shape: the Go backend owns scheduled sync, refresh
+    workers, persistence, and scraping, so ``services`` in API mode intentionally lacks keys
+    like ``google_play_service``/``tracking_service``/etc. Local scheduling and the local
+    service stack are kept only for explicit legacy/offline mode.
+    """
+    services = build_api_services(database)
+    if not services["store_intel_api_client"].enabled:
+        services.update(build_legacy_services(database, services))
+    if services["store_intel_api_client"].enabled:
+        scheduler = RemoteSchedulerProxy()
+    else:
+        # The scheduler invokes ``sync_tracked_job(tracking_service)`` (its ``args`` are
+        # fixed and scheduler.py is not edited here), so the daily cleanup is reached by
+        # attaching the retention service to tracking_service; sync_tracked_job picks it up
+        # via getattr.
+        services["tracking_service"].retention_service = services["history_retention_service"]
+        scheduler = AppScheduler(
+            settings_service=services["settings_service"],
+            tracking_service=services["tracking_service"],
+        )
+    services["scheduler"] = scheduler
+    return services

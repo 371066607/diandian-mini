@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QApplication
 import app.ui.pages.base_page as base_page
 from app.db.database import Database
 from app.db.migrations import migrate
-from app.db.repositories import AlertRepository
+from app.db.models import AlertModel
 from app.schemas.app_schema import AppDetail
 from app.services.alert_service import AlertService
 from app.services.export_service import ExportService
@@ -29,9 +29,11 @@ from app.services.monetization_service import MonetizationService
 from app.services.review_service import ReviewService
 from app.services.settings_service import SettingsService
 from app.ui.pages.tracking_page import TrackingPage
+from app.utils.time_utils import now_iso
 
 
 # ---- A) _next_sync_label pure logic -------------------------------------------------
+
 
 def test_next_sync_label_manual():
     assert TrackingPage._next_sync_label(None, "manual") == "手动"
@@ -59,6 +61,7 @@ def test_next_sync_label_stale_daily_is_due():
 
 
 # ---- B) AppDetailPage 最近告警 section ----------------------------------------------
+
 
 class _FakeGooglePlayService:
     def app_detail(self, app_id, country="us", lang="en"):
@@ -108,20 +111,40 @@ def test_detail_page_alerts_section_populates(tmp_path, monkeypatch):
     db = Database(str(tmp_path / "alerts.sqlite3"))
     migrate(db)
 
-    repo = AlertRepository()
     with db.session() as session:
-        repo.create(
-            session, "rating_drop", "high", "评分由 4.5 降至 4.1",
-            app_id="com.whatsapp", title="WhatsApp",
+        session.add(
+            AlertModel(
+                type="rating_drop",
+                severity="high",
+                app_id="com.whatsapp",
+                title="WhatsApp",
+                message="评分由 4.5 降至 4.1",
+                is_read=0,
+                created_at=now_iso(),
+            )
         )
-        repo.create(
-            session, "version_changed", "low", "版本由 2.23 升至 2.24",
-            app_id="com.whatsapp", title="WhatsApp",
+        session.add(
+            AlertModel(
+                type="version_changed",
+                severity="low",
+                app_id="com.whatsapp",
+                title="WhatsApp",
+                message="版本由 2.23 升至 2.24",
+                is_read=0,
+                created_at=now_iso(),
+            )
         )
         # An alert for a different app must NOT appear in this app's section.
-        repo.create(
-            session, "reviews_growth", "medium", "评论数增长",
-            app_id="com.other", title="Other",
+        session.add(
+            AlertModel(
+                type="reviews_growth",
+                severity="medium",
+                app_id="com.other",
+                title="Other",
+                message="评论数增长",
+                is_read=0,
+                created_at=now_iso(),
+            )
         )
 
     from app.ui.pages.app_detail_page import AppDetailPage
@@ -138,9 +161,7 @@ def test_detail_page_alerts_section_populates(tmp_path, monkeypatch):
     _wait_idle(app)
 
     assert page.alerts_table.rowCount() == 2  # only this app's alerts
-    types = {
-        page.alerts_table.item(r, 2).text() for r in range(page.alerts_table.rowCount())
-    }
+    types = {page.alerts_table.item(r, 2).text() for r in range(page.alerts_table.rowCount())}
     assert "评分下降" in types  # Chinese type label, not raw "rating_drop"
     assert "版本变化" in types
 
@@ -148,11 +169,17 @@ def test_detail_page_alerts_section_populates(tmp_path, monkeypatch):
 def test_detail_page_alerts_section_core_filters_and_localizes(tmp_path):
     db = Database(str(tmp_path / "alerts2.sqlite3"))
     migrate(db)
-    repo = AlertRepository()
     with db.session() as session:
-        repo.create(
-            session, "rating_drop", "high", "评分下降啦",
-            app_id="com.whatsapp", title="WhatsApp",
+        session.add(
+            AlertModel(
+                type="rating_drop",
+                severity="high",
+                app_id="com.whatsapp",
+                title="WhatsApp",
+                message="评分下降啦",
+                is_read=0,
+                created_at=now_iso(),
+            )
         )
 
     services = _detail_services(db)

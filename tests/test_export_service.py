@@ -1,9 +1,10 @@
 import csv
 
 from app.db.database import Database
-from app.db.repositories import AlertRepository, SnapshotRepository
-from app.schemas.app_schema import AppDetail
+from app.db.models import AlertModel, AppSnapshotModel
 from app.services.export_service import ExportService
+from app.utils.normalize import bool_to_int, dump_json
+from app.utils.time_utils import now_iso
 
 
 def _make_db(tmp_path):
@@ -13,12 +14,16 @@ def _make_db(tmp_path):
 
 
 def _seed_snapshots(database):
-    repo = SnapshotRepository()
+    # SnapshotRepository.save_detail was removed with the live-scrape write path;
+    # construct the ORM rows directly (same fields it used to populate) instead.
     with database.session() as session:
-        repo.save_detail(
-            session,
-            AppDetail(
+        session.add(
+            AppSnapshotModel(
+                platform="google_play",
                 app_id="com.wechat",
+                country="cn",
+                lang="zh",
+                captured_at="2026-01-01T00:00:00",
                 title="微信",
                 rating=4.5,
                 ratings_count=1000,
@@ -28,23 +33,24 @@ def _seed_snapshots(database):
                 version="8.0.0",
                 price="免费",
                 currency="USD",
-                contains_ads=False,
+                contains_ads=bool_to_int(False),
                 content_rating="3+",
                 updated="2026-01-01",
                 released="2011-01-21",
                 description="x" * 5000,
                 summary="some summary",
                 changelog="some changelog",
-                screenshots=["http://a/1.png", "http://a/2.png"],
-                raw={"big": "y" * 5000},
-            ),
-            country="cn",
-            lang="zh",
+                screenshots_json=dump_json(["http://a/1.png", "http://a/2.png"]),
+                raw_json=dump_json({"big": "y" * 5000}),
+            )
         )
-        repo.save_detail(
-            session,
-            AppDetail(
+        session.add(
+            AppSnapshotModel(
+                platform="google_play",
                 app_id="com.wechat",
+                country="cn",
+                lang="zh",
+                captured_at="2026-02-01T00:00:00",
                 title="微信",
                 rating=4.6,
                 ratings_count=1100,
@@ -54,13 +60,11 @@ def _seed_snapshots(database):
                 version="8.0.1",
                 price="免费",
                 currency="USD",
-                contains_ads=True,
+                contains_ads=bool_to_int(True),
                 content_rating="3+",
                 updated="2026-02-01",
                 released="2011-01-21",
-            ),
-            country="cn",
-            lang="zh",
+            )
         )
 
 
@@ -123,14 +127,17 @@ def test_export_app_snapshots_empty_returns_zero_header_only(tmp_path):
 
 def test_export_app_snapshots_none_fields_become_empty(tmp_path):
     database = _make_db(tmp_path)
-    repo = SnapshotRepository()
     with database.session() as session:
         # Only app_id/title set; rating/version/etc. left as None.
-        repo.save_detail(
-            session,
-            AppDetail(app_id="com.sparse", title="稀疏应用"),
-            country="us",
-            lang="en",
+        session.add(
+            AppSnapshotModel(
+                platform="google_play",
+                app_id="com.sparse",
+                country="us",
+                lang="en",
+                captured_at=now_iso(),
+                title="稀疏应用",
+            )
         )
     service = ExportService(database)
     dest = tmp_path / "sparse.csv"
@@ -147,31 +154,41 @@ def test_export_app_snapshots_none_fields_become_empty(tmp_path):
 
 def test_export_app_alerts_filters_by_app_and_chinese_labels(tmp_path):
     database = _make_db(tmp_path)
-    repo = AlertRepository()
+    # AlertRepository.create was removed with the live-scrape write path (alerts are no
+    # longer generated from fresh scrapes); construct the ORM rows directly instead.
     with database.session() as session:
-        repo.create(
-            session,
-            "rating_drop",
-            "high",
-            "评分从 4.6 降到 4.5",
-            app_id="com.wechat",
-            title="评分下降",
+        session.add(
+            AlertModel(
+                type="rating_drop",
+                severity="high",
+                message="评分从 4.6 降到 4.5",
+                app_id="com.wechat",
+                title="评分下降",
+                payload_json=dump_json({"app_id": "com.wechat", "title": "评分下降"}),
+                created_at=now_iso(),
+            )
         )
-        repo.create(
-            session,
-            "version_changed",
-            "low",
-            "版本更新到 8.0.1",
-            app_id="com.wechat",
-            title="版本变化",
+        session.add(
+            AlertModel(
+                type="version_changed",
+                severity="low",
+                message="版本更新到 8.0.1",
+                app_id="com.wechat",
+                title="版本变化",
+                payload_json=dump_json({"app_id": "com.wechat", "title": "版本变化"}),
+                created_at=now_iso(),
+            )
         )
-        repo.create(
-            session,
-            "rating_drop",
-            "high",
-            "别的应用告警",
-            app_id="com.other",
-            title="评分下降",
+        session.add(
+            AlertModel(
+                type="rating_drop",
+                severity="high",
+                message="别的应用告警",
+                app_id="com.other",
+                title="评分下降",
+                payload_json=dump_json({"app_id": "com.other", "title": "评分下降"}),
+                created_at=now_iso(),
+            )
         )
     service = ExportService(database)
     dest = tmp_path / "alerts.csv"

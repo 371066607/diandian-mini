@@ -8,9 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 from app.db.database import Database
+from app.db.models import AppSnapshotModel
 from app.schemas.app_schema import AppDetail
 from app.services.export_service import ExportService
 from app.services.tracking_service import TrackingService
+from app.utils.install_parser import parse_install_range
+from app.utils.normalize import bool_to_int, dump_json
 
 
 class CountingGooglePlayService:
@@ -47,9 +50,49 @@ def _detail(app_id="com.whatsapp", **overrides) -> AppDetail:
 
 
 def _seed_day(ts, detail, day_iso):
-    """Write one snapshot row stamped at the given ISO timestamp (per-day dedup)."""
+    """Write one snapshot row stamped at the given ISO timestamp (per-day dedup).
+
+    ``SnapshotRepository.upsert_for_day`` (the live scraper's write path) was
+    retired along with the rest of the scrape-write pipeline, so tests seed
+    history rows by constructing ``AppSnapshotModel`` directly instead -- the
+    read paths under test (``history_with_diffs`` / ``export_app_snapshots``)
+    are unaffected by the retirement and still need real rows to read.
+    """
+    min_installs, max_installs = parse_install_range(detail.installs)
     with ts.database.session() as session:
-        ts.snapshot_repository.upsert_for_day(session, detail, "us", "en", now=day_iso)
+        session.add(
+            AppSnapshotModel(
+                captured_at=day_iso,
+                platform=detail.platform,
+                app_id=detail.app_id,
+                country="us",
+                lang="en",
+                title=detail.title,
+                developer=detail.developer,
+                category=detail.category,
+                rating=detail.rating,
+                ratings_count=detail.ratings_count,
+                reviews_count=detail.reviews_count,
+                installs=detail.installs,
+                min_installs=detail.min_installs or min_installs,
+                max_installs=max_installs,
+                real_installs=detail.real_installs,
+                price=detail.price,
+                free=bool_to_int(detail.free),
+                has_iap=bool_to_int(detail.has_iap),
+                version=detail.version,
+                updated=detail.updated,
+                released=detail.released,
+                android_version=detail.android_version,
+                content_rating=detail.content_rating,
+                description=detail.description,
+                summary=detail.summary,
+                changelog=detail.changelog,
+                icon_url=detail.icon_url,
+                screenshots_json=dump_json(detail.screenshots),
+                contains_ads=bool_to_int(detail.contains_ads),
+            )
+        )
 
 
 def _make_tracking(database):
@@ -71,15 +114,42 @@ def test_history_with_diffs_deltas_and_changes(tmp_path):
     db.create_all()
     ts, gp = _make_tracking(db)
 
-    _seed_day(ts, _detail(rating=4.0, ratings_count=100, reviews_count=10,
-                           real_installs=1_000_000, version="1.0", price="$0.00"),
-              "2024-01-01T08:00:00")
-    _seed_day(ts, _detail(rating=4.5, ratings_count=150, reviews_count=8,
-                          real_installs=1_500_000, version="1.1", price="$0.00"),
-              "2024-01-02T08:00:00")
-    _seed_day(ts, _detail(rating=4.2, ratings_count=120, reviews_count=8,
-                          real_installs=1_400_000, version="1.1", price="$1.00"),
-              "2024-01-03T08:00:00")
+    _seed_day(
+        ts,
+        _detail(
+            rating=4.0,
+            ratings_count=100,
+            reviews_count=10,
+            real_installs=1_000_000,
+            version="1.0",
+            price="$0.00",
+        ),
+        "2024-01-01T08:00:00",
+    )
+    _seed_day(
+        ts,
+        _detail(
+            rating=4.5,
+            ratings_count=150,
+            reviews_count=8,
+            real_installs=1_500_000,
+            version="1.1",
+            price="$0.00",
+        ),
+        "2024-01-02T08:00:00",
+    )
+    _seed_day(
+        ts,
+        _detail(
+            rating=4.2,
+            ratings_count=120,
+            reviews_count=8,
+            real_installs=1_400_000,
+            version="1.1",
+            price="$1.00",
+        ),
+        "2024-01-03T08:00:00",
+    )
 
     rows = ts.history_with_diffs("com.whatsapp", "us", "en")
     assert len(rows) == 3
@@ -145,8 +215,12 @@ def test_export_app_snapshots_range_and_backcompat(tmp_path):
     # Range slices the rows.
     range_path = tmp_path / "range.csv"
     count = export.export_app_snapshots(
-        "com.whatsapp", "us", "en", str(range_path),
-        start="2024-01-02", end="2024-01-03T23:59:59",
+        "com.whatsapp",
+        "us",
+        "en",
+        str(range_path),
+        start="2024-01-02",
+        end="2024-01-03T23:59:59",
     )
     assert count == 2
     with open(range_path, encoding="utf-8-sig", newline="") as fh:

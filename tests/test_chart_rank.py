@@ -1,8 +1,11 @@
+import pytest
+
 from app.db.database import Database
+from app.db.models import ChartRankSnapshotModel
 from app.db.repositories import ChartRankRepository
-from app.schemas.chart_rank_schema import ChartRankResult
 from app.schemas.chart_schema import ChartItem
 from app.services.chart_rank_service import ChartRankService
+from app.services.google_play_service import ServiceError
 
 
 class FakeGooglePlayService:
@@ -48,17 +51,14 @@ def test_chart_rank_uses_chart_fallback():
     assert result.rank == 2
 
 
-def test_chart_save_result_roundtrip_dedups_per_day(tmp_path):
+def test_chart_save_result_raises_retired(tmp_path):
+    """save_result is a retired write path — it must always raise, never touch the DB."""
     database = Database(str(tmp_path / "chart.sqlite3"))
     database.create_all()
     service = ChartRankService(FakeGooglePlayService(), database=database)
 
-    result = service.rank("com.b", "top_free", "APPLICATION")  # persists once today
-    service.save_result(result)  # same calendar day -> updates, no new row
-    history = service.history("com.b", "top_free", "APPLICATION", "us", "en")
-
-    assert len(history) == 1
-    assert history[-1].rank == 2
+    with pytest.raises(ServiceError):
+        service.rank("com.b", "top_free", "APPLICATION")  # rank() saves when db is configured
 
 
 def test_chart_latest_returns_most_recent_rank(tmp_path):
@@ -66,22 +66,23 @@ def test_chart_latest_returns_most_recent_rank(tmp_path):
     database.create_all()
     repo = ChartRankRepository()
 
-    def _result(rank, captured_at):
-        return ChartRankResult(
+    def _add(rank, captured_at):
+        return ChartRankSnapshotModel(
+            platform="google_play",
             app_id="com.whatsapp",
             collection="top_free",
             category="APPLICATION",
             country="us",
             lang="en",
-            found=True,
+            found=1,
             rank=rank,
             checked_limit=100,
             captured_at=captured_at,
         )
 
     with database.session() as session:
-        repo.upsert_for_day(session, _result(10, "2026-06-01T09:00:00"), now="2026-06-01T09:00:00")
-        repo.upsert_for_day(session, _result(3, "2026-06-03T09:00:00"), now="2026-06-03T09:00:00")
+        session.add(_add(10, "2026-06-01T09:00:00"))
+        session.add(_add(3, "2026-06-03T09:00:00"))
 
     with database.session() as session:
         latest = repo.latest(session, "com.whatsapp", "top_free", "APPLICATION", "us", "en")

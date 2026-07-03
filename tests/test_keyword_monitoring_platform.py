@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from app.db.database import Database
+from app.db.models import KeywordRankModel
 from app.schemas.app_schema import AppSummary
+from app.services.google_play_service import ServiceError
 from app.services.keyword_service import KeywordService
 from app.services.settings_service import SettingsService
 from app.services.tracking_service import TrackingService
@@ -44,20 +48,17 @@ def _make(tmp_path):
     return tracking, gp_backend, as_backend
 
 
-def test_app_store_keyword_syncs_via_itunes_backend(tmp_path):
+def test_sync_keyword_now_is_retired(tmp_path):
+    """Live keyword syncing (any platform) has been retired: sync_keyword_now must always
+    raise and must never reach either search backend."""
     tracking, gp_backend, as_backend = _make(tmp_path)
     tracking.add_keyword("photo editor", "587366035", "us", "en", platform="app_store")
 
-    result = tracking.sync_keyword_now(
-        "photo editor", "587366035", "us", "en", platform="app_store"
-    )
+    with pytest.raises(ServiceError):
+        tracking.sync_keyword_now("photo editor", "587366035", "us", "en", platform="app_store")
 
-    # routed to the App Store backend, never touched Google Play
-    assert as_backend.calls == ["photo editor"]
+    assert as_backend.calls == []
     assert gp_backend.calls == []
-    assert result.platform == "app_store"
-    assert result.found is True
-    assert result.rank == 2  # Picsart sits at position 2 in the canned App Store results
 
 
 def test_tracked_keyword_remembers_its_platform(tmp_path):
@@ -70,36 +71,52 @@ def test_tracked_keyword_remembers_its_platform(tmp_path):
     assert ("com.gp.app", "google_play") in rows
 
 
-def test_sync_all_keywords_routes_each_platform(tmp_path):
-    tracking, gp_backend, as_backend = _make(tmp_path)
-    tracking.add_keyword("editor", "587366035", "us", "en", platform="app_store")
-    tracking.add_keyword("editor", "com.gp.app", "us", "en")
-
-    synced = tracking.sync_all_keywords()
-
-    assert synced == 2
-    assert gp_backend.calls == ["editor"]  # GP keyword -> GP backend
-    assert as_backend.calls == ["editor"]  # App Store keyword -> iTunes backend
-
-
 def test_same_tuple_on_both_platforms_keeps_separate_rows(tmp_path):
     """Regression: the same (keyword, app_id, country, lang) tracked on BOTH platforms
     must stay two independent monitors — platform-blind accessors used to raise
-    MultipleResultsFound on sync and let same-day rank upserts overwrite each other."""
+    MultipleResultsFound and let same-day rank rows overwrite each other.
+
+    Live syncing is retired (sync_keyword_now always raises), so this seeds rank rows
+    directly rather than through a sync call — the behavior under test is the
+    platform-scoped read path, not the (now-dead) write path."""
     tracking, _gp, _as = _make(tmp_path)
     tracking.add_keyword("photo editor", "587366035", "us", "en", platform="app_store")
     tracking.add_keyword("photo editor", "587366035", "us", "en")  # google_play twin
 
-    # Both syncs must succeed (no MultipleResultsFound) and stamp their own row only.
-    tracking.sync_keyword_now("photo editor", "587366035", "us", "en", platform="app_store")
-    tracking.sync_keyword_now("photo editor", "587366035", "us", "en")
+    with tracking.database.session() as session:
+        session.add(
+            KeywordRankModel(
+                platform="app_store",
+                keyword="photo editor",
+                app_id="587366035",
+                country="us",
+                lang="en",
+                rank=2,
+                found=1,
+                checked_limit=100,
+                captured_at="2024-01-01T00:00:00",
+            )
+        )
+        session.add(
+            KeywordRankModel(
+                platform="google_play",
+                keyword="photo editor",
+                app_id="587366035",
+                country="us",
+                lang="en",
+                rank=None,
+                found=0,
+                checked_limit=100,
+                captured_at="2024-01-01T00:00:00",
+            )
+        )
+        session.commit()
 
     rows = {row.platform: row for row in tracking.list_keywords()}
     assert set(rows) == {"app_store", "google_play"}
-    assert all(row.last_synced_at is not None for row in rows.values())
 
-    # Rank history stays platform-scoped: the iTunes backend finds rank 2, the GP
-    # backend's results don't contain the id at all — neither overwrote the other.
+    # Rank history stays platform-scoped: the app_store row reports rank 2, the
+    # google_play row reports not-found — neither overwrote the other.
     as_latest = tracking.keyword_service_app_store.latest_rank(
         "photo editor", "587366035", "us", "en"
     )
@@ -131,20 +148,3 @@ def test_toggle_keyword_only_touches_its_platform(tmp_path):
     assert enabled is False
     rows = {row.platform: bool(row.enabled) for row in tracking.list_keywords()}
     assert rows == {"app_store": False, "google_play": True}
-
-
-def test_keyword_service_for_missing_app_store_service_fails_loudly(tmp_path):
-    """Regression: a missing platform service must raise, not silently rank the keyword
-    through Google Play and record bogus found=False rows."""
-    import pytest
-
-    database = Database(str(tmp_path / "loud.sqlite3"))
-    database.create_all()
-    tracking = TrackingService(
-        database=database,
-        google_play_service=None,
-        keyword_service=KeywordService(RecordingSearch([]), database=database),
-        keyword_service_app_store=None,
-    )
-    with pytest.raises(RuntimeError, match="App Store"):
-        tracking.sync_keyword_now("vpn", "587366035", "us", "en", platform="app_store")

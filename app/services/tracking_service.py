@@ -7,7 +7,8 @@ from dataclasses import dataclass
 
 from app.constants import DEFAULT_SETTINGS, SEVERITY_RANK
 from app.db.repositories import AlertRepository, SnapshotRepository, TrackingRepository
-from app.utils.time_utils import is_sync_due, now_iso
+from app.services.google_play_service import ServiceError, _FEATURE_RETIRED_MESSAGE
+from app.utils.time_utils import is_sync_due
 
 
 @dataclass
@@ -152,9 +153,7 @@ class TrackingService:
         failed: list[dict] = []
         with self.database.session() as session:
             tracked = self.tracking_repository.list_apps(session)
-            existing_keys = {
-                (item.app_id, item.country, item.lang) for item in tracked
-            }
+            existing_keys = {(item.app_id, item.country, item.lang) for item in tracked}
             for app_id in cleaned:
                 if not self._is_valid_package_name(app_id):
                     failed.append({"app_id": app_id, "reason": "包名格式不合法"})
@@ -189,21 +188,15 @@ class TrackingService:
             return False
         return True
 
-    def set_app_frequency(
-        self, app_id: str, country: str, lang: str, frequency: str
-    ) -> str:
+    def set_app_frequency(self, app_id: str, country: str, lang: str, frequency: str) -> str:
         with self.database.session() as session:
             return self.tracking_repository.set_app_frequency(
                 session, app_id, country, lang, frequency
             )
 
-    def set_app_tag(
-        self, app_id: str, country: str, lang: str, tag: str | None
-    ) -> str | None:
+    def set_app_tag(self, app_id: str, country: str, lang: str, tag: str | None) -> str | None:
         with self.database.session() as session:
-            return self.tracking_repository.set_app_tag(
-                session, app_id, country, lang, tag
-            )
+            return self.tracking_repository.set_app_tag(session, app_id, country, lang, tag)
 
     def set_keyword_frequency(
         self,
@@ -491,88 +484,7 @@ class TrackingService:
             self._dispatch_notifications(alerts)
 
     def sync_app_now(self, app_id: str, country: str = "us", lang: str = "en", collector=None):
-        try:
-            detail = self.google_play_service.app_detail(app_id, country=country, lang=lang)
-        except Exception as exc:
-            self.logger.exception(
-                "sync_app_now failed for %s (%s/%s)",
-                app_id,
-                country,
-                lang,
-            )
-            if self.alert_service is not None:
-                with self.database.session() as session:
-                    count = self.tracking_repository.record_app_failure(
-                        session, app_id, country, lang, now_iso()
-                    )
-                failure = self.alert_service.record_fetch_failure(
-                    app_id,
-                    str(exc),
-                    country=country,
-                    lang=lang,
-                    failure_count=count,
-                )
-                self._handle_new_alerts([failure], collector)
-            raise
-        new_alerts: list = []
-        prior_failures = 0
-        with self.database.session() as session:
-            # Diff against the last *different-day* snapshot, and keep one row per day.
-            # Gating alerts on first-sync-of-day means repeated same-day syncs refresh the
-            # data without re-emitting yesterday-vs-today alerts they already produced.
-            previous_snapshot = self.snapshot_repository.previous_distinct_day(
-                session, app_id, country, lang
-            )
-            self.tracking_repository.add_app(session, app_id, detail.title, country, lang)
-            first_of_day = self.snapshot_repository.upsert_for_day(
-                session, detail, country, lang
-            )
-            self.tracking_repository.update_sync_time(session, app_id, country, lang, now_iso())
-            prior_failures = self.tracking_repository.record_app_success(
-                session, app_id, country, lang
-            )
-            if self.alert_service is not None and first_of_day:
-                new_alerts = self.alert_service.create_snapshot_alerts(
-                    session, previous_snapshot, detail
-                )
-        # A monitor that had escalated and is now succeeding earns one recovery alert.
-        if self.alert_service is not None and prior_failures >= self._escalate_after():
-            new_alerts = list(new_alerts) + [
-                self.alert_service.record_fetch_recovered(
-                    app_id,
-                    title=detail.title,
-                    previous_failures=prior_failures,
-                    country=country,
-                    lang=lang,
-                )
-            ]
-        # Reviews are an ENHANCEMENT to the snapshot sync: fetch the latest, persist them,
-        # and alert on new low-star ones. Only on the day's first sync (avoids re-fetch /
-        # re-alert), and any failure here is logged, NOT counted as a sync failure.
-        if first_of_day:
-            review_alerts = self._monitor_reviews(app_id, country, lang, detail.title)
-            if review_alerts:
-                new_alerts = list(new_alerts) + review_alerts
-        self._handle_new_alerts(new_alerts, collector)
-        return detail
-
-    def _monitor_reviews(self, app_id, country, lang, title) -> list:
-        """Fetch + persist latest reviews and build alerts for new low-star ones. Returns
-        [] (never raises) when reviews are disabled, unconfigured, or the fetch errors."""
-        if self.review_service is None or self.alert_service is None:
-            return []
-        if not self._setting_bool("review_monitor_enabled", True):
-            return []
-        try:
-            limit = int(float(self._setting("review_monitor_limit", "50")))
-            max_rating = int(float(self._setting("review_alert_max_rating", "2")))
-            new_negative = self.review_service.monitor_reviews(
-                app_id, country=country, lang=lang, limit=limit, max_rating=max_rating
-            )
-            return self.alert_service.create_review_alerts(app_id, title, new_negative)
-        except Exception:
-            self.logger.exception("review monitor failed for %s (non-fatal)", app_id)
-            return []
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)
 
     def _setting(self, key, default):
         if self.settings_service is None:
@@ -587,8 +499,7 @@ class TrackingService:
         apps = [
             item
             for item in self.list_apps()
-            if item.enabled
-            and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
+            if item.enabled and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
         ]
         if not apps:
             return 0
@@ -600,9 +511,7 @@ class TrackingService:
 
         def sync_one(item) -> bool:
             try:
-                self.sync_app_now(
-                    item.app_id, country=item.country, lang=item.lang, collector=sink
-                )
+                self.sync_app_now(item.app_id, country=item.country, lang=item.lang, collector=sink)
                 return True
             except Exception:
                 self.logger.exception(
@@ -628,103 +537,13 @@ class TrackingService:
         collector=None,
         platform: str = "google_play",
     ):
-        keyword_service = self._keyword_service_for(platform)
-        if keyword_service is None:
-            raise RuntimeError("KeywordService 未注入。")
-        effective_limit = limit or self._default_keyword_limit()
-        # Before fetching, capture the prior *different-day* rank as the alert baseline and
-        # whether today's row already exists. rank() upserts one row per day, so a same-day
-        # re-sync must NOT re-diff (first_of_day gates it) and must NOT baseline on its own
-        # earlier-today row (previous_distinct_rank skips today). Reads never derail the sync.
-        previous_rank = None
-        first_of_day = True
-        if self.alert_service is not None:
-            try:
-                previous_rank = keyword_service.previous_distinct_rank(
-                    keyword, app_id, country, lang
-                )
-                latest = keyword_service.latest_rank(keyword, app_id, country, lang)
-                today = now_iso()[:10]
-                first_of_day = latest is None or (latest.captured_at or "")[:10] != today
-            except Exception:
-                self.logger.exception(
-                    "could not load previous rank for %s / %s", keyword, app_id
-                )
-        try:
-            result = keyword_service.rank(
-                keyword,
-                app_id,
-                country=country,
-                lang=lang,
-                limit=effective_limit,
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "sync_keyword_now failed for %s / %s (%s/%s)",
-                keyword,
-                app_id,
-                country,
-                lang,
-            )
-            if self.alert_service is not None:
-                with self.database.session() as session:
-                    count = self.tracking_repository.record_keyword_failure(
-                        session, keyword, app_id, country, lang, now_iso(), platform=platform
-                    )
-                failure = self.alert_service.record_fetch_failure(
-                    app_id,
-                    str(exc),
-                    title=f"关键词 {keyword}",
-                    country=country,
-                    lang=lang,
-                    failure_count=count,
-                )
-                self._handle_new_alerts([failure], collector)
-            raise
-        new_alerts: list = []
-        prior_failures = 0
-        with self.database.session() as session:
-            self.tracking_repository.add_keyword(
-                session, keyword, app_id, country, lang, platform=platform
-            )
-            self.tracking_repository.update_keyword_sync_time(
-                session,
-                keyword,
-                app_id,
-                country,
-                lang,
-                now_iso(),
-                platform=platform,
-            )
-            # A returned result (even "未命中"/found=False) is a successful fetch.
-            prior_failures = self.tracking_repository.record_keyword_success(
-                session, keyword, app_id, country, lang, platform=platform
-            )
-            # Only diff on the first sync of the day — a same-day re-sync already compared
-            # against the prior day, so re-diffing would re-emit the same rank-change alert.
-            if self.alert_service is not None and first_of_day:
-                new_alerts = self.alert_service.create_keyword_alerts(
-                    session, previous_rank, result
-                )
-        if self.alert_service is not None and prior_failures >= self._escalate_after():
-            new_alerts = list(new_alerts) + [
-                self.alert_service.record_fetch_recovered(
-                    app_id,
-                    title=f"关键词 {keyword}",
-                    previous_failures=prior_failures,
-                    country=country,
-                    lang=lang,
-                )
-            ]
-        self._handle_new_alerts(new_alerts, collector)
-        return result
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)
 
     def sync_all_keywords(self, due_only: bool = False, collector=None) -> int:
         keywords = [
             item
             for item in self.list_keywords()
-            if item.enabled
-            and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
+            if item.enabled and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
         ]
         if not keywords:
             return 0
@@ -829,96 +648,13 @@ class TrackingService:
         limit: int | None = None,
         collector=None,
     ):
-        if self.chart_rank_service is None:
-            raise RuntimeError("ChartRankService 未注入。")
-        effective_limit = limit or self._default_keyword_limit()
-        # Mirror sync_keyword_now: capture the prior *different-day* rank as the alert
-        # baseline and whether today's row already exists. rank() upserts one row per day,
-        # so a same-day re-sync must NOT re-diff (first_of_day gates it).
-        previous_rank = None
-        first_of_day = True
-        if self.alert_service is not None:
-            try:
-                previous_rank = self.chart_rank_service.previous_distinct_rank(
-                    app_id, collection, category, country, lang
-                )
-                latest = self.chart_rank_service.latest_rank(
-                    app_id, collection, category, country, lang
-                )
-                today = now_iso()[:10]
-                first_of_day = latest is None or (latest.captured_at or "")[:10] != today
-            except Exception:
-                self.logger.exception(
-                    "could not load previous chart rank for %s / %s", app_id, collection
-                )
-        try:
-            result = self.chart_rank_service.rank(
-                app_id,
-                collection,
-                category=category,
-                country=country,
-                lang=lang,
-                limit=effective_limit,
-            )
-        except Exception as exc:
-            self.logger.exception(
-                "sync_chart_now failed for %s / %s (%s/%s)",
-                app_id,
-                collection,
-                country,
-                lang,
-            )
-            if self.alert_service is not None:
-                with self.database.session() as session:
-                    count = self.tracking_repository.record_chart_failure(
-                        session, app_id, collection, category, country, lang, now_iso()
-                    )
-                failure = self.alert_service.record_fetch_failure(
-                    app_id,
-                    str(exc),
-                    title=f"榜单 {collection}/{category or '-'}",
-                    country=country,
-                    lang=lang,
-                    failure_count=count,
-                )
-                self._handle_new_alerts([failure], collector)
-            raise
-        new_alerts: list = []
-        prior_failures = 0
-        with self.database.session() as session:
-            self.tracking_repository.add_chart_app(
-                session, app_id, collection, category, country, lang
-            )
-            self.tracking_repository.update_chart_sync_time(
-                session, app_id, collection, category, country, lang, now_iso()
-            )
-            # A returned result (even "未命中"/found=False) is a successful fetch.
-            prior_failures = self.tracking_repository.record_chart_success(
-                session, app_id, collection, category, country, lang
-            )
-            if self.alert_service is not None and first_of_day:
-                new_alerts = self.alert_service.create_chart_alerts(
-                    session, previous_rank, result
-                )
-        if self.alert_service is not None and prior_failures >= self._escalate_after():
-            new_alerts = list(new_alerts) + [
-                self.alert_service.record_fetch_recovered(
-                    app_id,
-                    title=f"榜单 {collection}/{category or '-'}",
-                    previous_failures=prior_failures,
-                    country=country,
-                    lang=lang,
-                )
-            ]
-        self._handle_new_alerts(new_alerts, collector)
-        return result
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)
 
     def sync_all_charts(self, due_only: bool = False, collector=None) -> int:
         charts = [
             item
             for item in self.list_chart_apps()
-            if item.enabled
-            and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
+            if item.enabled and (not due_only or is_sync_due(item.last_synced_at, item.frequency))
         ]
         if not charts:
             return 0

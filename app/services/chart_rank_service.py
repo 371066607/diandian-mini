@@ -4,6 +4,7 @@ import logging
 
 from app.db.repositories import ChartRankRepository
 from app.schemas.chart_rank_schema import ChartRankResult
+from app.services.google_play_service import ServiceError, _FEATURE_RETIRED_MESSAGE
 from app.utils.time_utils import now_iso
 
 logger = logging.getLogger(__name__)
@@ -82,9 +83,7 @@ class ChartRankService:
         if self.database is None:
             return []
         with self.database.session() as session:
-            return self.repository.history(
-                session, app_id, collection, category, country, lang
-            )
+            return self.repository.history(session, app_id, collection, category, country, lang)
 
     def latest_rank(
         self,
@@ -98,9 +97,7 @@ class ChartRankService:
         if self.database is None:
             return None
         with self.database.session() as session:
-            return self.repository.latest(
-                session, app_id, collection, category, country, lang
-            )
+            return self.repository.latest(session, app_id, collection, category, country, lang)
 
     def previous_distinct_rank(
         self,
@@ -122,7 +119,4 @@ class ChartRankService:
     def save_result(self, result: ChartRankResult) -> bool:
         """Persist a rank result with per-day dedup. Returns True if it was the first sync
         of the day (a new row), False if it overwrote an existing same-day row."""
-        if self.database is None:
-            raise RuntimeError("当前 ChartRankService 未配置数据库，无法保存结果。")
-        with self.database.session() as session:
-            return self.repository.upsert_for_day(session, result)
+        raise ServiceError(_FEATURE_RETIRED_MESSAGE)

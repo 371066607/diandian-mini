@@ -1,8 +1,11 @@
 import json
 
 from app.db.database import Database
+from app.db.models import AppSnapshotModel
 from app.db.repositories import SnapshotRepository
 from app.schemas.app_schema import AppDetail
+from app.utils.normalize import bool_to_int, dump_json
+from app.utils.time_utils import now_iso
 
 
 def _full_detail() -> AppDetail:
@@ -68,6 +71,73 @@ def _full_detail() -> AppDetail:
     )
 
 
+def _snapshot_from_detail(detail: AppDetail, country: str, lang: str) -> AppSnapshotModel:
+    """Build an AppSnapshotModel the same way the retired
+    SnapshotRepository.save_detail used to, so read-path tests can seed rows
+    directly through the ORM instead of the deleted write method."""
+    return AppSnapshotModel(
+        captured_at=now_iso(),
+        platform=detail.platform,
+        app_id=detail.app_id,
+        country=country,
+        lang=lang,
+        title=detail.title,
+        developer=detail.developer,
+        category=detail.category,
+        rating=detail.rating,
+        ratings_count=detail.ratings_count,
+        reviews_count=detail.reviews_count,
+        installs=detail.installs,
+        min_installs=detail.min_installs,
+        real_installs=detail.real_installs,
+        price=detail.price,
+        free=bool_to_int(detail.free),
+        has_iap=bool_to_int(detail.has_iap),
+        version=detail.version,
+        updated=detail.updated,
+        released=detail.released,
+        android_version=detail.android_version,
+        content_rating=detail.content_rating,
+        description=detail.description,
+        summary=detail.summary,
+        changelog=detail.changelog,
+        icon_url=detail.icon_url,
+        screenshots_json=dump_json(detail.screenshots),
+        contains_ads=bool_to_int(detail.contains_ads),
+        ad_supported=bool_to_int(detail.ad_supported),
+        daily_installs=detail.daily_installs,
+        min_daily_installs=detail.min_daily_installs,
+        real_daily_installs=detail.real_daily_installs,
+        monthly_installs=detail.monthly_installs,
+        min_monthly_installs=detail.min_monthly_installs,
+        real_monthly_installs=detail.real_monthly_installs,
+        app_age_days=detail.app_age_days,
+        genre_id=detail.genre_id,
+        developer_id=detail.developer_id,
+        currency=detail.currency,
+        sale=bool_to_int(detail.sale),
+        original_price=detail.original_price,
+        developer_email=detail.developer_email,
+        developer_website=detail.developer_website,
+        developer_address=detail.developer_address,
+        developer_phone=detail.developer_phone,
+        publisher_country=detail.publisher_country,
+        privacy_policy=detail.privacy_policy,
+        header_image=detail.header_image,
+        video=detail.video,
+        content_rating_description=detail.content_rating_description,
+        available=bool_to_int(detail.available),
+        max_android_api=detail.max_android_api,
+        min_android_api=detail.min_android_api,
+        app_bundle=detail.app_bundle,
+        histogram_json=dump_json(detail.histogram),
+        categories_json=dump_json(detail.categories),
+        permissions_json=dump_json(detail.permissions),
+        data_safety_json=dump_json(detail.data_safety),
+        raw_json=dump_json(detail.raw),
+    )
+
+
 def test_save_detail_persists_all_extended_columns(tmp_path):
     database = Database(str(tmp_path / "x.sqlite3"))
     database.create_all()
@@ -75,7 +145,7 @@ def test_save_detail_persists_all_extended_columns(tmp_path):
     detail = _full_detail()
 
     with database.session() as session:
-        repo.save_detail(session, detail, country="us", lang="en")
+        session.add(_snapshot_from_detail(detail, country="us", lang="en"))
 
     with database.session() as session:
         row = repo.latest(session, "com.example.app", country="us", lang="en")
@@ -128,7 +198,7 @@ def test_save_detail_handles_none_booleans(tmp_path):
     detail = AppDetail(app_id="com.minimal.app", title="Minimal")
 
     with database.session() as session:
-        repo.save_detail(session, detail, country="us", lang="en")
+        session.add(_snapshot_from_detail(detail, country="us", lang="en"))
 
     with database.session() as session:
         row = repo.latest(session, "com.minimal.app", country="us", lang="en")
