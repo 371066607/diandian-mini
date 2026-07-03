@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -16,6 +15,7 @@ from app.db.repositories import ChartRankRepository, KeywordRankRepository, Snap
 from app.ui.controllers.alert_controller import AlertController
 from app.ui.controllers.api_log_controller import ApiLogController
 from app.ui.controllers.chart_controller import ChartController
+from app.ui.controllers.coverage_controller import CoverageController
 from app.ui.controllers.detail_controller import (
     DetailController,
     dev_links as detail_dev_links,
@@ -133,6 +133,7 @@ class QmlBridge(QObject):
         self._keyword_controller = KeywordController(self)
         self._detail_controller = DetailController(self)
         self._search_controller = SearchController(self)
+        self._coverage_controller = CoverageController(self)
         self._apiLogEntry.connect(self._append_api_log_entry)
         client = self.services.get("store_intel_api_client")
         if client is not None and hasattr(client, "set_log_sink"):
@@ -1837,7 +1838,7 @@ class QmlBridge(QObject):
             # ONLY when proxies exist — parallel same-IP scraping just multiplies ban risk.
             proxies = load_proxies(self.services.get("settings_service"), DATA_DIR)
             proxy_pool = ProxyPool(proxies) if proxies else None
-            max_workers = self._coverage_concurrency() if proxy_pool else 1
+            max_workers = self._coverage_controller.concurrency() if proxy_pool else 1
             if proxy_pool:
                 self.statusMessage.emit(
                     f"覆盖扫描启用 {len(proxy_pool)} 个代理 · {max_workers} 并发"
@@ -1857,43 +1858,9 @@ class QmlBridge(QObject):
 
         def work():
             try:
-                candidates, canonical = cached_pool or (None, None)
-                if api is not None:
-                    try:
-                        result = api.cached_coverage(
-                            app_id,
-                            country=country,
-                            lang=lang,
-                            deep=deep,
-                            platform=platform,
-                        )
-                    except Exception:
-                        result = None
-                    if not self._has_coverage_cache_data(result):
-                        result = self._refresh_api_coverage_cache(
-                            api,
-                            app_id=app_id,
-                            country=country,
-                            lang=lang,
-                            deep=deep,
-                            platform=platform,
-                        )
-                    if not self._has_coverage_cache_data(result):
-                        raise RuntimeError("服务器没有返回可用的覆盖词数据。")
-                else:
-                    result = self.services["keyword_coverage_service"].analyze_coverage(
-                        platform,
-                        app_id,
-                        country=country,
-                        lang=lang,
-                        limit=50,
-                        deep=deep,
-                        candidates=candidates,
-                        canonical_app_id=canonical,
-                        proxy_pool=proxy_pool,
-                        max_workers=max_workers,
-                        progress=lambda msg, frac: self.coverageProgress.emit(msg, float(frac)),
-                    )
+                result = self._coverage_controller.analyze(
+                    api, app_id, country, lang, deep, platform, cached_pool, proxy_pool, max_workers
+                )
                 return ("ok", result)
             except Exception as exc:  # surface a clean message, never leave it "running"
                 return ("error", str(exc))
@@ -1901,73 +1868,6 @@ class QmlBridge(QObject):
         # busy=False: a coverage scan runs ~1-2 min, so use inline progress (the
         # CoveragePage shows a bar) instead of blocking the whole UI with the overlay.
         self._run(work, self._on_coverage_done, label="正在分析覆盖关键词...", busy=False)
-
-    @staticmethod
-    def _has_coverage_cache_data(result) -> bool:
-        if result is None:
-            return False
-        return bool(
-            getattr(result, "captured_at", "")
-            or getattr(result, "candidate_count", 0)
-            or getattr(result, "candidates", [])
-            or getattr(result, "covered", [])
-        )
-
-    def _refresh_api_coverage_cache(
-        self,
-        api,
-        *,
-        app_id: str,
-        country: str,
-        lang: str,
-        deep: bool,
-        platform: str = "google_play",
-    ):
-        self.coverageProgress.emit("暂无缓存，已开始后台分析...", 0.05)
-        job = api.request_refresh(
-            "coverage",
-            app_id=app_id,
-            country=country,
-            lang=lang,
-            limit=50,
-            deep=deep,
-            platform=platform,
-        )
-        job_id = getattr(job, "job_id", "") or getattr(job, "id", "")
-        if job_id:
-            self.coverageProgress.emit("后台分析中，请稍候...", 0.25)
-            job = api.wait_refresh_job(
-                job_id,
-                timeout=300.0 if deep else 180.0,
-                interval=2.0,
-            )
-        if str(getattr(job, "status", "")).lower() == "failed":
-            message = getattr(job, "error", "") or getattr(job, "message", "")
-            raise RuntimeError(message or "服务器覆盖词分析任务失败。")
-
-        self.coverageProgress.emit("后台分析完成，正在读取缓存...", 0.9)
-        deadline = time.monotonic() + 30.0
-        result = None
-        while time.monotonic() <= deadline:
-            try:
-                result = api.cached_coverage(
-                    app_id,
-                    country=country,
-                    lang=lang,
-                    deep=deep,
-                    platform=platform,
-                )
-            except Exception:
-                result = None
-            if self._has_coverage_cache_data(result):
-                return result
-            time.sleep(1.0)
-        return result
-
-    def _coverage_concurrency(self) -> int:
-        """Max parallel workers for a proxy-backed coverage scan (clamped 1..16)."""
-        raw = self.services["settings_service"].get("coverage_concurrency", "6")
-        return max(1, min(16, safe_int(raw, 6)))
 
     def _on_coverage_done(self, payload) -> None:
         status, value = payload
