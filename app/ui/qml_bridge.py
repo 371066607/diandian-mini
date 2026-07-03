@@ -14,14 +14,13 @@ from app.config import DATA_DIR
 from app.constants import DEFAULT_SETTINGS
 from app.db.repositories import ChartRankRepository, KeywordRankRepository, SnapshotRepository
 from app.ui.alert_labels import ALERT_SEVERITY_COLORS, alert_severity_label, alert_type_label
-from app.utils.network import apply_proxy_env
-from app.utils.normalize import normalize_app_id, safe_float, safe_int
+from app.ui.controllers.api_log_controller import ApiLogController
+from app.ui.controllers.settings_controller import SettingsController, SettingsError
+from app.utils.normalize import normalize_app_id, safe_int
 from app.utils.proxy_pool import ProxyPool, load_proxies
 from app.utils.time_utils import (
-    DEFAULT_SYNC_TIME,
     FREQUENCY_HOURS,
     is_sync_due,
-    is_valid_time_of_day,
     now_iso,
 )
 from app.utils.worker import Worker
@@ -105,8 +104,8 @@ class QmlBridge(QObject):
         self._reviews_context: dict[str, str] = {}
         self._reviews_token: Any | None = None
         self._history_selection: tuple[str, str, str] | None = None
-        self._api_logs: list[dict[str, Any]] = []
-        self._api_log_limit = 200
+        self._api_log = ApiLogController(limit=200)
+        self._settings_controller = SettingsController(self.services)
         self._apiLogEntry.connect(self._append_api_log_entry)
         client = self.services.get("store_intel_api_client")
         if client is not None and hasattr(client, "set_log_sink"):
@@ -154,7 +153,7 @@ class QmlBridge(QObject):
 
     @Property("QVariant", notify=apiLogsChanged)
     def apiLogs(self) -> list[dict[str, Any]]:
-        return self._api_logs
+        return self._api_log.entries
 
     @Property(bool, notify=busyChanged)
     def busy(self) -> bool:
@@ -167,6 +166,12 @@ class QmlBridge(QObject):
     def _api_mode_enabled(self) -> bool:
         client = self.services.get("store_intel_api_client")
         return client is not None and bool(getattr(client, "enabled", False))
+
+    @Property(str, constant=True)
+    def legacyModeNotice(self) -> str:
+        if self._api_mode_enabled():
+            return ""
+        return "诊断模式：本地抓取数据不回写服务器。"
 
     @Slot(str)
     def copyText(self, text: str) -> None:
@@ -262,31 +267,12 @@ class QmlBridge(QObject):
 
     @Slot("QVariant")
     def _append_api_log_entry(self, entry: Any) -> None:
-        if not isinstance(entry, dict):
-            return
-        row = {
-            "time": str(entry.get("time") or ""),
-            "method": str(entry.get("method") or ""),
-            "path": str(entry.get("path") or ""),
-            "query": str(entry.get("query") or ""),
-            "queryFull": str(entry.get("query_full") or entry.get("query") or ""),
-            "body": str(entry.get("body") or ""),
-            "bodyFull": str(entry.get("body_full") or entry.get("body") or ""),
-            "response": str(entry.get("response") or ""),
-            "responseFull": str(entry.get("response_full") or entry.get("response") or ""),
-            "status": str(entry.get("status") or "-"),
-            "code": str(entry.get("code") or "-"),
-            "duration": f"{int(entry.get('duration_ms') or 0)}ms",
-            "ok": bool(entry.get("ok")),
-            "error": str(entry.get("error") or ""),
-            "stream": bool(entry.get("stream")),
-        }
-        self._api_logs = (self._api_logs + [row])[-self._api_log_limit :]
-        self.apiLogsChanged.emit()
+        if self._api_log.append(entry):
+            self.apiLogsChanged.emit()
 
     @Slot()
     def clearApiLogs(self) -> None:
-        self._api_logs = []
+        self._api_log.clear()
         self.apiLogsChanged.emit()
 
     @Property("QVariant", notify=inputHistoryChanged)
@@ -1431,36 +1417,18 @@ class QmlBridge(QObject):
         current = (
             dict(self._settings) if api is not None else self.services["settings_service"].get_all()
         )
-        updates = DEFAULT_SETTINGS.copy()
-        updates.update(current)
-        for key in updates:
-            if key in values:
-                updates[key] = str(values[key]).strip()
-
-        sync_time = updates.get("daily_sync_time") or DEFAULT_SYNC_TIME
-        if not is_valid_time_of_day(sync_time):
-            self.errorMessage.emit("每日同步时间格式不正确，请使用 HH:MM（例如 09:00）。")
+        try:
+            updates = self._settings_controller.build_updates(current, values)
+        except SettingsError as exc:
+            self.errorMessage.emit(str(exc))
             return
-        updates["daily_sync_time"] = sync_time
-        updates["default_country"] = updates.get("default_country") or "us"
-        updates["default_lang"] = updates.get("default_lang") or "en"
-        updates["default_limit"] = updates.get("default_limit") or "50"
-        updates["request_delay_seconds"] = updates.get("request_delay_seconds") or "1"
 
         def save() -> None:
             if api is not None:
                 api.set_settings(updates)
             else:
-                self.services["settings_service"].set_many(updates)
-                apply_proxy_env(updates.get("proxy", ""))
-                google_play_service = self.services.get("google_play_service")
-                if google_play_service is not None and hasattr(google_play_service, "configure"):
-                    google_play_service.configure(
-                        request_delay_seconds=safe_float(updates["request_delay_seconds"], 1.0)
-                    )
-            scheduler = self.services.get("scheduler")
-            if scheduler is not None and hasattr(scheduler, "reload_jobs"):
-                scheduler.reload_jobs()
+                self._settings_controller.apply_legacy(updates)
+            self._settings_controller.reload_scheduler()
 
         self._run(save, lambda _: self._after_mutation("设置已保存。"), label="正在保存设置...")
 

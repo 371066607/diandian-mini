@@ -155,7 +155,10 @@ class StoreIntelHandler(BaseHTTPRequestHandler):
             return self._json({"total": 1})
         if parsed.path == "/api/store-intel/tracking/apps":
             if getattr(self.server, "require_tracking_auth", False):
-                if self.headers.get("authorization") != "Bearer guest-access":
+                if self.headers.get("authorization") not in (
+                    "Bearer guest-access",
+                    "Bearer refreshed-access",
+                ):
                     return self._json(
                         {"error_code": "unauthorized"},
                         code=401,
@@ -326,6 +329,20 @@ class StoreIntelHandler(BaseHTTPRequestHandler):
                     "refresh_token": "guest-refresh",
                 }
             )
+        if parsed.path == "/api/auth/refresh":
+            self.server.refresh_bodies.append(body)
+            if getattr(self.server, "refresh_should_fail", False):
+                return self._json(
+                    {"error_code": "invalid_refresh_token"},
+                    code=401,
+                    message="refresh token expired",
+                )
+            return self._json(
+                {
+                    "access_token": "refreshed-access",
+                    "refresh_token": "refreshed-refresh",
+                }
+            )
         if parsed.path == "/api/store-intel/apps/com.demo/reviews":
             return self._json({"saved": len(body["items"])})
         if parsed.path == "/api/store-intel/charts/snapshot":
@@ -483,6 +500,8 @@ def api_server():
     server.user_agents = []
     server.auth_headers = []
     server.guest_login_bodies = []
+    server.refresh_bodies = []
+    server.refresh_should_fail = False
     server.require_tracking_auth = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -660,6 +679,23 @@ def test_store_intel_api_client_waits_for_refresh_job():
     assert calls == ["job-1", "job-1"]
 
 
+def test_store_intel_api_client_treats_dead_refresh_job_as_terminal():
+    client = StoreIntelApiClient("http://store.test")
+    statuses = [
+        SimpleNamespace(job_id="job-1", status="running"),
+        SimpleNamespace(job_id="job-1", status="dead"),
+    ]
+
+    def get_refresh_job(job_id):
+        return statuses.pop(0)
+
+    client.get_refresh_job = get_refresh_job
+
+    job = client.wait_refresh_job("job-1", timeout=1.0, interval=0.1)
+
+    assert job.status == "dead"
+
+
 def test_store_intel_api_client_requires_base_url():
     client = StoreIntelApiClient("")
     with pytest.raises(StoreIntelApiError, match="未配置"):
@@ -702,6 +738,88 @@ def test_store_intel_api_client_guest_retries_once_on_401(api_server):
         if path == "/api/store-intel/tracking/apps"
     ]
     assert tracking_headers == [None, "Bearer guest-access"]
+
+
+def test_store_intel_api_client_refreshes_token_before_guest_login_on_401(api_server):
+    api_server.require_tracking_auth = True
+    client = StoreIntelApiClient(
+        f"http://127.0.0.1:{api_server.server_port}",
+        device_id="desktop-test-device",
+    )
+    client._access_token = "stale-access"
+    client._refresh_token = "existing-refresh"
+
+    apps = client.list_tracked_apps()
+
+    assert apps[0].app_id == "com.demo"
+    assert api_server.refresh_bodies == [
+        {"app_id": "catchradar", "refresh_token": "existing-refresh"}
+    ]
+    assert api_server.guest_login_bodies == []
+    assert client._access_token == "refreshed-access"
+    assert client._refresh_token == "refreshed-refresh"
+
+
+def test_store_intel_api_client_falls_back_to_guest_login_when_refresh_fails(api_server):
+    api_server.require_tracking_auth = True
+    api_server.refresh_should_fail = True
+    client = StoreIntelApiClient(
+        f"http://127.0.0.1:{api_server.server_port}",
+        device_id="desktop-test-device",
+    )
+    client._refresh_token = "stale-refresh"
+
+    apps = client.list_tracked_apps()
+
+    assert apps[0].app_id == "com.demo"
+    assert api_server.refresh_bodies == [
+        {"app_id": "catchradar", "refresh_token": "stale-refresh"}
+    ]
+    assert api_server.guest_login_bodies == [
+        {
+            "app_id": "catchradar",
+            "device_id": "desktop-test-device",
+            "platform": "desktop",
+        }
+    ]
+
+
+def test_store_intel_api_client_coalesces_concurrent_reauthentication(api_server):
+    api_server.require_tracking_auth = True
+    client = StoreIntelApiClient(
+        f"http://127.0.0.1:{api_server.server_port}",
+        device_id="desktop-test-device",
+    )
+
+    results: list[list] = []
+    errors: list[Exception] = []
+    lock = threading.Lock()
+
+    def call():
+        try:
+            apps = client.list_tracked_apps()
+        except StoreIntelApiError as exc:  # pragma: no cover - failure path
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(apps)
+
+    workers = [threading.Thread(target=call) for _ in range(5)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert not errors
+    assert len(results) == 5
+    assert api_server.guest_login_bodies == [
+        {
+            "app_id": "catchradar",
+            "device_id": "desktop-test-device",
+            "platform": "desktop",
+        }
+    ]
 
 
 def test_store_intel_api_client_sends_chart_refresh_collection(api_server):

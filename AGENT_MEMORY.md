@@ -79,6 +79,9 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
 - 同步类动作已改为请求刷新任务，不应直接做 blocking 抓取。
 - 后端已补 MySQL-backed refresh job 表/查询、Redis 队列和 worker 恢复未完成 job 的逻辑。
 - 桌面端右侧已加入接口日志面板：实时显示请求日志，点击可看传入 query/body、返回 data 和错误信息。
+- 本仓库原有的 `go/storeintel/`（过渡期孵化的 Go 服务端模块）已删除：它已被后端
+  `internal/project/catchradar/`（`/Volumes/DevSpace/services/modular-go-backend`）取代，
+  自 2026-06-24 起未再更新、已分叉，前端代码本身也不 import 它。真实后端才是 source of truth。
 
 ## 最近验证证据
 

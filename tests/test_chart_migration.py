@@ -1,7 +1,10 @@
+import pytest
 from sqlalchemy import text
 
 from app.db.database import Database
 from app.db.migrations import migrate
+
+pytestmark = pytest.mark.legacy
 
 
 def _table_names(database):

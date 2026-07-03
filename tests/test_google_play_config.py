@@ -1,4 +1,8 @@
+import pytest
+
 from app.services.google_play_service import GooglePlayService
+
+pytestmark = pytest.mark.legacy
 
 
 def test_request_delay_default_and_configure():

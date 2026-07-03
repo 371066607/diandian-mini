@@ -1,3 +1,10 @@
+> ⚠️ **历史文档，已过时**：本文档描述的是 v1.0 纯本地单机架构（"不做后端 API"、"不做 Web
+> 服务"等约束）。项目自 2026-06 起已迁移为 API-first 架构——桌面端默认通过 Go 后端
+> （`/Volumes/DevSpace/services/modular-go-backend` 的 `internal/project/catchradar/`）读写数据，
+> 本文档描述的纯本地/无后端模式现在只是 legacy/offline 诊断 fallback，且已冻结。
+> 当前架构现状见仓库根目录的 `AGENTS.md` / `CLAUDE.md` / `AGENT_MEMORY.md`，
+> 接口契约见 `FRONTEND_AGENT_API.md`。本文档仅作历史参考，不要据此做架构判断。
+
 # catch-radar 桌面客户端开发规格书
 
 版本：v1.0  

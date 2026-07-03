@@ -14,15 +14,14 @@ logger = logging.getLogger(__name__)
 # A Cloudflare Worker + D1 endpoint shared by ALL clients (see server/corpus-worker).
 # When CORPUS_API_URL is set, every scan also READS candidates from / CONTRIBUTES
 # keywords to this shared pool, so the corpus grows with the whole user base — not just
-# this one machine. Empty = pure local mode (behaviour unchanged). Only keywords +
-# locale + source + confirmed are ever sent; never an app id or any user identifier.
-# Defaults are the shipped values; either can be overridden by env (handy for tests —
-# set CATCH_RADAR_CORPUS_URL="" to force pure-local — and for pointing at a local
-# `wrangler dev` instance during development).
-CORPUS_API_URL = os.environ.get(
-    "CATCH_RADAR_CORPUS_URL", "https://catch-radar-corpus.371066607.workers.dev"
-)
-CORPUS_API_KEY = os.environ.get("CATCH_RADAR_CORPUS_KEY", "970907")
+# this one machine. Empty (the default) = pure local mode. Only keywords + locale +
+# source + confirmed are ever sent; never an app id or any user identifier.
+# No default remote endpoint: the backend retired the shared external corpus service
+# in favor of a local seed (see modular-go-backend commits 87c1b7e/6682734), so this
+# stays local-only unless an operator explicitly points CATCH_RADAR_CORPUS_URL at a
+# service they control (e.g. a local `wrangler dev` instance during development).
+CORPUS_API_URL = os.environ.get("CATCH_RADAR_CORPUS_URL", "")
+CORPUS_API_KEY = os.environ.get("CATCH_RADAR_CORPUS_KEY", "")
 _REMOTE_TIMEOUT = 6.0  # seconds; best-effort — a slow/absent backend never blocks a scan
 
 

@@ -11,9 +11,15 @@ thread them through, same as before.
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 
-from app.constants import AUTH_DEVICE_ID_SETTING, DEFAULT_SETTINGS, DEFAULT_STOREINTEL_API_URL
+from app.constants import (
+    AUTH_DEVICE_ID_SETTING,
+    DEFAULT_SETTINGS,
+    DEFAULT_STOREINTEL_API_URL,
+    DEV_STOREINTEL_API_URL,
+)
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
 from app.services.alert_service import AlertService
@@ -55,7 +61,15 @@ def _store_intel_api_url() -> str | None:
                 return None
             return value
 
-    return DEFAULT_STOREINTEL_API_URL
+    # No explicit env var set: packaged builds (PyInstaller sets sys.frozen)
+    # default to production, since that's what real users run. Running from
+    # source defaults to the local dev backend instead, so a plain
+    # `python main.py` during development never talks to production by
+    # accident — connecting to production still requires explicitly setting
+    # CATCH_RADAR_STOREINTEL_API_URL.
+    if getattr(sys, "frozen", False):
+        return DEFAULT_STOREINTEL_API_URL
+    return DEV_STOREINTEL_API_URL
 
 
 def _store_intel_device_id(settings_service: SettingsService) -> str:

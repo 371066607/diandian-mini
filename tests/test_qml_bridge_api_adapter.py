@@ -1954,3 +1954,128 @@ def test_qml_bridge_reviews_refresh_payload_matches_backend_schema():
         )
     ]
     assert bridge.reviews["rows"][0]["content"] == "cached review"
+
+
+def test_qml_bridge_save_settings_api_mode_persists_via_backend():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.saveSettings({"default_country": "gb", "daily_sync_time": "10:30"})
+    _wait_idle(app, bridge)
+
+    set_settings_calls = [call for call in api.calls if call[0] == "set_settings"]
+    assert len(set_settings_calls) == 1
+    saved = set_settings_calls[0][1]
+    assert saved["default_country"] == "gb"
+    assert saved["daily_sync_time"] == "10:30"
+    # _after_mutation triggers refreshSettings(), which re-reads through the backend.
+    assert bridge.settings["default_country"] == "gb"
+
+
+def test_qml_bridge_save_settings_rejects_malformed_sync_time():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.saveSettings({"daily_sync_time": "not-a-time"})
+    _wait_idle(app, bridge)
+
+    assert errors and "每日同步时间格式不正确" in errors[0]
+    assert not any(call[0] == "set_settings" for call in api.calls)
+
+
+def test_qml_bridge_save_settings_legacy_mode_persists_locally_and_retunes_scraper():
+    app = QApplication.instance() or QApplication([])
+
+    class ConfigurableGooglePlay(FakeGooglePlay):
+        def __init__(self):
+            self.configured_delay = None
+
+        def configure(self, request_delay_seconds=None):
+            self.configured_delay = request_delay_seconds
+
+    class FakeScheduler:
+        def __init__(self):
+            self.reloaded = False
+
+        def reload_jobs(self):
+            self.reloaded = True
+
+    settings_service = FakeSettings()
+    google_play = ConfigurableGooglePlay()
+    scheduler = FakeScheduler()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": settings_service,
+            "google_play_service": google_play,
+            "scheduler": scheduler,
+        },
+        logger=logging.getLogger("qml-legacy-test"),
+    )
+
+    bridge.saveSettings({"request_delay_seconds": "3.5", "default_country": "de"})
+    _wait_idle(app, bridge)
+
+    assert settings_service.values["request_delay_seconds"] == "3.5"
+    assert settings_service.values["default_country"] == "de"
+    assert google_play.configured_delay == 3.5
+    assert scheduler.reloaded is True
+
+
+def test_qml_bridge_api_log_lifecycle():
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    changes = []
+    bridge.apiLogsChanged.connect(lambda: changes.append(len(bridge.apiLogs)))
+
+    bridge._append_api_log_entry(
+        {"method": "GET", "path": "/api/store-intel/apps/search", "status": 200, "ok": True}
+    )
+    assert len(bridge.apiLogs) == 1
+    assert bridge.apiLogs[0]["method"] == "GET"
+    assert changes == [1]
+
+    bridge._append_api_log_entry("not a dict — must be ignored")
+    assert len(bridge.apiLogs) == 1
+    assert changes == [1]  # no extra apiLogsChanged emitted for the ignored entry
+
+    bridge.clearApiLogs()
+    assert bridge.apiLogs == []
+    assert changes == [1, 0]

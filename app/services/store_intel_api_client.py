@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import platform
+import threading
 import time
 import uuid
 from types import SimpleNamespace
@@ -48,10 +49,17 @@ class StoreIntelApiClient:
         self.device_id = device_id or self._default_device_id()
         self._access_token = ""
         self._refresh_token = ""
+        self._auth_lock = threading.Lock()
+        self._auth_epoch = 0
 
     @property
     def enabled(self) -> bool:
         return bool(self.base_url)
+
+    @property
+    def api_url(self) -> str:
+        """The configured API base URL, for UI 'connected to: ...' indicators."""
+        return self.base_url
 
     def search(
         self,
@@ -852,6 +860,7 @@ class StoreIntelApiClient:
         while str(getattr(last_job, "status", "")).lower() not in {
             "completed",
             "failed",
+            "dead",  # exhausted server-side retry attempts — treat like failed
         }:
             if time.monotonic() >= deadline:
                 raise StoreIntelApiError(f"刷新任务超时：{job_id}")
@@ -1060,6 +1069,7 @@ class StoreIntelApiClient:
                 started=started,
             )
 
+        auth_epoch = self._auth_epoch
         for attempt in range(2):
             request = Request(
                 url,
@@ -1076,9 +1086,9 @@ class StoreIntelApiClient:
                 status = getattr(exc, "code", None)
                 raw = exc.read().decode("utf-8", errors="replace")
                 raw_response = self._text_preview(raw)
-                if self._should_guest_retry(path, status, attempt):
+                if self._should_reauth_retry(path, status, attempt):
                     try:
-                        self._guest_login()
+                        self._reauthenticate(auth_epoch)
                     except StoreIntelApiError as auth_exc:
                         error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
                         emit_log()
@@ -1131,6 +1141,7 @@ class StoreIntelApiClient:
         ok = False
         error = ""
         try:
+            auth_epoch = self._auth_epoch
             for attempt in range(2):
                 request = Request(
                     self.base_url + path,
@@ -1158,9 +1169,9 @@ class StoreIntelApiClient:
                 except HTTPError as exc:
                     status = getattr(exc, "code", None)
                     raw = exc.read().decode("utf-8", errors="replace")
-                    if self._should_guest_retry(path, status, attempt):
+                    if self._should_reauth_retry(path, status, attempt):
                         try:
-                            self._guest_login()
+                            self._reauthenticate(auth_epoch)
                         except StoreIntelApiError as auth_exc:
                             error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
                             raise StoreIntelApiError(error) from exc
@@ -1212,8 +1223,35 @@ class StoreIntelApiClient:
             headers["Authorization"] = f"Bearer {self._access_token}"
         return headers
 
-    def _should_guest_retry(self, path: str, status: int | None, attempt: int) -> bool:
-        return status == 401 and attempt == 0 and path != "/api/auth/guest"
+    def _should_reauth_retry(self, path: str, status: int | None, attempt: int) -> bool:
+        return status == 401 and attempt == 0 and path not in (
+            "/api/auth/guest",
+            "/api/auth/refresh",
+        )
+
+    def _reauthenticate(self, observed_epoch: int) -> None:
+        """Re-establish auth after a 401, coalescing concurrent callers.
+
+        Prefers refreshing the existing session (POST /api/auth/refresh) over
+        starting a new guest session, falling back to guest login if no
+        refresh token is available or the refresh itself fails. observed_epoch
+        is the auth epoch the caller saw before its request failed; if another
+        thread already advanced the epoch (i.e. already re-authenticated) by
+        the time we get the lock, this is a no-op — the caller's retry will
+        just use the already-refreshed token.
+        """
+        with self._auth_lock:
+            if self._auth_epoch != observed_epoch:
+                return
+            if self._refresh_token:
+                try:
+                    self._refresh_access_token()
+                    self._auth_epoch += 1
+                    return
+                except StoreIntelApiError:
+                    pass
+            self._guest_login()
+            self._auth_epoch += 1
 
     def _guest_login(self) -> None:
         if not self.enabled:
@@ -1223,9 +1261,35 @@ class StoreIntelApiClient:
             "device_id": self.device_id,
             "platform": "desktop",
         }
+        access_token, refresh_token = self._auth_request(
+            "/api/auth/guest", body, context="guest 登录"
+        )
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+
+    def _refresh_access_token(self) -> None:
+        if not self.enabled:
+            raise StoreIntelApiError("StoreIntel API 未配置。")
+        if not self._refresh_token:
+            raise StoreIntelApiError("没有可用的 refresh_token。")
+        body = {
+            "app_id": self.auth_app_id,
+            "refresh_token": self._refresh_token,
+        }
+        access_token, refresh_token = self._auth_request(
+            "/api/auth/refresh", body, context="token 刷新"
+        )
+        self._access_token = access_token
+        self._refresh_token = refresh_token
+
+    def _auth_request(
+        self, path: str, body: dict[str, Any], *, context: str
+    ) -> tuple[str, str]:
+        """POST to an auth endpoint (guest login or token refresh) and return
+        the (access_token, refresh_token) pair from a successful response."""
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         request = Request(
-            self.base_url + "/api/auth/guest",
+            self.base_url + path,
             data=payload,
             headers=self._request_headers("application/json", has_body=True, include_auth=False),
             method="POST",
@@ -1236,25 +1300,24 @@ class StoreIntelApiClient:
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             raise StoreIntelApiError(
-                f"StoreIntel API guest 登录失败：{self._error_message(raw, exc.reason)}"
+                f"StoreIntel API {context}失败：{self._error_message(raw, exc.reason)}"
             ) from exc
         except URLError as exc:
-            raise StoreIntelApiError(f"StoreIntel API guest 登录失败：{exc.reason}") from exc
+            raise StoreIntelApiError(f"StoreIntel API {context}失败：{exc.reason}") from exc
 
         try:
             envelope = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
-            raise StoreIntelApiError("StoreIntel API guest 登录返回了无效 JSON。") from exc
+            raise StoreIntelApiError(f"StoreIntel API {context}返回了无效 JSON。") from exc
         if envelope.get("code") != 200:
             raise StoreIntelApiError(
-                f"StoreIntel API guest 登录失败：{self._error_message(raw, envelope.get('message'))}"
+                f"StoreIntel API {context}失败：{self._error_message(raw, envelope.get('message'))}"
             )
         data = envelope.get("data") or {}
         access_token = str(data.get("access_token") or "")
         if not access_token:
-            raise StoreIntelApiError("StoreIntel API guest 登录没有返回 access_token。")
-        self._access_token = access_token
-        self._refresh_token = str(data.get("refresh_token") or "")
+            raise StoreIntelApiError(f"StoreIntel API {context}没有返回 access_token。")
+        return access_token, str(data.get("refresh_token") or "")
 
     @staticmethod
     def _default_device_id() -> str:

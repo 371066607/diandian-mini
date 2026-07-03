@@ -1,7 +1,10 @@
+import pytest
 from sqlalchemy import inspect, text
 
 from app.db.database import Database
 from app.db.migrations import migrate
+
+pytestmark = pytest.mark.legacy
 
 
 def test_migrate_creates_all_tables(tmp_path):

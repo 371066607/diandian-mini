@@ -2,6 +2,10 @@ APP_TITLE = "catch-radar - Google Play 情报工具"
 # owner/name of the GitHub repo the in-app update checker queries for new releases
 GITHUB_REPO = "371066607/diandian-mini"
 DEFAULT_STOREINTEL_API_URL = "https://catchradar.meshub.ai"
+# Used when running from source (not a packaged/frozen build) and no
+# CATCH_RADAR_STOREINTEL_API_URL/STOREINTEL_API_URL is set, so a plain
+# `python main.py` during development never talks to production by default.
+DEV_STOREINTEL_API_URL = "http://127.0.0.1:8081"
 AUTH_DEVICE_ID_SETTING = "auth_device_id"
 WINDOW_WIDTH = 1440
 WINDOW_HEIGHT = 900

@@ -1,5 +1,11 @@
+import sys
+
 from app.composition import build_services
-from app.constants import AUTH_DEVICE_ID_SETTING, DEFAULT_STOREINTEL_API_URL
+from app.constants import (
+    AUTH_DEVICE_ID_SETTING,
+    DEFAULT_STOREINTEL_API_URL,
+    DEV_STOREINTEL_API_URL,
+)
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
 from app.services.settings_service import SettingsService
@@ -38,11 +44,12 @@ def test_scheduler_malformed_sync_time_does_not_crash(tmp_path):
     sched.shutdown()
 
 
-def test_build_services_uses_remote_scheduler_proxy_by_default(tmp_path, monkeypatch):
+def test_build_services_defaults_to_dev_url_when_running_from_source(tmp_path, monkeypatch):
     monkeypatch.delenv("CATCH_RADAR_STOREINTEL_API_URL", raising=False)
     monkeypatch.delenv("STOREINTEL_API_URL", raising=False)
     monkeypatch.delenv("CATCH_RADAR_LEGACY_LOCAL_MODE", raising=False)
     monkeypatch.delenv("CATCH_RADAR_OFFLINE_MODE", raising=False)
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
     db = Database(str(tmp_path / "default-api-mode.sqlite3"))
     db.create_all()
 
@@ -50,7 +57,7 @@ def test_build_services_uses_remote_scheduler_proxy_by_default(tmp_path, monkeyp
 
     client = services["store_intel_api_client"]
     assert client.enabled is True
-    assert client.base_url == DEFAULT_STOREINTEL_API_URL
+    assert client.base_url == DEV_STOREINTEL_API_URL
     stored_device_id = SettingsService(db).get(AUTH_DEVICE_ID_SETTING)
     assert stored_device_id == client.device_id
     assert stored_device_id.startswith("desktop-")
@@ -62,6 +69,22 @@ def test_build_services_uses_remote_scheduler_proxy_by_default(tmp_path, monkeyp
     scheduler.start()
     scheduler.reload_jobs()
     scheduler.shutdown()
+
+
+def test_build_services_defaults_to_production_url_when_frozen(tmp_path, monkeypatch):
+    monkeypatch.delenv("CATCH_RADAR_STOREINTEL_API_URL", raising=False)
+    monkeypatch.delenv("STOREINTEL_API_URL", raising=False)
+    monkeypatch.delenv("CATCH_RADAR_LEGACY_LOCAL_MODE", raising=False)
+    monkeypatch.delenv("CATCH_RADAR_OFFLINE_MODE", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    db = Database(str(tmp_path / "frozen-default-api-mode.sqlite3"))
+    db.create_all()
+
+    services = build_services(db)
+
+    client = services["store_intel_api_client"]
+    assert client.enabled is True
+    assert client.base_url == DEFAULT_STOREINTEL_API_URL
 
 
 def test_build_services_honors_api_url_override(tmp_path, monkeypatch):

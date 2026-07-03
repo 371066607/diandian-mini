@@ -1,6 +1,10 @@
 import json
 
+import pytest
+
 from app.services.google_play_service import GooglePlayService
+
+pytestmark = pytest.mark.legacy
 
 
 def test_parse_chart_response_maps_rank_and_installs():

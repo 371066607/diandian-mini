@@ -1,6 +1,7 @@
 # catch-radar
 
-基于 PySide6 + SQLite 的本地桌面客户端，用于抓取和查看 Google Play 应用情报。
+基于 PySide6/QML 的桌面客户端，用于查看和追踪应用商店情报。默认通过 Go 后端
+（`internal/project/catchradar`）的 API 读写数据；本地 SQLite 仅用于诊断/离线 fallback 模式。
 
 ## 运行环境
 
@@ -20,6 +21,10 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+源码直跑时，若未设置任何 API 相关环境变量，默认连本地后端
+`http://127.0.0.1:8081`（不会误连生产）。要连生产，显式设置
+`CATCH_RADAR_STOREINTEL_API_URL=https://catchradar.meshub.ai`。
 
 ## 测试 / 代码检查
 

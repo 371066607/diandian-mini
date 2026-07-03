@@ -158,7 +158,12 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: updateStartupCheckTimer.start()
+    Component.onCompleted: {
+        updateStartupCheckTimer.start()
+        if (bridge.legacyModeNotice) {
+            root.showToast(bridge.legacyModeNotice, false)
+        }
+    }
 
     Timer {
         id: updateStartupCheckTimer

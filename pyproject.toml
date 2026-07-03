@@ -15,3 +15,6 @@ target-version = "py312"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "legacy: exercises the frozen local-only offline diagnostic path (google_play_service.py scraping, full app/db migrations) — not the default API-mode product path",
+]
