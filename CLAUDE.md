@@ -69,60 +69,59 @@ purpose: the hot-patch overlays a downloaded `app/` onto `sys.path` but never re
 `main.py`, so a newly-added service only reaches existing users via a code patch if it's
 registered here.
 
-**QML bridge (`app/ui/qml_bridge.py`, ~3400 lines and shrinking).** A single `QObject`
+**QML bridge (`app/ui/qml_bridge.py`, ~1800 lines, down from 3781).** A single `QObject`
 aggregating `@Slot`/`@Property` members across every domain (search/detail/reviews/charts/
-keywords/coverage/tracking/alerts/settings), plus private helpers — some domain-specific, some
-shared infrastructure used across domains (`_run` async dispatch, `_store_intel_api`,
-`_request_api_refresh`, `_monitor_*` tree/series helpers spanning tracking+keyword+chart). Each
-slot delegates to the matching domain service from `composition.py` — API mode vs. legacy mode is
-decided once, centrally, when `build_services()` constructs those services, not by per-slot
-branching (`_api_mode_enabled()` is checked in exactly one place).
+keywords/coverage/tracking/dashboard/alerts/settings), plus shared infrastructure used across
+domains (`_run` async dispatch, `_store_intel_api`, `_request_api_refresh`, `_monitor_target` input
+validation). Each slot delegates to the matching domain service from `composition.py` — API mode
+vs. legacy mode is decided once, centrally, when `build_services()` constructs those services, not
+by per-slot branching (`_api_mode_enabled()` is checked in exactly one place).
 
-A decomposition into `app/ui/controllers/*` is well underway (aggregate-root pattern: QmlBridge
-keeps every Signal/Slot/Property QML binds to, unchanged; slot bodies become thin shims into plain
-Python controller classes that hold the actual domain logic). Extracted so far: `ApiLogController`,
+The decomposition into `app/ui/controllers/*` is **complete** (aggregate-root pattern: QmlBridge
+keeps every Signal/Slot/Property QML binds to, unchanged; slot bodies became thin shims into plain
+Python controller classes that hold the actual domain logic). Extracted: `ApiLogController`,
 `SettingsController`, `AlertController`, `ReviewController`, `ChartController`,
 `KeywordController`, `DetailController`, `SearchController`, `CoverageController`,
 `TrackingController` (all mutation CRUD: add/toggle/remove/sync/set-frequency/set-tag for tracked
-apps/keywords/chart-apps) — plus `app/ui/formatting.py`, a module of pure display-formatting
-functions (`fmt_count`, `short_time`, `review_row`, `alert_row`, etc.) that were previously
-duplicated-by-sharing across domains as private QmlBridge methods (e.g. `fmt_count` is used by
-both search results and the detail page). Some controllers (`DetailController`,
-`SearchController`, `CoverageController`, `TrackingController`) additionally export domain-local
-pure functions (`dev_links`, `has_search_display_data`, `has_coverage_cache_data`,
-`split_monitor_chart_key`, `is_valid_app_id`, etc.) that stayed with the domain rather than moving
-to `formatting.py`, since — unlike `fmt_count` — nothing outside that one domain uses them. Two
-collaborator shapes exist — pick based on what the logic needs:
+apps/keywords/chart-apps), and `DashboardController` (read/aggregation side: `monitorTree`,
+`monitorSeries`, dashboard summary, tracking list, history — the last domain extracted; needs a
+`bridge` reference for `_store_intel_api`, `services`, `database`/repositories, and the
+`_history_selection` state it mutates directly as `self.bridge._history_selection`) — plus
+`app/ui/formatting.py`, a module of pure display-formatting functions (`fmt_count`, `short_time`,
+`review_row`, `alert_row`, etc.) that were previously duplicated-by-sharing across domains as
+private QmlBridge methods (e.g. `fmt_count` is used by both search results and the detail page).
+Some controllers (`DetailController`, `SearchController`, `CoverageController`,
+`TrackingController`) additionally export domain-local pure functions (`dev_links`,
+`has_search_display_data`, `has_coverage_cache_data`, `split_monitor_chart_key`, `is_valid_app_id`,
+etc.) that stayed with the domain rather than moving to `formatting.py`, since — unlike
+`fmt_count` — nothing outside that one domain uses them. Two collaborator shapes exist — pick based
+on what the logic needs:
 - **`services`-only** (`SettingsController`, `AlertController`, `KeywordController` for its
   legacy-mode path): construct with `self.services`, no bridge reference needed.
 - **`bridge`-reference** (`ReviewController`, `ChartController`, `KeywordController`'s API-mode
-  path, `DetailController`, `SearchController`, `CoverageController`, `TrackingController`):
-  construct with `self` (the bridge), used when the logic needs the shared
+  path, `DetailController`, `SearchController`, `CoverageController`, `TrackingController`,
+  `DashboardController`): construct with `self` (the bridge), used when the logic needs the shared
   `_store_intel_api`/`_request_api_refresh`/`_active_store` helpers many domains call into (or, for
   `CoverageController`, the `coverageProgress` signal — the only domain with inline scan-progress
-  reporting).
+  reporting; or, for `DashboardController`, direct read/write of bridge state like
+  `_history_selection` and the `database`/repository attributes).
 
-`QmlBridge` is down to ~2600 lines from 3781 originally (~31%). What's left is the read/aggregation
-side of dashboard + tracking + monitor: `monitorTree`/`_monitor_tree_api`,
-`monitorSeries`/`_monitor_series_api`, `_collect_dashboard(_api)`, `_collect_tracking(_api)`,
-`_collect_history(_api)`, `_keyword_rank_label`, `_chart_rank_label`, `_health_row(_from_tracked)`
-— genuinely the most cross-coupled slice (a single dashboard payload pulls together app/keyword/
-chart/alert data at once), and lower priority than the mutation side since none of it has `_run`
-async-dispatch complexity — it's synchronous data-shaping called from simple `_set_dashboard`-style
-state setters. Extracting it would follow the same pattern as `TrackingController`'s read helpers
-(`find_item`, `platform_of`) — a `bridge`-reference controller with mostly pure formatting methods.
-Read the whole file, not just the slot you're touching, before assuming a helper is domain-local;
-grep every helper's call sites before moving it (several "domain" helpers turned out to be shared
-and belonged in `formatting.py` instead of a single controller — that was true for roughly half of
-what looked domain-specific at first glance). Follow `app/ui/controllers/tracking_controller.py`
-or `detail_controller.py` as the reference example, and add tests before extracting — most slots
-(`saveSettings`, `apiLogs`, `saveReviews`, `saveChartSnapshot`) had zero direct test coverage
-before being extracted, and the tracking-domain legacy/offline branches had none either despite
-heavy API-mode coverage; check coverage exists for whatever you're about to move, and add it if it
+What's left in `qml_bridge.py` is genuinely bridge-owned: the Slot/Property surface itself, `_run`
+async dispatch, per-domain UI state (`_dashboard`, `_tracking`, `_history`, etc.) and its
+`_set_*`/`*Changed` setters, cross-domain broadcast (`_after_mutation` refreshing five pages at
+once), and `_monitor_target` (shared input validation that emits `errorMessage`, used by five
+different mutation slots). Read the whole file, not just the slot you're touching, before assuming
+a helper is domain-local; grep every helper's call sites before moving it (several "domain" helpers
+turned out to be shared and belonged in `formatting.py` instead of a single controller — that was
+true for roughly half of what looked domain-specific at first glance). Follow
+`app/ui/controllers/tracking_controller.py` or `dashboard_controller.py` as the reference example
+for any future controller work, and add tests before extracting — most slots (`saveSettings`,
+`apiLogs`, `saveReviews`, `saveChartSnapshot`) had zero direct test coverage before being
+extracted, and legacy/offline-mode branches across several domains had none either despite heavy
+API-mode coverage; check coverage exists for whatever you're about to move, and add it if it
 doesn't. If a controller method has a real wait loop (`CoverageController.refresh_api_cache`'s 30s
-polling), its
-test must monkeypatch `time.sleep`/`time.monotonic` rather than actually waiting — caught late
-once, cost a slow test.
+polling), its test must monkeypatch `time.sleep`/`time.monotonic` rather than actually waiting —
+caught late once, cost a slow test.
 
 **Auth & token refresh (API mode).** `StoreIntelApiClient` starts unauthenticated; a 401 triggers
 guest login (`POST /api/auth/guest`) on first use. Once a session exists, a later 401 prefers
