@@ -31,6 +31,7 @@ from app.utils.normalize import (
 )
 
 _FEATURE_RETIRED_MESSAGE = "该功能已下线，请使用在线（API）模式。"
+_CHART_DEPENDENCY_UNAVAILABLE_MESSAGE = "榜单功能依赖的组件不可用，无法获取榜单数据。"
 
 
 class ServiceError(RuntimeError):
@@ -250,9 +251,10 @@ class GooglePlayService:
         limit: int = 100,
     ) -> list[ChartItem]:
         if self._gplay_scraper is None:
-            return self.chart(
-                chart_type=chart_type, category=category, country=country, lang=lang, limit=limit
-            )
+            # chart() is a retired-feature stub (always raises _FEATURE_RETIRED_MESSAGE) — that
+            # message would be misleading here, since list_analyze() itself is NOT retired, it
+            # just has no fetch path left when the optional gplay_scraper dependency is absent.
+            raise ServiceError(_CHART_DEPENDENCY_UNAVAILABLE_MESSAGE)
         normalized_type, _ = self._normalize_chart_type(chart_type)
         collection = normalized_type.upper()  # top_free -> TOP_FREE
         normalized_category = self._normalize_chart_category(category)

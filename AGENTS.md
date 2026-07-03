@@ -181,7 +181,12 @@ parser) has been deleted outright — not just deprioritized. What's left:
 - `app_detail()`, `reviews()`, `permissions()`, `list_analyze()`, `suggest()`, `configure()` are
   untouched and still fully functional — they're real `google_play_scraper`/`gplay_scraper`
   library calls, not custom scraping code. `app_detail()` lost only its optional DOM-enrichment
-  step for extra fields when the library response was incomplete.
+  step for extra fields when the library response was incomplete. **Caveat on `list_analyze()`:**
+  when the optional `gplay_scraper` dependency failed to import/construct (`self._gplay_scraper is
+  None`), it used to fall back to the raw batchexecute `chart()` RPC; now that `chart()` is a
+  retired-feature stub, that branch raises `_CHART_DEPENDENCY_UNAVAILABLE_MESSAGE` directly instead
+  of delegating to `chart()` — delegating would have surfaced the misleading "该功能已下线" message
+  for what's actually a missing-optional-dependency problem, not a retired feature.
 - `suggest_nested()` was deleted outright (confirmed zero production callers).
 - If you need to add scraping capability back for local diagnostics, this is the file — but check
   first whether the Go backend can serve it instead; this file's whole reason to exist is that the
