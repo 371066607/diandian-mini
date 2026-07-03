@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import platform
 import time
+import uuid
 from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -35,10 +38,16 @@ class StoreIntelApiClient:
         base_url: str | None = None,
         timeout: float = 30.0,
         log_sink: Callable[[dict[str, Any]], None] | None = None,
+        auth_app_id: str = "catchradar",
+        device_id: str | None = None,
     ) -> None:
         self.base_url = (base_url or "").strip().rstrip("/")
         self.timeout = timeout
         self.log_sink = log_sink
+        self.auth_app_id = auth_app_id
+        self.device_id = device_id or self._default_device_id()
+        self._access_token = ""
+        self._refresh_token = ""
 
     @property
     def enabled(self) -> bool:
@@ -50,11 +59,18 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 50,
+        platform: str = "google_play",
     ) -> list[AppSummary]:
         data = self._request(
             "GET",
             "/api/store-intel/apps/search",
-            query={"query": keyword, "country": country, "lang": lang, "limit": limit},
+            query={
+                "query": keyword,
+                "country": country,
+                "lang": lang,
+                "limit": limit,
+                "platform": platform,
+            },
         )
         return [AppSummary(**item) for item in self._items(data)]
 
@@ -64,27 +80,38 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 50,
+        platform: str = "google_play",
     ) -> list[AppSummary]:
         data = self._request(
             "GET",
             "/api/store-intel/apps/search/cache",
-            query={"query": keyword, "country": country, "lang": lang, "limit": limit},
+            query={
+                "query": keyword,
+                "country": country,
+                "lang": lang,
+                "limit": limit,
+                "platform": platform,
+            },
         )
         return [AppSummary(**item) for item in self._items(data)]
 
-    def app_detail(self, app_id: str, country: str = "us", lang: str = "en") -> AppDetail:
+    def app_detail(
+        self, app_id: str, country: str = "us", lang: str = "en", platform: str = "google_play"
+    ) -> AppDetail:
         data = self._request(
             "GET",
             f"/api/store-intel/apps/{quote(app_id, safe='')}",
-            query={"country": country, "lang": lang},
+            query={"country": country, "lang": lang, "platform": platform},
         )
         return AppDetail(**data)
 
-    def cached_app_detail(self, app_id: str, country: str = "us", lang: str = "en") -> AppDetail:
+    def cached_app_detail(
+        self, app_id: str, country: str = "us", lang: str = "en", platform: str = "google_play"
+    ) -> AppDetail:
         data = self._request(
             "GET",
             f"/api/store-intel/apps/{quote(app_id, safe='')}/cache",
-            query={"country": country, "lang": lang},
+            query={"country": country, "lang": lang, "platform": platform},
         )
         if (data or {}).get("cached") is False or not (data or {}).get("detail"):
             raise StoreIntelApiError("暂无应用详情缓存。")
@@ -96,11 +123,12 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 10,
+        platform: str = "google_play",
     ) -> list[AppSummary]:
         data = self._request(
             "GET",
             f"/api/store-intel/apps/{quote(app_id, safe='')}/similar",
-            query={"country": country, "lang": lang, "limit": limit},
+            query={"country": country, "lang": lang, "limit": limit, "platform": platform},
         )
         return [AppSummary(**item) for item in self._items(data)]
 
@@ -109,11 +137,12 @@ class StoreIntelApiClient:
         app_id: str,
         country: str = "us",
         lang: str = "en",
+        platform: str = "google_play",
     ) -> dict[str, list[str]]:
         data = self._request(
             "GET",
             f"/api/store-intel/apps/{quote(app_id, safe='')}/permissions",
-            query={"country": country, "lang": lang},
+            query={"country": country, "lang": lang, "platform": platform},
         )
         groups = data.get("groups") or {}
         return {
@@ -128,12 +157,14 @@ class StoreIntelApiClient:
         sort: str = "newest",
         continuation_token=None,
         limit: int = 20,
+        platform: str = "google_play",
     ) -> tuple[list[ReviewItem], object]:
         query: dict[str, Any] = {
             "country": country,
             "lang": lang,
             "sort": sort,
             "limit": limit,
+            "platform": platform,
         }
         if continuation_token:
             query["continuation_token"] = str(continuation_token)
@@ -150,6 +181,7 @@ class StoreIntelApiClient:
         country: str,
         lang: str,
         items: list[ReviewItem],
+        platform: str = "google_play",
     ) -> int:
         data = self._request(
             "POST",
@@ -158,15 +190,18 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "items": [self._to_jsonable(item) for item in items],
+                "platform": platform,
             },
         )
         return int(data.get("saved") or 0)
 
-    def list_cached_reviews(self, app_id: str, limit: int = 10) -> list[ReviewItem]:
+    def list_cached_reviews(
+        self, app_id: str, limit: int = 10, platform: str = "google_play"
+    ) -> list[ReviewItem]:
         data = self._request(
             "GET",
             f"/api/store-intel/apps/{quote(app_id, safe='')}/reviews/cache",
-            query={"limit": limit},
+            query={"limit": limit, "platform": platform},
         )
         return [ReviewItem(**item) for item in self._items(data)]
 
@@ -177,6 +212,7 @@ class StoreIntelApiClient:
         country: str,
         lang: str,
         limit: int,
+        platform: str = "google_play",
     ) -> list[ChartItem]:
         data = self._request(
             "GET",
@@ -187,6 +223,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return [ChartItem(**item) for item in self._items(data)]
@@ -198,6 +235,7 @@ class StoreIntelApiClient:
         country: str,
         lang: str,
         limit: int,
+        platform: str = "google_play",
     ) -> list[ChartItem]:
         data = self._request(
             "GET",
@@ -208,6 +246,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return [ChartItem(**item) for item in self._items(data)]
@@ -219,6 +258,7 @@ class StoreIntelApiClient:
         country: str,
         lang: str,
         items: list[ChartItem],
+        platform: str = "google_play",
     ) -> int:
         data = self._request(
             "POST",
@@ -229,6 +269,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "items": [self._to_jsonable(item) for item in items],
+                "platform": platform,
             },
         )
         return int(data.get("saved") or 0)
@@ -239,11 +280,18 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 80,
+        platform: str = "google_play",
     ) -> list[SimpleNamespace]:
         data = self._request(
             "GET",
             "/api/store-intel/app-snapshots/history",
-            query={"app_id": app_id, "country": country, "lang": lang, "limit": limit},
+            query={
+                "app_id": app_id,
+                "country": country,
+                "lang": lang,
+                "limit": limit,
+                "platform": platform,
+            },
         )
         return [self._namespace(item) for item in self._items(data)]
 
@@ -266,6 +314,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 100,
+        platform: str = "google_play",
     ) -> KeywordRankResult:
         data = self._request(
             "POST",
@@ -276,6 +325,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return KeywordRankResult(**data)
@@ -287,8 +337,11 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 100,
+        platform: str = "google_play",
     ) -> KeywordRankResult | None:
-        history = self.list_keyword_rank_history(keyword, app_id, country, lang, limit=1)
+        history = self.list_keyword_rank_history(
+            keyword, app_id, country, lang, limit=1, platform=platform
+        )
         if not history:
             return None
         item = history[-1]
@@ -331,6 +384,7 @@ class StoreIntelApiClient:
         deep: bool = False,
         candidates: list[str] | None = None,
         canonical_app_id: str | None = None,
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
@@ -343,6 +397,7 @@ class StoreIntelApiClient:
                 "deep": deep,
                 "candidates": candidates or [],
                 "canonical_app_id": canonical_app_id or "",
+                "platform": platform,
             },
         )
         return self._namespace(data)
@@ -353,6 +408,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         deep: bool = False,
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "GET",
@@ -362,6 +418,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "deep": str(deep).lower(),
+                "platform": platform,
             },
             timeout=min(self.timeout, 5.0),
         )
@@ -377,6 +434,7 @@ class StoreIntelApiClient:
         candidates: list[str] | None = None,
         canonical_app_id: str | None = None,
         progress: Callable[[str, float], None] | None = None,
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         result = None
         for event in self._stream_request(
@@ -390,6 +448,7 @@ class StoreIntelApiClient:
                 "deep": deep,
                 "candidates": candidates or [],
                 "canonical_app_id": canonical_app_id or "",
+                "platform": platform,
             },
             timeout=max(self.timeout, 180.0 if deep else 90.0),
         ):
@@ -413,28 +472,37 @@ class StoreIntelApiClient:
         data = self._request("POST", "/api/store-intel/settings", body=values)
         return {str(key): str(value) for key, value in (data or {}).items()}
 
-    def list_tracked_apps(self, enabled: bool | None = None) -> list[SimpleNamespace]:
-        data = self._request(
-            "GET",
-            "/api/store-intel/tracking/apps",
-            query={} if enabled is None else {"enabled": str(enabled).lower()},
-        )
+    def list_tracked_apps(
+        self, enabled: bool | None = None, platform: str = ""
+    ) -> list[SimpleNamespace]:
+        query: dict[str, Any] = {}
+        if enabled is not None:
+            query["enabled"] = str(enabled).lower()
+        if platform:
+            query["platform"] = platform
+        data = self._request("GET", "/api/store-intel/tracking/apps", query=query)
         return [self._namespace(item) for item in self._items(data)]
 
-    def list_tracked_keywords(self, enabled: bool | None = None) -> list[SimpleNamespace]:
-        data = self._request(
-            "GET",
-            "/api/store-intel/tracking/keywords",
-            query={} if enabled is None else {"enabled": str(enabled).lower()},
-        )
+    def list_tracked_keywords(
+        self, enabled: bool | None = None, platform: str = ""
+    ) -> list[SimpleNamespace]:
+        query: dict[str, Any] = {}
+        if enabled is not None:
+            query["enabled"] = str(enabled).lower()
+        if platform:
+            query["platform"] = platform
+        data = self._request("GET", "/api/store-intel/tracking/keywords", query=query)
         return [self._namespace(item) for item in self._items(data)]
 
-    def list_tracked_chart_apps(self, enabled: bool | None = None) -> list[SimpleNamespace]:
-        data = self._request(
-            "GET",
-            "/api/store-intel/tracking/chart-apps",
-            query={} if enabled is None else {"enabled": str(enabled).lower()},
-        )
+    def list_tracked_chart_apps(
+        self, enabled: bool | None = None, platform: str = ""
+    ) -> list[SimpleNamespace]:
+        query: dict[str, Any] = {}
+        if enabled is not None:
+            query["enabled"] = str(enabled).lower()
+        if platform:
+            query["platform"] = platform
+        data = self._request("GET", "/api/store-intel/tracking/chart-apps", query=query)
         return [self._namespace(item) for item in self._items(data)]
 
     def add_tracked_app(
@@ -444,6 +512,7 @@ class StoreIntelApiClient:
         lang: str = "en",
         frequency: str = "daily",
         tag: str = "",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
@@ -454,6 +523,7 @@ class StoreIntelApiClient:
                 "lang": lang,
                 "frequency": frequency,
                 "tag": tag,
+                "platform": platform,
             },
         )
         return self._namespace(data)
@@ -487,6 +557,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         frequency: str = "daily",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
@@ -498,45 +569,75 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "frequency": frequency,
+                "platform": platform,
             },
         )
         return self._namespace(data)
 
-    def remove_tracked_app(self, app_id: str, country: str = "us", lang: str = "en") -> int:
+    def remove_tracked_app(
+        self, app_id: str, country: str = "us", lang: str = "en", platform: str = "google_play"
+    ) -> int:
         data = self._request(
             "POST",
             "/api/store-intel/tracking/apps/remove",
-            body={"app_id": app_id, "country": country, "lang": lang},
+            body={"app_id": app_id, "country": country, "lang": lang, "platform": platform},
         )
         return int(data.get("updated") or 0)
 
     def set_tracked_app_enabled(
-        self, app_id: str, enabled: bool, country: str = "us", lang: str = "en"
+        self,
+        app_id: str,
+        enabled: bool,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
             "/api/store-intel/tracking/apps/enabled",
-            body={"app_id": app_id, "country": country, "lang": lang, "enabled": enabled},
+            body={
+                "app_id": app_id,
+                "country": country,
+                "lang": lang,
+                "enabled": enabled,
+                "platform": platform,
+            },
         )
         return self._namespace(data)
 
     def set_tracked_app_frequency(
-        self, app_id: str, frequency: str, country: str = "us", lang: str = "en"
+        self,
+        app_id: str,
+        frequency: str,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
             "/api/store-intel/tracking/apps/frequency",
-            body={"app_id": app_id, "country": country, "lang": lang, "frequency": frequency},
+            body={
+                "app_id": app_id,
+                "country": country,
+                "lang": lang,
+                "frequency": frequency,
+                "platform": platform,
+            },
         )
         return self._namespace(data)
 
     def set_tracked_app_tag(
-        self, app_id: str, tag: str, country: str = "us", lang: str = "en"
+        self,
+        app_id: str,
+        tag: str,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
             "/api/store-intel/tracking/apps/tag",
-            body={"app_id": app_id, "country": country, "lang": lang, "tag": tag},
+            body={"app_id": app_id, "country": country, "lang": lang, "tag": tag, "platform": platform},
         )
         return self._namespace(data)
 
@@ -637,6 +738,7 @@ class StoreIntelApiClient:
         category: str | None = "APPLICATION",
         country: str = "us",
         lang: str = "en",
+        platform: str = "google_play",
     ) -> int:
         data = self._request(
             "POST",
@@ -647,6 +749,7 @@ class StoreIntelApiClient:
                 "category": category or "",
                 "country": country,
                 "lang": lang,
+                "platform": platform,
             },
         )
         return int(data.get("updated") or 0)
@@ -659,6 +762,7 @@ class StoreIntelApiClient:
         category: str | None = "APPLICATION",
         country: str = "us",
         lang: str = "en",
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
@@ -670,6 +774,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "enabled": enabled,
+                "platform": platform,
             },
         )
         return self._namespace(data)
@@ -682,6 +787,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 100,
+        platform: str = "google_play",
     ) -> SimpleNamespace:
         data = self._request(
             "POST",
@@ -693,15 +799,18 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return self._namespace(data.get("rank") or {})
 
-    def sync_app_now(self, app_id: str, country: str = "us", lang: str = "en") -> AppDetail:
+    def sync_app_now(
+        self, app_id: str, country: str = "us", lang: str = "en", platform: str = "google_play"
+    ) -> AppDetail:
         data = self._request(
             "POST",
             "/api/store-intel/tracking/apps/sync",
-            body={"app_id": app_id, "country": country, "lang": lang},
+            body={"app_id": app_id, "country": country, "lang": lang, "platform": platform},
         )
         return AppDetail(**data.get("detail", {}))
 
@@ -768,6 +877,7 @@ class StoreIntelApiClient:
         severity: str = "",
         is_read: bool | None = None,
         limit: int = 200,
+        platform: str = "",
     ) -> list[SimpleNamespace]:
         query: dict[str, Any] = {
             "app_id": app_id,
@@ -777,6 +887,8 @@ class StoreIntelApiClient:
         }
         if is_read is not None:
             query["is_read"] = str(is_read).lower()
+        if platform:
+            query["platform"] = platform
         data = self._request("GET", "/api/store-intel/alerts", query=query)
         return [self._namespace(item) for item in self._items(data)]
 
@@ -792,10 +904,20 @@ class StoreIntelApiClient:
         return int(data.get("updated") or 0)
 
     def latest_keyword_rank_label(
-        self, keyword: str, app_id: str, country: str = "us", lang: str = "en"
+        self,
+        keyword: str,
+        app_id: str,
+        country: str = "us",
+        lang: str = "en",
+        platform: str = "google_play",
     ) -> str:
         return self._rank_label(
-            (self.list_keyword_rank_history(keyword, app_id, country, lang, limit=1) or [None])[-1]
+            (
+                self.list_keyword_rank_history(
+                    keyword, app_id, country, lang, limit=1, platform=platform
+                )
+                or [None]
+            )[-1]
         )
 
     def list_keyword_rank_history(
@@ -805,6 +927,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 0,
+        platform: str = "google_play",
     ) -> list[SimpleNamespace]:
         data = self._request(
             "GET",
@@ -815,6 +938,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return [self._namespace(item) for item in self._items(data)]
@@ -826,6 +950,7 @@ class StoreIntelApiClient:
         country: str = "",
         lang: str = "",
         limit: int = 8,
+        platform: str = "",
     ) -> list[SimpleNamespace]:
         query: dict[str, Any] = {"limit": limit}
         if app_id:
@@ -834,6 +959,8 @@ class StoreIntelApiClient:
             query["country"] = country
         if lang:
             query["lang"] = lang
+        if platform:
+            query["platform"] = platform
         data = self._request(
             "GET",
             "/api/store-intel/keyword-rank/recent",
@@ -848,6 +975,7 @@ class StoreIntelApiClient:
         category: str | None = "APPLICATION",
         country: str = "us",
         lang: str = "en",
+        platform: str = "google_play",
     ) -> str:
         return self._rank_label(
             (
@@ -858,6 +986,7 @@ class StoreIntelApiClient:
                     country=country,
                     lang=lang,
                     limit=1,
+                    platform=platform,
                 )
                 or [None]
             )[-1]
@@ -871,6 +1000,7 @@ class StoreIntelApiClient:
         country: str = "us",
         lang: str = "en",
         limit: int = 0,
+        platform: str = "google_play",
     ) -> list[SimpleNamespace]:
         data = self._request(
             "GET",
@@ -882,6 +1012,7 @@ class StoreIntelApiClient:
                 "country": country,
                 "lang": lang,
                 "limit": limit,
+                "platform": platform,
             },
         )
         return [self._namespace(item) for item in self._items(data)]
@@ -904,11 +1035,8 @@ class StoreIntelApiClient:
             url += "?" + encoded_query
             request_path += "?" + encoded_query
         payload = None
-        headers = {"Accept": "application/json", "User-Agent": DEFAULT_USER_AGENT}
         if body is not None:
             payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json; charset=utf-8"
-        request = Request(url, data=payload, headers=headers, method=method)
         started = time.perf_counter()
         status: int | None = None
         code: Any = None
@@ -932,25 +1060,41 @@ class StoreIntelApiClient:
                 started=started,
             )
 
-        try:
-            with urlopen(request, timeout=timeout or self.timeout) as response:
-                status = getattr(response, "status", None)
-                raw = response.read().decode("utf-8")
-        except HTTPError as exc:
-            status = getattr(exc, "code", None)
-            raw = exc.read().decode("utf-8", errors="replace")
-            raw_response = self._text_preview(raw)
-            error = self._error_message(raw, exc.reason)
-            emit_log()
-            raise StoreIntelApiError(error) from exc
-        except URLError as exc:
-            error = f"StoreIntel API 请求失败：{exc.reason}"
-            emit_log()
-            raise StoreIntelApiError(error) from exc
-        except Exception as exc:
-            error = str(exc)
-            emit_log()
-            raise
+        for attempt in range(2):
+            request = Request(
+                url,
+                data=payload,
+                headers=self._request_headers("application/json", has_body=body is not None),
+                method=method,
+            )
+            try:
+                with urlopen(request, timeout=timeout or self.timeout) as response:
+                    status = getattr(response, "status", None)
+                    raw = response.read().decode("utf-8")
+                break
+            except HTTPError as exc:
+                status = getattr(exc, "code", None)
+                raw = exc.read().decode("utf-8", errors="replace")
+                raw_response = self._text_preview(raw)
+                if self._should_guest_retry(path, status, attempt):
+                    try:
+                        self._guest_login()
+                    except StoreIntelApiError as auth_exc:
+                        error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
+                        emit_log()
+                        raise StoreIntelApiError(error) from exc
+                    continue
+                error = self._error_message(raw, exc.reason)
+                emit_log()
+                raise StoreIntelApiError(error) from exc
+            except URLError as exc:
+                error = f"StoreIntel API 请求失败：{exc.reason}"
+                emit_log()
+                raise StoreIntelApiError(error) from exc
+            except Exception as exc:
+                error = str(exc)
+                emit_log()
+                raise
         try:
             envelope = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
@@ -980,28 +1124,49 @@ class StoreIntelApiClient:
         if not self.enabled:
             raise StoreIntelApiError("StoreIntel API 未配置。")
         payload = None
-        headers = {"Accept": "application/x-ndjson", "User-Agent": DEFAULT_USER_AGENT}
         if body is not None:
             payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json; charset=utf-8"
-        request = Request(self.base_url + path, data=payload, headers=headers, method=method)
         started = time.perf_counter()
         status: int | None = None
         ok = False
         error = ""
         try:
-            with urlopen(request, timeout=timeout or self.timeout) as response:
-                status = getattr(response, "status", None)
-                for raw_line in response:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line:
+            for attempt in range(2):
+                request = Request(
+                    self.base_url + path,
+                    data=payload,
+                    headers=self._request_headers(
+                        "application/x-ndjson",
+                        has_body=body is not None,
+                    ),
+                    method=method,
+                )
+                try:
+                    with urlopen(request, timeout=timeout or self.timeout) as response:
+                        status = getattr(response, "status", None)
+                        for raw_line in response:
+                            line = raw_line.decode("utf-8", errors="replace").strip()
+                            if not line:
+                                continue
+                            try:
+                                yield json.loads(line)
+                            except json.JSONDecodeError as exc:
+                                error = "StoreIntel API 返回了无效流式 JSON。"
+                                raise StoreIntelApiError(error) from exc
+                        ok = True
+                    break
+                except HTTPError as exc:
+                    status = getattr(exc, "code", None)
+                    raw = exc.read().decode("utf-8", errors="replace")
+                    if self._should_guest_retry(path, status, attempt):
+                        try:
+                            self._guest_login()
+                        except StoreIntelApiError as auth_exc:
+                            error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
+                            raise StoreIntelApiError(error) from exc
                         continue
-                    try:
-                        yield json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        error = "StoreIntel API 返回了无效流式 JSON。"
-                        raise StoreIntelApiError(error) from exc
-                ok = True
+                    error = self._error_message(raw, exc.reason)
+                    raise StoreIntelApiError(error) from exc
         except HTTPError as exc:
             status = getattr(exc, "code", None)
             raw = exc.read().decode("utf-8", errors="replace")
@@ -1032,6 +1197,77 @@ class StoreIntelApiClient:
 
     def set_log_sink(self, log_sink: Callable[[dict[str, Any]], None] | None) -> None:
         self.log_sink = log_sink
+
+    def _request_headers(
+        self,
+        accept: str,
+        *,
+        has_body: bool,
+        include_auth: bool = True,
+    ) -> dict[str, str]:
+        headers = {"Accept": accept, "User-Agent": DEFAULT_USER_AGENT}
+        if has_body:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        if include_auth and self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+        return headers
+
+    def _should_guest_retry(self, path: str, status: int | None, attempt: int) -> bool:
+        return status == 401 and attempt == 0 and path != "/api/auth/guest"
+
+    def _guest_login(self) -> None:
+        if not self.enabled:
+            raise StoreIntelApiError("StoreIntel API 未配置。")
+        body = {
+            "app_id": self.auth_app_id,
+            "device_id": self.device_id,
+            "platform": "desktop",
+        }
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        request = Request(
+            self.base_url + "/api/auth/guest",
+            data=payload,
+            headers=self._request_headers("application/json", has_body=True, include_auth=False),
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8")
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise StoreIntelApiError(
+                f"StoreIntel API guest 登录失败：{self._error_message(raw, exc.reason)}"
+            ) from exc
+        except URLError as exc:
+            raise StoreIntelApiError(f"StoreIntel API guest 登录失败：{exc.reason}") from exc
+
+        try:
+            envelope = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise StoreIntelApiError("StoreIntel API guest 登录返回了无效 JSON。") from exc
+        if envelope.get("code") != 200:
+            raise StoreIntelApiError(
+                f"StoreIntel API guest 登录失败：{self._error_message(raw, envelope.get('message'))}"
+            )
+        data = envelope.get("data") or {}
+        access_token = str(data.get("access_token") or "")
+        if not access_token:
+            raise StoreIntelApiError("StoreIntel API guest 登录没有返回 access_token。")
+        self._access_token = access_token
+        self._refresh_token = str(data.get("refresh_token") or "")
+
+    @staticmethod
+    def _default_device_id() -> str:
+        seed = "|".join(
+            [
+                platform.node(),
+                platform.system(),
+                platform.machine(),
+                str(uuid.getnode()),
+            ]
+        )
+        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+        return f"desktop-{digest[:32]}"
 
     def _emit_log(
         self,

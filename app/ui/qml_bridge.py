@@ -182,11 +182,6 @@ class QmlBridge(QObject):
         platform = (platform or "").strip()
         if platform not in ("google_play", "app_store") or platform == self._platform:
             return
-        if platform == "app_store" and self._api_mode_enabled():
-            self.errorMessage.emit(
-                "App Store 后端接口尚未接入，默认后端模式已禁用本地 iTunes 数据源。"
-            )
-            return
         self._platform = platform
         self.platformChanged.emit()
         self._clear_platform_results()
@@ -253,13 +248,10 @@ class QmlBridge(QObject):
         return self.services["google_play_service"]
 
     def _store_intel_api(self, platform: str | None = None):
-        """Go backend adapter used by the default Google Play shell mode.
-
-        App Store is available only in explicit legacy/offline mode until the Go
-        backend exposes an App Store source.
+        """Go backend adapter used in the default API shell mode. The backend now
+        serves both platforms; only explicit legacy/offline mode (client.enabled
+        False) falls back to _active_store()'s local scrapers.
         """
-        if (platform or self._platform) != "google_play":
-            return None
         client = self.services.get("store_intel_api_client")
         if client is not None and getattr(client, "enabled", False):
             return client
@@ -470,13 +462,6 @@ class QmlBridge(QObject):
         if service is not None:
             service.restart()
 
-    def _guard_google_play_only(self, feature: str) -> bool:
-        """True (and an error toast) when the feature is unavailable on App Store."""
-        if self._platform == "app_store":
-            self.errorMessage.emit(f"{feature}目前仅支持 Google Play，请先切回平台。")
-            return True
-        return False
-
     @Slot()
     def refreshAll(self) -> None:
         self.refreshDashboard()
@@ -568,6 +553,7 @@ class QmlBridge(QObject):
                                     getattr(keyword, "app_id", ""),
                                     getattr(keyword, "country", "us"),
                                     getattr(keyword, "lang", "en"),
+                                    getattr(keyword, "platform", "google_play") or "google_play",
                                 ),
                             }
                             for keyword in keywords
@@ -585,6 +571,7 @@ class QmlBridge(QObject):
                                     getattr(chart, "category", "") or None,
                                     getattr(chart, "country", "us"),
                                     getattr(chart, "lang", "en"),
+                                    getattr(chart, "platform", "google_play") or "google_play",
                                 ),
                             }
                             for chart in chart_apps
@@ -728,6 +715,7 @@ class QmlBridge(QObject):
         key: str,
         days: int = 30,
     ) -> dict[str, Any]:
+        platform = self._monitor_platform(api, kind, app_id, country, lang, key)
         cutoff = (
             ""
             if days <= 0
@@ -743,7 +731,9 @@ class QmlBridge(QObject):
 
         try:
             if kind == "keyword":
-                rows = win(api.list_keyword_rank_history(key, app_id, country, lang))
+                rows = win(
+                    api.list_keyword_rank_history(key, app_id, country, lang, platform=platform)
+                )
                 labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
                 values = [
                     getattr(row, "rank", None) or getattr(row, "checked_limit", None) or 0
@@ -772,6 +762,7 @@ class QmlBridge(QObject):
                         category or None,
                         country,
                         lang,
+                        platform=platform,
                     )
                 )
                 labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
@@ -793,7 +784,7 @@ class QmlBridge(QObject):
                         }
                     ],
                 }
-            rows = win(api.list_app_snapshots(app_id, country, lang, limit=0))
+            rows = win(api.list_app_snapshots(app_id, country, lang, limit=0, platform=platform))
             labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
             last = rows[-1] if rows else None
             return {
@@ -875,11 +866,12 @@ class QmlBridge(QObject):
         category = parts[1].strip() if len(parts) > 1 else "APPLICATION"
         return collection, category or "APPLICATION"
 
-    def _toggle_monitor_api(
-        self, api, kind: str, app_id: str, country: str, lang: str, key: str
-    ) -> bool:
+    def _find_monitor_item(self, api, kind: str, app_id: str, country: str, lang: str, key: str):
+        """The QML monitor list only round-trips kind/app_id/country/lang/key through
+        these slots, not platform — look the row back up so mutation calls route to the
+        upstream that actually owns it instead of silently defaulting to Google Play."""
         if kind == "app":
-            current = next(
+            return next(
                 (
                     item
                     for item in api.list_tracked_apps()
@@ -889,11 +881,8 @@ class QmlBridge(QObject):
                 ),
                 None,
             )
-            enabled = not bool(getattr(current, "enabled", False)) if current else True
-            result = api.set_tracked_app_enabled(app_id, enabled, country, lang)
-            return bool(getattr(result, "enabled", enabled))
         if kind == "keyword":
-            current = next(
+            return next(
                 (
                     item
                     for item in api.list_tracked_keywords()
@@ -904,14 +893,8 @@ class QmlBridge(QObject):
                 ),
                 None,
             )
-            enabled = not bool(getattr(current, "enabled", False)) if current else True
-            platform = getattr(current, "platform", "google_play") if current else "google_play"
-            result = api.set_tracked_keyword_enabled(
-                key, app_id, enabled, country, lang, platform
-            )
-            return bool(getattr(result, "enabled", enabled))
         collection, category = self._split_monitor_chart_key(key)
-        current = next(
+        return next(
             (
                 item
                 for item in api.list_tracked_chart_apps()
@@ -923,9 +906,28 @@ class QmlBridge(QObject):
             ),
             None,
         )
+
+    def _monitor_platform(self, api, kind: str, app_id: str, country: str, lang: str, key: str) -> str:
+        current = self._find_monitor_item(api, kind, app_id, country, lang, key)
+        return getattr(current, "platform", "google_play") if current else "google_play"
+
+    def _toggle_monitor_api(
+        self, api, kind: str, app_id: str, country: str, lang: str, key: str
+    ) -> bool:
+        current = self._find_monitor_item(api, kind, app_id, country, lang, key)
         enabled = not bool(getattr(current, "enabled", False)) if current else True
+        platform = getattr(current, "platform", "google_play") if current else "google_play"
+        if kind == "app":
+            result = api.set_tracked_app_enabled(app_id, enabled, country, lang, platform)
+            return bool(getattr(result, "enabled", enabled))
+        if kind == "keyword":
+            result = api.set_tracked_keyword_enabled(
+                key, app_id, enabled, country, lang, platform
+            )
+            return bool(getattr(result, "enabled", enabled))
+        collection, category = self._split_monitor_chart_key(key)
         result = api.set_tracked_chart_app_enabled(
-            app_id, collection, enabled, category, country, lang
+            app_id, collection, enabled, category, country, lang, platform
         )
         return bool(getattr(result, "enabled", enabled))
 
@@ -973,20 +975,25 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str)
     def addApp(self, app_id: str, country: str, lang: str, frequency: str) -> None:
-        if self._guard_google_play_only("App 监控"):
-            return
         app_id = app_id.strip()
         if not app_id:
             self.errorMessage.emit("请输入要监控的包名。")
+            return
+        if not self._is_valid_app_id(app_id, self._platform):
+            if self._platform == "app_store":
+                self.errorMessage.emit("App Store 目标请填数字 App ID，如 587366035。")
+            else:
+                self.errorMessage.emit("Google Play 目标请填包名，如 com.example.app。")
             return
         self._remember_input("app_id", app_id)
         country = country.strip() or "us"
         lang = lang.strip() or "en"
         frequency = frequency.strip() or "daily"
+        platform = self._platform
         api = self._store_intel_api()
         self._run(
             lambda: (
-                api.add_tracked_app(app_id, country, lang, frequency)
+                api.add_tracked_app(app_id, country, lang, frequency, platform=platform)
                 if api is not None
                 else self.services["tracking_service"].add_app(app_id, country, lang, frequency)
             ),
@@ -996,8 +1003,6 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str)
     def bulkImportApps(self, raw_text: str, country: str, lang: str, frequency: str) -> None:
-        if self._guard_google_play_only("批量导入监控"):
-            return
         app_ids = self._bulk_app_ids(raw_text)
         if not app_ids:
             self.errorMessage.emit("请粘贴至少一个包名。")
@@ -1008,6 +1013,7 @@ class QmlBridge(QObject):
         country = (country or "").strip() or "us"
         lang = (lang or "").strip() or "en"
         frequency = (frequency or "").strip() or "daily"
+        platform = self._platform
         api = self._store_intel_api()
 
         def bulk_import() -> dict[str, Any]:
@@ -1018,18 +1024,18 @@ class QmlBridge(QObject):
 
             existing_keys = {
                 (getattr(item, "app_id", ""), getattr(item, "country", "us"), getattr(item, "lang", "en"))
-                for item in api.list_tracked_apps()
+                for item in api.list_tracked_apps(platform=platform)
             }
             added = 0
             existing = 0
             failed: list[dict[str, str]] = []
             for app_id in app_ids:
-                if not self._is_valid_package_name(app_id):
+                if not self._is_valid_app_id(app_id, platform):
                     failed.append({"app_id": app_id, "reason": "包名格式不合法"})
                     continue
                 try:
                     already = (app_id, country, lang) in existing_keys
-                    api.add_tracked_app(app_id, country, lang, frequency)
+                    api.add_tracked_app(app_id, country, lang, frequency, platform=platform)
                     if already:
                         existing += 1
                     else:
@@ -1054,12 +1060,12 @@ class QmlBridge(QObject):
         return cleaned
 
     @staticmethod
-    def _is_valid_package_name(app_id: str) -> bool:
-        return bool(
-            app_id
-            and " " not in app_id
-            and re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", app_id)
-        )
+    def _is_valid_app_id(app_id: str, platform: str = "google_play") -> bool:
+        if not app_id or " " in app_id:
+            return False
+        if platform == "app_store":
+            return app_id.isdigit()
+        return bool(re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", app_id))
 
     @Slot(str, str, str, str, str)
     def addChartApp(
@@ -1070,22 +1076,28 @@ class QmlBridge(QObject):
         country: str,
         lang: str,
     ) -> None:
-        if self._guard_google_play_only("榜单监控"):
-            return
         app_id = app_id.strip()
         if not app_id:
             self.errorMessage.emit("请输入要监控榜单的包名。")
             return
+        if not self._is_valid_app_id(app_id, self._platform):
+            if self._platform == "app_store":
+                self.errorMessage.emit("App Store 目标请填数字 App ID，如 587366035。")
+            else:
+                self.errorMessage.emit("Google Play 目标请填包名，如 com.example.app。")
+            return
         self._remember_input("app_id", app_id)
+        platform = self._platform
         api = self._store_intel_api()
         self._run(
             lambda: (
                 api.add_tracked_chart_app(
                     app_id,
                     collection.strip() or "top_free",
-                    category.strip() or "APPLICATION",
+                    category.strip() or None,
                     country.strip() or "us",
                     lang.strip() or "en",
+                    platform=platform,
                 )
                 if api is not None
                 else self.services["tracking_service"].add_chart_app(
@@ -1144,8 +1156,6 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str, str)
     def syncMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
-        if self._guard_google_play_only("监控同步"):
-            return
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
@@ -1154,9 +1164,16 @@ class QmlBridge(QObject):
         def sync():
             target_kind, target_app, target_country, target_lang, target_key = target
             if api is not None:
+                platform = self._monitor_platform(
+                    api, target_kind, target_app, target_country, target_lang, target_key
+                )
                 if target_kind == "app":
                     job = api.request_refresh(
-                        "app", app_id=target_app, country=target_country, lang=target_lang
+                        "app",
+                        app_id=target_app,
+                        country=target_country,
+                        lang=target_lang,
+                        platform=platform,
                     )
                     return f"已提交应用后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
                 if target_kind == "keyword":
@@ -1166,6 +1183,7 @@ class QmlBridge(QObject):
                         app_id=target_app,
                         country=target_country,
                         lang=target_lang,
+                        platform=platform,
                     )
                     return f"已提交关键词后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
                 collection, category = self._split_monitor_chart_key(target_key)
@@ -1176,6 +1194,7 @@ class QmlBridge(QObject):
                     category=category,
                     country=target_country,
                     lang=target_lang,
+                    platform=platform,
                 )
                 return f"已提交榜单后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
             tracking_service = self.services["tracking_service"]
@@ -1200,8 +1219,6 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str, str)
     def toggleMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
-        if self._guard_google_play_only("监控启停"):
-            return
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
@@ -1240,8 +1257,6 @@ class QmlBridge(QObject):
     def setMonitorFrequency(
         self, kind: str, app_id: str, country: str, lang: str, key: str, frequency: str
     ) -> None:
-        if self._guard_google_play_only("监控频率"):
-            return
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
@@ -1254,13 +1269,16 @@ class QmlBridge(QObject):
 
         def save() -> str:
             if api is not None:
+                platform = self._monitor_platform(
+                    api, target_kind, target_app, target_country, target_lang, target_key
+                )
                 if target_kind == "app":
                     result = api.set_tracked_app_frequency(
-                        target_app, frequency, target_country, target_lang
+                        target_app, frequency, target_country, target_lang, platform
                     )
                 else:
                     result = api.set_tracked_keyword_frequency(
-                        target_key, target_app, frequency, target_country, target_lang
+                        target_key, target_app, frequency, target_country, target_lang, platform
                     )
                 return getattr(result, "frequency", frequency)
             tracking_service = self.services["tracking_service"]
@@ -1284,12 +1302,10 @@ class QmlBridge(QObject):
     def setMonitorTag(
         self, kind: str, app_id: str, country: str, lang: str, key: str, tag: str
     ) -> None:
-        if self._guard_google_play_only("监控标签"):
-            return
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
-        target_kind, target_app, target_country, target_lang, _ = target
+        target_kind, target_app, target_country, target_lang, target_key = target
         if target_kind != "app":
             self.errorMessage.emit("只有 App 监控支持标签。")
             return
@@ -1298,7 +1314,12 @@ class QmlBridge(QObject):
 
         def save() -> str:
             if api is not None:
-                result = api.set_tracked_app_tag(target_app, tag, target_country, target_lang)
+                platform = self._monitor_platform(
+                    api, target_kind, target_app, target_country, target_lang, target_key
+                )
+                result = api.set_tracked_app_tag(
+                    target_app, tag, target_country, target_lang, platform
+                )
                 return getattr(result, "tag", tag)
             result = self.services["tracking_service"].set_app_tag(
                 target_app, target_country, target_lang, tag
@@ -1315,8 +1336,6 @@ class QmlBridge(QObject):
 
     @Slot(str, str, str, str, str)
     def removeMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
-        if self._guard_google_play_only("删除监控"):
-            return
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
@@ -1325,15 +1344,21 @@ class QmlBridge(QObject):
         def remove() -> str:
             target_kind, target_app, target_country, target_lang, target_key = target
             if api is not None:
+                # Resolve platform before removing — the row won't exist to look up afterward.
+                platform = self._monitor_platform(
+                    api, target_kind, target_app, target_country, target_lang, target_key
+                )
                 if target_kind == "app":
-                    api.remove_tracked_app(target_app, target_country, target_lang)
+                    api.remove_tracked_app(target_app, target_country, target_lang, platform)
                     return "已删除应用监控。"
                 if target_kind == "keyword":
-                    api.remove_tracked_keyword(target_key, target_app, target_country, target_lang)
+                    api.remove_tracked_keyword(
+                        target_key, target_app, target_country, target_lang, platform
+                    )
                     return "已删除关键词监控。"
                 collection, category = self._split_monitor_chart_key(target_key)
                 api.remove_tracked_chart_app(
-                    target_app, collection, category, target_country, target_lang
+                    target_app, collection, category, target_country, target_lang, platform
                 )
                 return "已删除榜单监控。"
             tracking_service = self.services["tracking_service"]
@@ -1451,6 +1476,7 @@ class QmlBridge(QObject):
         country_value = country.strip() or "us"
         lang_value = lang.strip() or "en"
         limit_value = safe_int(limit, 50)
+        platform = self._platform
         self._search_request_id += 1
         request_id = self._search_request_id
 
@@ -1470,6 +1496,7 @@ class QmlBridge(QObject):
                 country=country_value,
                 lang=lang_value,
                 limit=limit_value,
+                platform=platform,
             )
             had_cached_items = bool(items)
             if not items:
@@ -1480,12 +1507,14 @@ class QmlBridge(QObject):
                     country=country_value,
                     lang=lang_value,
                     limit=limit_value,
+                    platform=platform,
                 )
                 items = api.search_cached(
                     keyword,
                     country=country_value,
                     lang=lang_value,
                     limit=limit_value,
+                    platform=platform,
                 )
             return {
                 "items": items,
@@ -1511,6 +1540,7 @@ class QmlBridge(QObject):
                     country_value,
                     lang_value,
                     limit_value,
+                    platform,
                 )
 
         self._run(
@@ -1529,15 +1559,19 @@ class QmlBridge(QObject):
 
     @Slot(int, str, str)
     def addSearchResultTracking(self, index: int, country: str, lang: str) -> None:
-        if self._guard_google_play_only("App 监控"):
-            return
         item = self._item_at(self._search_items, index, "请先选择一条搜索结果。")
         if item is None:
             return
+        item_platform = getattr(item, "platform", "google_play") or "google_play"
         api = self._store_intel_api()
         self._run(
             lambda: (
-                api.add_tracked_app(item.app_id, country.strip() or "us", lang.strip() or "en")
+                api.add_tracked_app(
+                    item.app_id,
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                    platform=item_platform,
+                )
                 if api is not None
                 else self.services["tracking_service"].add_app(
                     item.app_id,
@@ -1563,6 +1597,7 @@ class QmlBridge(QObject):
         self._detail_context = context
         self._detail_request_id += 1
         request_id = self._detail_request_id
+        platform = self._platform
         api = self._store_intel_api()
         store = None if api is not None else self._active_store()
 
@@ -1582,6 +1617,7 @@ class QmlBridge(QObject):
                     app_id,
                     country=context["country"],
                     lang=context["lang"],
+                    platform=platform,
                 )
             except Exception:
                 self._request_api_refresh(
@@ -1590,11 +1626,13 @@ class QmlBridge(QObject):
                     app_id=app_id,
                     country=context["country"],
                     lang=context["lang"],
+                    platform=platform,
                 )
                 cached = api.cached_app_detail(
                     app_id,
                     country=context["country"],
                     lang=context["lang"],
+                    platform=platform,
                 )
             if not self._has_app_detail_data(cached):
                 raise RuntimeError("服务器没有返回可用的应用详情数据。")
@@ -1605,12 +1643,14 @@ class QmlBridge(QObject):
                     app_id=app_id,
                     country=context["country"],
                     lang=context["lang"],
+                    platform=platform,
                 )
                 try:
                     refreshed = api.cached_app_detail(
                         app_id,
                         country=context["country"],
                         lang=context["lang"],
+                        platform=platform,
                     )
                     if self._has_app_detail_data(refreshed):
                         cached = refreshed
@@ -1631,8 +1671,6 @@ class QmlBridge(QObject):
 
     @Slot()
     def fetchDetailPermissions(self) -> None:
-        if self._guard_google_play_only("权限数据"):
-            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
@@ -1654,17 +1692,20 @@ class QmlBridge(QObject):
 
     @Slot(str, str)
     def saveDetailSnapshot(self, country: str, lang: str) -> None:
-        if self._guard_google_play_only("快照"):
-            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
         app_id = self._detail_item.app_id
+        platform = getattr(self._detail_item, "platform", "google_play") or "google_play"
         api = self._store_intel_api()
         if api is not None:
             self._run(
                 lambda: api.request_refresh(
-                    "app", app_id=app_id, country=country.strip() or "us", lang=lang.strip() or "en"
+                    "app",
+                    app_id=app_id,
+                    country=country.strip() or "us",
+                    lang=lang.strip() or "en",
+                    platform=platform,
                 ),
                 lambda job: self._after_mutation(
                     f"已请求服务器刷新应用快照（任务 {getattr(job, 'job_id', '-')}）。"
@@ -1684,16 +1725,17 @@ class QmlBridge(QObject):
 
     @Slot(str, str)
     def addDetailTracking(self, country: str, lang: str) -> None:
-        if self._guard_google_play_only("App 监控"):
-            return
         if self._detail_item is None:
             self.errorMessage.emit("请先获取应用详情。")
             return
         app_id = self._detail_item.app_id
+        platform = getattr(self._detail_item, "platform", "google_play") or "google_play"
         api = self._store_intel_api()
         self._run(
             lambda: (
-                api.add_tracked_app(app_id, country.strip() or "us", lang.strip() or "en")
+                api.add_tracked_app(
+                    app_id, country.strip() or "us", lang.strip() or "en", platform=platform
+                )
                 if api is not None
                 else self.services["tracking_service"].add_app(
                     app_id,
@@ -1776,6 +1818,7 @@ class QmlBridge(QObject):
                     self._chart_context["country"],
                     self._chart_context["lang"],
                     limit_value,
+                    platform=self._chart_context["platform"],
                 )
             except Exception:
                 items = []
@@ -1789,6 +1832,7 @@ class QmlBridge(QObject):
                     country=self._chart_context["country"],
                     lang=self._chart_context["lang"],
                     limit=limit_value,
+                    platform=self._chart_context["platform"],
                 )
                 items = api.fetch_chart_cached(
                     self._chart_context["chart_type"],
@@ -1796,6 +1840,7 @@ class QmlBridge(QObject):
                     self._chart_context["country"],
                     self._chart_context["lang"],
                     limit_value,
+                    platform=self._chart_context["platform"],
                 )
             if not items:
                 raise RuntimeError("服务器没有返回可用的榜单数据。")
@@ -1850,27 +1895,46 @@ class QmlBridge(QObject):
         if not keyword.strip() or not app_id.strip():
             self.errorMessage.emit("请输入关键词和目标包名。")
             return
-        self._remember_input("keyword", keyword.strip())
-        self._remember_input("app_id", app_id.strip())
+        keyword_value = keyword.strip()
+        app_id_value = app_id.strip()
+        self._remember_input("keyword", keyword_value)
+        self._remember_input("app_id", app_id_value)
+        platform = self._platform
         api = self._store_intel_api()
         if api is not None:
             def keyword_rank():
                 country_value = country.strip() or "us"
                 lang_value = lang.strip() or "en"
-                try:
-                    result = api.rank_keyword(
-                        keyword.strip(),
-                        app_id.strip(),
+                result = api.cached_keyword_rank(
+                    keyword_value,
+                    app_id_value,
+                    country=country_value,
+                    lang=lang_value,
+                    limit=KEYWORD_RANK_CHECK_LIMIT,
+                    platform=platform,
+                )
+                if result is None:
+                    self._request_api_refresh(
+                        api,
+                        "keyword_rank",
+                        keyword=keyword_value,
+                        app_id=app_id_value,
                         country=country_value,
                         lang=lang_value,
                         limit=KEYWORD_RANK_CHECK_LIMIT,
+                        platform=platform,
                     )
-                except Exception:
-                    result = None
-                queued = False
+                    result = api.cached_keyword_rank(
+                        keyword_value,
+                        app_id_value,
+                        country=country_value,
+                        lang=lang_value,
+                        limit=KEYWORD_RANK_CHECK_LIMIT,
+                        platform=platform,
+                    )
                 if result is None:
                     raise RuntimeError("服务器没有返回可用的关键词排名数据。")
-                return {"result": result, "queued": queued}
+                return {"result": result, "queued": False}
 
             self._run(
                 keyword_rank,
@@ -2009,6 +2073,7 @@ class QmlBridge(QObject):
                             country=country,
                             lang=lang,
                             deep=deep,
+                            platform=platform,
                         )
                     except Exception:
                         result = None
@@ -2019,6 +2084,7 @@ class QmlBridge(QObject):
                             country=country,
                             lang=lang,
                             deep=deep,
+                            platform=platform,
                         )
                     if not self._has_coverage_cache_data(result):
                         raise RuntimeError("服务器没有返回可用的覆盖词数据。")
@@ -2063,6 +2129,7 @@ class QmlBridge(QObject):
         country: str,
         lang: str,
         deep: bool,
+        platform: str = "google_play",
     ):
         self.coverageProgress.emit("暂无缓存，已开始后台分析...", 0.05)
         job = api.request_refresh(
@@ -2072,6 +2139,7 @@ class QmlBridge(QObject):
             lang=lang,
             limit=50,
             deep=deep,
+            platform=platform,
         )
         job_id = getattr(job, "job_id", "") or getattr(job, "id", "")
         if job_id:
@@ -2095,6 +2163,7 @@ class QmlBridge(QObject):
                     country=country,
                     lang=lang,
                     deep=deep,
+                    platform=platform,
                 )
             except Exception:
                 result = None
@@ -2180,11 +2249,12 @@ class QmlBridge(QObject):
     def _fetch_reviews_for(self, ctx: dict[str, str], token):
         """Fetch one reviews page from the platform the context was created under,
         so a mid-flight platform switch can't mix sources."""
-        api = self._store_intel_api(ctx.get("platform"))
+        platform = ctx.get("platform") or "google_play"
+        api = self._store_intel_api(platform)
         if api is not None:
             if token is not None:
                 return [], None
-            items = api.list_cached_reviews(ctx["app_id"], limit=50)
+            items = api.list_cached_reviews(ctx["app_id"], limit=50, platform=platform)
             if not items:
                 self._request_api_refresh(
                     api,
@@ -2193,8 +2263,9 @@ class QmlBridge(QObject):
                     country=ctx["country"],
                     lang=ctx["lang"],
                     limit=50,
+                    platform=platform,
                 )
-                items = api.list_cached_reviews(ctx["app_id"], limit=50)
+                items = api.list_cached_reviews(ctx["app_id"], limit=50, platform=platform)
             return items, None
         if ctx.get("platform") == "app_store":
             return self.services["app_store_service"].reviews(
@@ -2216,10 +2287,13 @@ class QmlBridge(QObject):
         if not app_id or not self._reviews_items:
             self.errorMessage.emit("请先获取评论。")
             return
-        api = self._store_intel_api(self._reviews_context.get("platform"))
+        reviews_platform = self._reviews_context.get("platform") or "google_play"
+        api = self._store_intel_api(reviews_platform)
         self._run(
             lambda: (
-                api.save_reviews(app_id, country, lang, self._reviews_items)
+                api.save_reviews(
+                    app_id, country, lang, self._reviews_items, platform=reviews_platform
+                )
                 if api is not None
                 else self.services["review_service"].save(
                     app_id,
@@ -2291,6 +2365,7 @@ class QmlBridge(QObject):
         country: str,
         lang: str,
         limit: int,
+        platform: str = "google_play",
     ) -> None:
         def refresh():
             self._request_api_refresh(
@@ -2300,6 +2375,7 @@ class QmlBridge(QObject):
                 country=country,
                 lang=lang,
                 limit=limit,
+                platform=platform,
             )
             return {
                 "items": api.search_cached(
@@ -2307,6 +2383,7 @@ class QmlBridge(QObject):
                     country=country,
                     lang=lang,
                     limit=limit,
+                    platform=platform,
                 ),
                 "request_id": request_id,
             }
@@ -2446,7 +2523,11 @@ class QmlBridge(QObject):
             keyword_name = top.keyword
             try:
                 keyword_history = api.list_keyword_rank_history(
-                    top.keyword, top.app_id, top.country, top.lang
+                    top.keyword,
+                    top.app_id,
+                    top.country,
+                    top.lang,
+                    platform=getattr(top, "platform", "google_play") or "google_play",
                 )
             except Exception:
                 keyword_history = []
@@ -2714,8 +2795,19 @@ class QmlBridge(QObject):
             )
         if selected is not None:
             self._history_selection = (selected.app_id, selected.country, selected.lang)
+        selected_platform = (
+            getattr(selected, "platform", "google_play") or "google_play"
+            if selected is not None
+            else "google_play"
+        )
         snapshots = (
-            api.list_app_snapshots(selected.app_id, selected.country, selected.lang, limit=80)
+            api.list_app_snapshots(
+                selected.app_id,
+                selected.country,
+                selected.lang,
+                limit=80,
+                platform=selected_platform,
+            )
             if selected is not None
             else []
         )
@@ -2727,6 +2819,7 @@ class QmlBridge(QObject):
                     country=selected.country,
                     lang=selected.lang,
                     limit=80,
+                    platform=selected_platform,
                 )
             except Exception:
                 keyword_rows = []
@@ -3243,7 +3336,8 @@ class QmlBridge(QObject):
 
     def _collect_detail_extras(self, item) -> dict[str, Any]:
         ctx = self._detail_context or {"country": "us", "lang": "en"}
-        api = self._store_intel_api(getattr(item, "platform", "google_play"))
+        platform = getattr(item, "platform", "google_play") or "google_play"
+        api = self._store_intel_api(platform)
 
         def load_optional(section: str, fn):
             try:
@@ -3256,12 +3350,16 @@ class QmlBridge(QObject):
             history = load_optional(
                 "history",
                 lambda: api.list_app_snapshots(
-                    item.app_id, country=ctx["country"], lang=ctx["lang"], limit=80
+                    item.app_id,
+                    country=ctx["country"],
+                    lang=ctx["lang"],
+                    limit=80,
+                    platform=platform,
                 ),
             )
             alerts = load_optional(
                 "alerts",
-                lambda: api.list_alerts(app_id=item.app_id, limit=8),
+                lambda: api.list_alerts(app_id=item.app_id, limit=8, platform=platform),
             )
             reviews = load_optional(
                 "reviews",
@@ -3271,6 +3369,7 @@ class QmlBridge(QObject):
                     country=ctx["country"],
                     lang=ctx["lang"],
                     limit=10,
+                    platform=platform,
                 ),
             )
         else:
@@ -3317,8 +3416,10 @@ class QmlBridge(QObject):
             "recentReviews": [self._review_row(r) for r in reviews],
         }
 
-    def _list_cached_reviews(self, api, app_id: str, country: str, lang: str, limit: int):
-        items = api.list_cached_reviews(app_id, limit=limit)
+    def _list_cached_reviews(
+        self, api, app_id: str, country: str, lang: str, limit: int, platform: str = "google_play"
+    ):
+        items = api.list_cached_reviews(app_id, limit=limit, platform=platform)
         if items:
             return items
         self._request_api_refresh(
@@ -3328,8 +3429,9 @@ class QmlBridge(QObject):
             country=country,
             lang=lang,
             limit=limit,
+            platform=platform,
         )
-        return api.list_cached_reviews(app_id, limit=limit)
+        return api.list_cached_reviews(app_id, limit=limit, platform=platform)
 
     @staticmethod
     def _compact_text(value: Any, limit: int = 0) -> str:

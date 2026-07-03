@@ -132,6 +132,12 @@ ApplicationWindow {
         toastTimer.restart()
     }
 
+    function openAlertDetail(rowData) {
+        if (!rowData) return
+        alertDetailDialog.entry = rowData
+        alertDetailDialog.open()
+    }
+
     Connections {
         target: root.bridge
         function onStatusMessage(message) { root.showToast(message, false) }
@@ -602,15 +608,17 @@ ApplicationWindow {
     component SparkLine: Canvas {
         id: spark
         property var values: []
+        property var labels: []
         property real reveal: 1
         Layout.fillWidth: true
-        Layout.preferredHeight: 116
+        Layout.preferredHeight: 152
         antialiasing: true
         onValuesChanged: {
             reveal = 0
             revealAnim.restart()
             requestPaint()
         }
+        onLabelsChanged: requestPaint()
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
         onRevealChanged: requestPaint()
@@ -629,50 +637,106 @@ ApplicationWindow {
             var ctx = getContext("2d")
             ctx.reset()
             ctx.clearRect(0, 0, width, height)
-            ctx.strokeStyle = root.cGrid
-            ctx.lineWidth = 1
-            for (var g = 1; g < 4; g++) {
-                var y = height * g / 4
-                ctx.beginPath()
-                ctx.moveTo(0, y)
-                ctx.lineTo(width, y)
-                ctx.stroke()
+            var rawValues = spark.values || []
+            var rawLabels = spark.labels || []
+            var values = []
+            var labels = []
+            for (var rv = 0; rv < rawValues.length; rv++) {
+                var numberValue = Number(rawValues[rv])
+                if (isFinite(numberValue)) {
+                    values.push(numberValue)
+                    labels.push(rawLabels[rv] || "")
+                }
             }
-            if (!values || values.length === 0) {
-                ctx.fillStyle = root.cFaint
-                ctx.font = "13px sans-serif"
+
+            var padL = 46
+            var padR = 14
+            var padT = 18
+            var padB = 28
+            var chartW = Math.max(1, width - padL - padR)
+            var chartH = Math.max(1, height - padT - padB)
+            var leftX = padL
+            var rightX = padL + chartW
+            var topY = padT
+            var bottomY = padT + chartH
+            var labelColor = "" + root.cBody
+            var faintColor = "" + root.cFaint
+            var gridColor = "" + root.cGrid
+            var lineColor = "" + root.cBlue
+
+            var fmt = function(v) {
+                var absValue = Math.abs(v)
+                if (absValue >= 1000000) return (v / 1000000).toFixed(absValue >= 10000000 ? 0 : 1) + "M"
+                if (absValue >= 1000) return (v / 1000).toFixed(absValue >= 10000 ? 0 : 1) + "k"
+                if (absValue > 0 && absValue < 10 && Math.round(v) !== v) return v.toFixed(1)
+                return "" + Math.round(v)
+            }
+
+            if (values.length === 0) {
+                ctx.fillStyle = faintColor
+                ctx.font = "12px sans-serif"
                 ctx.textAlign = "center"
+                ctx.textBaseline = "middle"
                 ctx.fillText("暂无历史数据", width / 2, height / 2)
                 return
             }
+
             var min = values[0]
             var max = values[0]
             for (var i = 0; i < values.length; i++) {
-                min = Math.min(min, Number(values[i]))
-                max = Math.max(max, Number(values[i]))
+                min = Math.min(min, values[i])
+                max = Math.max(max, values[i])
             }
-            if (min === max) max = min + 1
+            if (min === max) {
+                var bump = Math.max(1, Math.abs(max) * 0.08)
+                min = min - bump
+                max = max + bump
+            }
+
+            ctx.strokeStyle = gridColor
+            ctx.lineWidth = 1
+            ctx.fillStyle = labelColor
+            ctx.font = "10px sans-serif"
+            ctx.textAlign = "right"
+            ctx.textBaseline = "middle"
+            for (var g = 0; g <= 3; g++) {
+                var gy = topY + chartH * g / 3
+                ctx.beginPath()
+                ctx.moveTo(leftX, gy)
+                ctx.lineTo(rightX, gy)
+                ctx.stroke()
+                var gv = max - (max - min) * g / 3
+                ctx.fillText(fmt(gv), leftX - 7, gy)
+            }
+            ctx.strokeStyle = faintColor
+            ctx.globalAlpha = 0.55
+            ctx.beginPath()
+            ctx.moveTo(leftX, topY)
+            ctx.lineTo(leftX, bottomY)
+            ctx.lineTo(rightX, bottomY)
+            ctx.stroke()
+            ctx.globalAlpha = 1
+
             var visibleCount = Math.max(1, Math.ceil(values.length * Math.max(0.02, reveal)))
             var xs = []
             var ys = []
             for (var j = 0; j < visibleCount; j++) {
-                xs.push(values.length === 1 ? width / 2 : j * width / (values.length - 1))
-                ys.push(height - ((Number(values[j]) - min) / (max - min)) * (height - 20) - 10)
+                xs.push(values.length === 1 ? leftX + chartW / 2 : leftX + j * chartW / (values.length - 1))
+                ys.push(bottomY - ((values[j] - min) / (max - min)) * chartH)
             }
-            // soft area fill under the line
             if (xs.length > 1) {
-                var grad = ctx.createLinearGradient(0, 0, 0, height)
+                var grad = ctx.createLinearGradient(0, topY, 0, bottomY)
                 grad.addColorStop(0, "rgba(37, 99, 235, 0.16)")
                 grad.addColorStop(1, "rgba(37, 99, 235, 0.01)")
                 ctx.fillStyle = grad
                 ctx.beginPath()
-                ctx.moveTo(xs[0], height)
+                ctx.moveTo(xs[0], bottomY)
                 for (var f = 0; f < xs.length; f++) ctx.lineTo(xs[f], ys[f])
-                ctx.lineTo(xs[xs.length - 1], height)
+                ctx.lineTo(xs[xs.length - 1], bottomY)
                 ctx.closePath()
                 ctx.fill()
             }
-            ctx.strokeStyle = root.cBlue
+            ctx.strokeStyle = lineColor
             ctx.lineWidth = 2
             ctx.beginPath()
             for (var k = 0; k < xs.length; k++) {
@@ -680,13 +744,42 @@ ApplicationWindow {
                 else ctx.lineTo(xs[k], ys[k])
             }
             ctx.stroke()
-            // emphasize the latest point
-            if (xs.length > 0 && reveal === 1) {
-                ctx.fillStyle = root.cBlue
+
+            var maxPointLabels = Math.max(2, Math.floor(chartW / 86))
+            var pointStep = Math.max(1, Math.ceil((values.length - 1) / Math.max(1, maxPointLabels - 1)))
+            for (var p = 0; p < xs.length; p++) {
+                ctx.fillStyle = root.cSurface
                 ctx.beginPath()
-                ctx.arc(xs[xs.length - 1], ys[ys.length - 1], 3, 0, Math.PI * 2)
+                ctx.arc(xs[p], ys[p], 5, 0, Math.PI * 2)
                 ctx.fill()
+                ctx.strokeStyle = lineColor
+                ctx.lineWidth = 2
+                ctx.beginPath()
+                ctx.arc(xs[p], ys[p], 4, 0, Math.PI * 2)
+                ctx.stroke()
+                if (reveal === 1 && (p === 0 || p === values.length - 1 || p % pointStep === 0)) {
+                    var labelY = Math.max(10, ys[p] - 9)
+                    ctx.fillStyle = labelColor
+                    ctx.font = "10px sans-serif"
+                    ctx.textAlign = p === 0 ? "left" : (p === values.length - 1 ? "right" : "center")
+                    ctx.textBaseline = "bottom"
+                    ctx.fillText(fmt(values[p]), xs[p], labelY)
+                }
             }
+
+            ctx.fillStyle = labelColor
+            ctx.font = "10px sans-serif"
+            ctx.textBaseline = "alphabetic"
+            var maxDateLabels = Math.max(2, Math.floor(chartW / 64))
+            var dateStep = Math.max(1, Math.ceil((values.length - 1) / Math.max(1, maxDateLabels - 1)))
+            var drawDate = function(idx) {
+                if (idx < 0 || idx >= labels.length || String(labels[idx]).length === 0) return
+                ctx.textAlign = idx === 0 ? "left" : (idx === values.length - 1 ? "right" : "center")
+                var x = values.length === 1 ? leftX + chartW / 2 : leftX + idx * chartW / (values.length - 1)
+                ctx.fillText(String(labels[idx]), x, height - 7)
+            }
+            for (var li = 0; li < values.length; li += dateStep) drawDate(li)
+            if ((values.length - 1) % dateStep !== 0) drawDate(values.length - 1)
         }
     }
 
@@ -1566,6 +1659,91 @@ ApplicationWindow {
         }
     }
 
+    Dialog {
+        id: alertDetailDialog
+        property var entry: ({})
+        anchors.centerIn: parent
+        modal: true
+        padding: 22
+        width: Math.min(620, root.width - 80)
+        height: Math.min(500, root.height - 80)
+        header: null
+        Overlay.modal: Rectangle { color: "#660F172A" }
+        background: Rectangle {
+            radius: 12
+            color: root.cSurface
+            border.color: root.cLine
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Label {
+                        text: "告警详情"
+                        color: root.cInk
+                        font.pixelSize: 17
+                        font.weight: Font.Bold
+                    }
+                    Label {
+                        text: String(alertDetailDialog.entry.appId || "-")
+                        color: root.cMuted
+                        font.pixelSize: 11
+                        font.family: "Menlo"
+                        wrapMode: Text.WrapAnywhere
+                        Layout.fillWidth: true
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                    }
+                }
+                Badge {
+                    text: String(alertDetailDialog.entry.severity || "-")
+                    tint: String(alertDetailDialog.entry.severityColor || root.cBlue)
+                    subtle: true
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: root.cLine
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: 16
+                rowSpacing: 8
+
+                Label { text: "时间"; color: root.cFaint; font.pixelSize: 12 }
+                Label { text: String(alertDetailDialog.entry.time || "-"); color: root.cBody; font.pixelSize: 12; Layout.fillWidth: true }
+
+                Label { text: "类型"; color: root.cFaint; font.pixelSize: 12 }
+                Label { text: String(alertDetailDialog.entry.type || "-"); color: root.cBody; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.WrapAnywhere }
+
+                Label { text: "状态"; color: root.cFaint; font.pixelSize: 12 }
+                Label { text: String(alertDetailDialog.entry.isRead || "-"); color: root.cBody; font.pixelSize: 12; Layout.fillWidth: true }
+            }
+
+            LogValueBlock {
+                title: "内容"
+                value: String(alertDetailDialog.entry.message || "")
+                Layout.fillHeight: true
+            }
+
+            SecondaryButton {
+                text: "关闭"
+                Layout.alignment: Qt.AlignRight
+                implicitWidth: 86
+                onClicked: alertDetailDialog.close()
+            }
+        }
+    }
+
     Rectangle {
         id: toast
         visible: false
@@ -2225,7 +2403,7 @@ ApplicationWindow {
                     Field { id: searchLimit; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.limit : "", "50"); width: 100 }
                     PrimaryButton { text: "搜索"; onClicked: root.bridge.searchApps(searchKeyword.text, searchCountry.text, searchLang.text, searchLimit.text) }
                     SecondaryButton { text: "打开详情"; onClicked: root.bridge.openSearchResult(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
-                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addSearchResultTracking(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
+                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addSearchResultTracking(searchTable.selectedIndex, searchCountry.text, searchLang.text) }
                 }
             }
             DataTable {
@@ -2291,10 +2469,10 @@ ApplicationWindow {
                     Field { id: detailCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90 }
                     Field { id: detailLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90 }
                     PrimaryButton { text: "获取详情"; onClicked: root.bridge.fetchAppDetail(detailAppId.text, detailCountry.text, detailLang.text) }
-                    SecondaryButton { text: "保存快照"; visible: !root.isAppStore; onClicked: root.bridge.saveDetailSnapshot(detailCountry.text, detailLang.text) }
-                    SecondaryButton { text: "加入监控"; visible: !root.isAppStore; onClicked: root.bridge.addDetailTracking(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "保存快照"; onClicked: root.bridge.saveDetailSnapshot(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "加入监控"; onClicked: root.bridge.addDetailTracking(detailCountry.text, detailLang.text) }
                     SecondaryButton { text: "获取权限"; visible: !root.isAppStore; onClicked: root.bridge.fetchDetailPermissions() }
-                    SecondaryButton { text: "查看历史"; visible: !root.isAppStore; onClicked: root.bridge.openDetailHistory(detailCountry.text, detailLang.text) }
+                    SecondaryButton { text: "查看历史"; onClicked: root.bridge.openDetailHistory(detailCountry.text, detailLang.text) }
                     SecondaryButton { text: "打开商店"; onClicked: root.bridge.openStore(detailAppId.text || detailPage.d.appId || "", detailCountry.text, detailLang.text) }
                 }
             }
@@ -2479,19 +2657,29 @@ ApplicationWindow {
                 Card {
                     title: "评分趋势"
                     Layout.preferredWidth: 3
-                    SparkLine { values: detailPage.d.ratingValues || [] }
+                    SparkLine {
+                        values: detailPage.d.ratingValues || []
+                        labels: detailPage.d.historyLabels || []
+                    }
                 }
                 Card {
                     title: "评论数趋势"
                     Layout.preferredWidth: 3
-                    SparkLine { values: detailPage.d.reviewsValues || [] }
+                    SparkLine {
+                        values: detailPage.d.reviewsValues || []
+                        labels: detailPage.d.historyLabels || []
+                    }
                 }
             }
 
             Card {
                 title: "安装量趋势（真实安装数）"
                 visible: detailPage.d.loaded === true && !root.isAppStore
-                SparkLine { values: detailPage.d.installsValues || []; Layout.preferredHeight: 150 }
+                SparkLine {
+                    values: detailPage.d.installsValues || []
+                    labels: detailPage.d.historyLabels || []
+                    Layout.preferredHeight: 170
+                }
             }
 
             // --- screenshots ---
@@ -2632,14 +2820,15 @@ ApplicationWindow {
                 }
             }
 
-            // --- similar apps + recent alerts (GP only: iTunes has no similar API, AS apps aren't tracked) ---
+            // --- similar apps (GP only: iTunes has no similar-apps API) + recent alerts ---
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 18
-                visible: detailPage.d.loaded === true && !root.isAppStore
+                visible: detailPage.d.loaded === true
                 DataTable {
                     id: similarTable
                     title: "相似 App"
+                    visible: !root.isAppStore
                     subtitle: detailPage.d.similarLoading === true ? "加载中..." : "双击打开详情"
                     Layout.preferredWidth: 5
                     rows: detailPage.d.similar || []
@@ -2661,6 +2850,7 @@ ApplicationWindow {
                     rows: detailPage.d.recentAlerts || []
                     tableHeight: 250
                     emptyText: "暂无告警"
+                    onSelectionChanged: function(rowIndex, rowData) { root.openAlertDetail(rowData) }
                     columns: [
                         { label: "时间", key: "time", width: 86 },
                         { label: "级别", key: "severity", width: 56, type: "badge", colorKey: "severityColor" },
@@ -2670,10 +2860,10 @@ ApplicationWindow {
                 }
             }
 
-            // --- recent cached reviews (GP only) ---
+            // --- recent cached reviews ---
             DataTable {
                 title: "最近评论（监控落库）"
-                visible: detailPage.d.loaded === true && !root.isAppStore
+                visible: detailPage.d.loaded === true
                 rows: detailPage.d.recentReviews || []
                 tableHeight: 230
                 rowHeight: 52
@@ -3001,7 +3191,7 @@ ApplicationWindow {
                         onActivated: root.bridge.loadHistoryIndex(currentIndex)
                     }
                     SecondaryButton { text: "刷新历史"; onClicked: root.bridge.refreshHistory() }
-                    SecondaryButton { text: "清理历史"; visible: !root.isAppStore; onClicked: root.bridge.cleanupHistory() }
+                    SecondaryButton { text: "清理历史"; onClicked: root.bridge.cleanupHistory() }
                     Label {
                         text: root.bridge.history.selected ? "当前：" + root.bridge.history.selected : "暂无监控 App"
                         color: root.cSlate

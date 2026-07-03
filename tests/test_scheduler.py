@@ -1,5 +1,5 @@
 from app.composition import build_services
-from app.constants import DEFAULT_STOREINTEL_API_URL
+from app.constants import AUTH_DEVICE_ID_SETTING, DEFAULT_STOREINTEL_API_URL
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
 from app.services.settings_service import SettingsService
@@ -51,6 +51,12 @@ def test_build_services_uses_remote_scheduler_proxy_by_default(tmp_path, monkeyp
     client = services["store_intel_api_client"]
     assert client.enabled is True
     assert client.base_url == DEFAULT_STOREINTEL_API_URL
+    stored_device_id = SettingsService(db).get(AUTH_DEVICE_ID_SETTING)
+    assert stored_device_id == client.device_id
+    assert stored_device_id.startswith("desktop-")
+
+    services_again = build_services(db)
+    assert services_again["store_intel_api_client"].device_id == stored_device_id
     scheduler = services["scheduler"]
     assert isinstance(scheduler, RemoteSchedulerProxy)
     scheduler.start()
@@ -87,6 +93,7 @@ def test_build_services_uses_local_scheduler_only_in_explicit_legacy_mode(
     services = build_services(db)
 
     assert services["store_intel_api_client"].enabled is False
+    assert SettingsService(db).get(AUTH_DEVICE_ID_SETTING) is None
     scheduler = services["scheduler"]
     assert isinstance(scheduler, AppScheduler)
     scheduler.shutdown()

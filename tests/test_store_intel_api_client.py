@@ -19,6 +19,7 @@ class StoreIntelHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.server.requests.append(("GET", self.path, None))
         self.server.user_agents.append(self.headers.get("user-agent"))
+        self.server.auth_headers.append(self.headers.get("authorization"))
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         if parsed.path == "/api/store-intel/apps/search":
@@ -153,6 +154,13 @@ class StoreIntelHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/store-intel/app-snapshots/count":
             return self._json({"total": 1})
         if parsed.path == "/api/store-intel/tracking/apps":
+            if getattr(self.server, "require_tracking_auth", False):
+                if self.headers.get("authorization") != "Bearer guest-access":
+                    return self._json(
+                        {"error_code": "unauthorized"},
+                        code=401,
+                        message="unauthorized",
+                    )
             return self._json(
                 {
                     "items": [
@@ -308,7 +316,16 @@ class StoreIntelHandler(BaseHTTPRequestHandler):
         body = json.loads(raw or "{}")
         self.server.requests.append(("POST", self.path, body))
         self.server.user_agents.append(self.headers.get("user-agent"))
+        self.server.auth_headers.append(self.headers.get("authorization"))
         parsed = urlparse(self.path)
+        if parsed.path == "/api/auth/guest":
+            self.server.guest_login_bodies.append(body)
+            return self._json(
+                {
+                    "access_token": "guest-access",
+                    "refresh_token": "guest-refresh",
+                }
+            )
         if parsed.path == "/api/store-intel/apps/com.demo/reviews":
             return self._json({"saved": len(body["items"])})
         if parsed.path == "/api/store-intel/charts/snapshot":
@@ -464,6 +481,9 @@ def api_server():
     server = ThreadingHTTPServer(("127.0.0.1", 0), StoreIntelHandler)
     server.requests = []
     server.user_agents = []
+    server.auth_headers = []
+    server.guest_login_bodies = []
+    server.require_tracking_auth = False
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -654,6 +674,34 @@ def test_store_intel_api_client_sends_desktop_user_agent(api_server):
 
     assert api_server.user_agents
     assert set(api_server.user_agents) == {"CatchRadar/desktop"}
+
+
+def test_store_intel_api_client_guest_retries_once_on_401(api_server):
+    api_server.require_tracking_auth = True
+    client = StoreIntelApiClient(
+        f"http://127.0.0.1:{api_server.server_port}",
+        device_id="desktop-test-device",
+    )
+
+    apps = client.list_tracked_apps()
+
+    assert apps[0].app_id == "com.demo"
+    assert api_server.guest_login_bodies == [
+        {
+            "app_id": "catchradar",
+            "device_id": "desktop-test-device",
+            "platform": "desktop",
+        }
+    ]
+    paths = [path for _method, path, _body in api_server.requests]
+    assert paths.count("/api/store-intel/tracking/apps") == 2
+    assert "/api/auth/guest" in paths
+    tracking_headers = [
+        api_server.auth_headers[index]
+        for index, path in enumerate(paths)
+        if path == "/api/store-intel/tracking/apps"
+    ]
+    assert tracking_headers == [None, "Bearer guest-access"]
 
 
 def test_store_intel_api_client_sends_chart_refresh_collection(api_server):

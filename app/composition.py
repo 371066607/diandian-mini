@@ -11,8 +11,9 @@ thread them through, same as before.
 from __future__ import annotations
 
 import os
+import uuid
 
-from app.constants import DEFAULT_SETTINGS, DEFAULT_STOREINTEL_API_URL
+from app.constants import AUTH_DEVICE_ID_SETTING, DEFAULT_SETTINGS, DEFAULT_STOREINTEL_API_URL
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
 from app.services.alert_service import AlertService
@@ -55,6 +56,15 @@ def _store_intel_api_url() -> str | None:
             return value
 
     return DEFAULT_STOREINTEL_API_URL
+
+
+def _store_intel_device_id(settings_service: SettingsService) -> str:
+    stored = (settings_service.get(AUTH_DEVICE_ID_SETTING, "") or "").strip()
+    if stored:
+        return stored
+    device_id = f"desktop-{uuid.uuid4().hex}"
+    settings_service.set_many({AUTH_DEVICE_ID_SETTING: device_id})
+    return device_id
 
 
 def build_services(database: Database) -> dict[str, object]:
@@ -101,7 +111,8 @@ def build_services(database: Database) -> dict[str, object]:
     history_retention_service = HistoryRetentionService(database, settings_service=settings_service)
     update_service = UpdateService()
     export_service = ExportService(database)
-    store_intel_api_client = StoreIntelApiClient(store_intel_api_url)
+    device_id = _store_intel_device_id(settings_service) if store_intel_api_url else None
+    store_intel_api_client = StoreIntelApiClient(store_intel_api_url, device_id=device_id)
     # API mode is the default desktop shape: the Go backend owns scheduled sync,
     # refresh workers, persistence, and scraping. Local scheduling is kept only
     # for explicit legacy/offline mode.

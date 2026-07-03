@@ -43,15 +43,15 @@ class FakeApi:
         self.calls = []
         self.settings = {**DEFAULT_SETTINGS, "input_history": "{}", "theme": "slate"}
 
-    def search(self, keyword, country="us", lang="en", limit=50):
+    def search(self, keyword, country="us", lang="en", limit=50, platform="google_play"):
         self.calls.append(("search", keyword, country, lang, limit))
         return [AppSummary(app_id="com.remote", title="Remote App", has_iap=True)]
 
-    def search_cached(self, keyword, country="us", lang="en", limit=50):
+    def search_cached(self, keyword, country="us", lang="en", limit=50, platform="google_play"):
         self.calls.append(("search_cached", keyword, country, lang, limit))
         return [AppSummary(app_id="com.remote", title="Remote App", has_iap=True)]
 
-    def app_detail(self, app_id, country="us", lang="en"):
+    def app_detail(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("app_detail", app_id, country, lang))
         return AppDetail(
             app_id=app_id,
@@ -62,7 +62,7 @@ class FakeApi:
             categories=["Tools"],
         )
 
-    def cached_app_detail(self, app_id, country="us", lang="en"):
+    def cached_app_detail(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("cached_app_detail", app_id, country, lang))
         return AppDetail(
             app_id=app_id,
@@ -74,19 +74,28 @@ class FakeApi:
             permissions={"Location": ["approximate location"]},
         )
 
-    def similar_apps(self, app_id, country="us", lang="en", limit=10):
+    def similar_apps(self, app_id, country="us", lang="en", limit=10, platform="google_play"):
         self.calls.append(("similar_apps", app_id, country, lang, limit))
         return [AppSummary(app_id="com.related", title="Related App", rating=4.2)]
 
-    def permissions(self, app_id, country="us", lang="en"):
+    def permissions(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("permissions", app_id, country, lang))
         return {"Location": ["approximate location"]}
 
-    def reviews(self, app_id, country="us", lang="en", sort="newest", continuation_token=None):
+    def reviews(
+        self,
+        app_id,
+        country="us",
+        lang="en",
+        sort="newest",
+        continuation_token=None,
+        limit=20,
+        platform="google_play",
+    ):
         self.calls.append(("reviews", app_id, country, lang, sort, continuation_token))
         return [ReviewItem(app_id=app_id, review_id="r1", rating=5, content="great")], None
 
-    def fetch_chart(self, chart_type, category, country, lang, limit):
+    def fetch_chart(self, chart_type, category, country, lang, limit, platform="google_play"):
         self.calls.append(("fetch_chart", chart_type, category, country, lang, limit))
         return [
             ChartItem(
@@ -100,7 +109,9 @@ class FakeApi:
             )
         ]
 
-    def fetch_chart_cached(self, chart_type, category, country, lang, limit):
+    def fetch_chart_cached(
+        self, chart_type, category, country, lang, limit, platform="google_play"
+    ):
         self.calls.append(("fetch_chart_cached", chart_type, category, country, lang, limit))
         return [
             ChartItem(
@@ -114,7 +125,7 @@ class FakeApi:
             )
         ]
 
-    def rank_keyword(self, keyword, app_id, country="us", lang="en", limit=100):
+    def rank_keyword(self, keyword, app_id, country="us", lang="en", limit=100, platform="google_play"):
         self.calls.append(("rank_keyword", keyword, app_id, country, lang, limit))
         return KeywordRankResult(
             keyword=keyword,
@@ -128,7 +139,9 @@ class FakeApi:
             results=[AppSummary(app_id=app_id, title="Remote App")],
         )
 
-    def cached_keyword_rank(self, keyword, app_id, country="us", lang="en", limit=100):
+    def cached_keyword_rank(
+        self, keyword, app_id, country="us", lang="en", limit=100, platform="google_play"
+    ):
         self.calls.append(("cached_keyword_rank", keyword, app_id, country, lang, limit))
         return KeywordRankResult(
             keyword=keyword,
@@ -139,7 +152,7 @@ class FakeApi:
             rank=1,
             checked_limit=limit,
             captured_at="2026-06-18T00:00:00Z",
-            results=[],
+            results=[AppSummary(app_id=app_id, title="Remote App")],
         )
 
     def analyze_coverage(
@@ -151,6 +164,7 @@ class FakeApi:
         deep=False,
         candidates=None,
         canonical_app_id=None,
+        platform="google_play",
     ):
         self.calls.append(
             (
@@ -176,7 +190,7 @@ class FakeApi:
             checked_limit=limit,
         )
 
-    def cached_coverage(self, app_id, country="us", lang="en", deep=False):
+    def cached_coverage(self, app_id, country="us", lang="en", deep=False, platform="google_play"):
         self.calls.append(("cached_coverage", app_id, country, lang, deep))
         return SimpleNamespace(
             platform="google_play",
@@ -200,6 +214,7 @@ class FakeApi:
         candidates=None,
         canonical_app_id=None,
         progress=None,
+        platform="google_play",
     ):
         self.calls.append(
             (
@@ -236,7 +251,7 @@ class FakeApi:
         self.settings.update(values)
         return dict(self.settings)
 
-    def list_tracked_apps(self):
+    def list_tracked_apps(self, enabled=None, platform=""):
         self.calls.append(("list_tracked_apps",))
         return [
             SimpleNamespace(
@@ -252,7 +267,7 @@ class FakeApi:
             )
         ]
 
-    def list_tracked_keywords(self):
+    def list_tracked_keywords(self, enabled=None, platform=""):
         self.calls.append(("list_tracked_keywords",))
         return [
             SimpleNamespace(
@@ -268,7 +283,7 @@ class FakeApi:
             )
         ]
 
-    def list_tracked_chart_apps(self):
+    def list_tracked_chart_apps(self, enabled=None, platform=""):
         self.calls.append(("list_tracked_chart_apps",))
         return [
             SimpleNamespace(
@@ -284,7 +299,7 @@ class FakeApi:
             )
         ]
 
-    def list_app_snapshots(self, app_id, country="us", lang="en", limit=80):
+    def list_app_snapshots(self, app_id, country="us", lang="en", limit=80, platform="google_play"):
         self.calls.append(("list_app_snapshots", app_id, country, lang, limit))
         rows = [
             SimpleNamespace(
@@ -328,11 +343,13 @@ class FakeApi:
         self.calls.append(("count_app_snapshots",))
         return 2
 
-    def list_cached_reviews(self, app_id, limit=10):
+    def list_cached_reviews(self, app_id, limit=10, platform="google_play"):
         self.calls.append(("list_cached_reviews", app_id, limit))
         return [ReviewItem(app_id=app_id, review_id="cached", rating=4, content="cached review")]
 
-    def list_keyword_rank_history(self, keyword, app_id, country="us", lang="en", limit=0):
+    def list_keyword_rank_history(
+        self, keyword, app_id, country="us", lang="en", limit=0, platform="google_play"
+    ):
         self.calls.append(("list_keyword_rank_history", keyword, app_id, country, lang, limit))
         return [
             SimpleNamespace(
@@ -359,7 +376,7 @@ class FakeApi:
             ),
         ][: limit or None]
 
-    def list_recent_keyword_ranks(self, *, app_id="", country="", lang="", limit=8):
+    def list_recent_keyword_ranks(self, *, app_id="", country="", lang="", limit=8, platform=""):
         self.calls.append(("list_recent_keyword_ranks", app_id, country, lang, limit))
         rows = list(
             reversed(
@@ -370,11 +387,13 @@ class FakeApi:
         )
         return rows[:limit]
 
-    def latest_keyword_rank_label(self, keyword, app_id, country="us", lang="en"):
+    def latest_keyword_rank_label(self, keyword, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("latest_keyword_rank_label", keyword, app_id, country, lang))
         return "#1"
 
-    def latest_chart_rank_label(self, app_id, collection, category, country="us", lang="en"):
+    def latest_chart_rank_label(
+        self, app_id, collection, category, country="us", lang="en", platform="google_play"
+    ):
         self.calls.append(("latest_chart_rank_label", app_id, collection, category, country, lang))
         return "#2"
 
@@ -386,6 +405,7 @@ class FakeApi:
         country="us",
         lang="en",
         limit=0,
+        platform="google_play",
     ):
         self.calls.append(
             ("list_chart_rank_history", app_id, collection, category, country, lang, limit)
@@ -434,7 +454,9 @@ class FakeApi:
         self.calls.append(("unread_count",))
         return 1
 
-    def add_tracked_app(self, app_id, country="us", lang="en", frequency="daily", tag=""):
+    def add_tracked_app(
+        self, app_id, country="us", lang="en", frequency="daily", tag="", platform="google_play"
+    ):
         self.calls.append(("add_tracked_app", app_id, country, lang, frequency, tag))
         return SimpleNamespace(app_id=app_id)
 
@@ -443,12 +465,19 @@ class FakeApi:
         return SimpleNamespace(keyword=keyword, app_id=app_id)
 
     def add_tracked_chart_app(
-        self, app_id, collection, category="APPLICATION", country="us", lang="en"
+        self,
+        app_id,
+        collection,
+        category="APPLICATION",
+        country="us",
+        lang="en",
+        frequency="daily",
+        platform="google_play",
     ):
         self.calls.append(("add_tracked_chart_app", app_id, collection, category, country, lang))
         return SimpleNamespace(app_id=app_id)
 
-    def sync_app_now(self, app_id, country="us", lang="en"):
+    def sync_app_now(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("sync_app_now", app_id, country, lang))
         return AppDetail(app_id=app_id, title="Synced Detail", free=True)
 
@@ -472,19 +501,21 @@ class FakeApi:
         self.calls.append(("cleanup_history",))
         return {"snapshots": 1, "keywords": 2, "charts": 3, "alerts": 4, "reviews": 5}
 
-    def remove_tracked_app(self, app_id, country="us", lang="en"):
+    def remove_tracked_app(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls.append(("remove_tracked_app", app_id, country, lang))
         return 1
 
-    def set_tracked_app_enabled(self, app_id, enabled, country="us", lang="en"):
+    def set_tracked_app_enabled(self, app_id, enabled, country="us", lang="en", platform="google_play"):
         self.calls.append(("set_tracked_app_enabled", app_id, enabled, country, lang))
         return SimpleNamespace(updated=1, enabled=enabled)
 
-    def set_tracked_app_frequency(self, app_id, frequency, country="us", lang="en"):
+    def set_tracked_app_frequency(
+        self, app_id, frequency, country="us", lang="en", platform="google_play"
+    ):
         self.calls.append(("set_tracked_app_frequency", app_id, frequency, country, lang))
         return SimpleNamespace(updated=1, frequency=frequency)
 
-    def set_tracked_app_tag(self, app_id, tag, country="us", lang="en"):
+    def set_tracked_app_tag(self, app_id, tag, country="us", lang="en", platform="google_play"):
         self.calls.append(("set_tracked_app_tag", app_id, tag, country, lang))
         return SimpleNamespace(updated=1, tag=tag)
 
@@ -528,13 +559,20 @@ class FakeApi:
         )
 
     def remove_tracked_chart_app(
-        self, app_id, collection, category="APPLICATION", country="us", lang="en"
+        self, app_id, collection, category="APPLICATION", country="us", lang="en", platform="google_play"
     ):
         self.calls.append(("remove_tracked_chart_app", app_id, collection, category, country, lang))
         return 1
 
     def set_tracked_chart_app_enabled(
-        self, app_id, collection, enabled, category="APPLICATION", country="us", lang="en"
+        self,
+        app_id,
+        collection,
+        enabled,
+        category="APPLICATION",
+        country="us",
+        lang="en",
+        platform="google_play",
     ):
         self.calls.append(
             ("set_tracked_chart_app_enabled", app_id, collection, enabled, category, country, lang)
@@ -542,7 +580,14 @@ class FakeApi:
         return SimpleNamespace(updated=1, enabled=enabled)
 
     def sync_tracked_chart_app_now(
-        self, app_id, collection, category="APPLICATION", country="us", lang="en", limit=100
+        self,
+        app_id,
+        collection,
+        category="APPLICATION",
+        country="us",
+        lang="en",
+        limit=100,
+        platform="google_play",
     ):
         self.calls.append(
             ("sync_tracked_chart_app_now", app_id, collection, category, country, lang, limit)
@@ -687,7 +732,7 @@ def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
     bridge.fetchKeywordRank("notes", "com.remote", "us", "en", "10")
     _wait_idle(app, bridge)
     assert "前 30 条内排名 #1" in bridge.keywords["summary"]
-    assert ("rank_keyword", "notes", "com.remote", "us", "en", 30) in api.calls
+    assert ("cached_keyword_rank", "notes", "com.remote", "us", "en", 30) in api.calls
     assert bridge.keywords["rows"] == [
         {
             "rank": 1,
@@ -719,7 +764,7 @@ def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
         "list_app_snapshots",
         "list_cached_reviews",
         "fetch_chart_cached",
-        "rank_keyword",
+        "cached_keyword_rank",
         "cached_coverage",
     ):
         assert expected in call_names
@@ -730,7 +775,7 @@ def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
         "permissions",
         "reviews",
         "fetch_chart",
-        "cached_keyword_rank",
+        "rank_keyword",
         "analyze_coverage_stream",
     ):
         assert blocked not in call_names
@@ -741,7 +786,7 @@ def test_qml_bridge_waits_search_refresh_job_on_cache_miss():
     api = FakeApi()
     calls = {"search_cached": 0}
 
-    def search_cached(keyword, country="us", lang="en", limit=50):
+    def search_cached(keyword, country="us", lang="en", limit=50, platform="google_play"):
         calls["search_cached"] += 1
         api.calls.append(("search_cached", keyword, country, lang, limit))
         if calls["search_cached"] == 1:
@@ -776,7 +821,7 @@ def test_qml_bridge_refreshes_incomplete_search_cache_for_display_fields():
     api = FakeApi()
     calls = {"search_cached": 0}
 
-    def search_cached(keyword, country="us", lang="en", limit=50):
+    def search_cached(keyword, country="us", lang="en", limit=50, platform="google_play"):
         calls["search_cached"] += 1
         api.calls.append(("search_cached", keyword, country, lang, limit))
         if calls["search_cached"] == 1:
@@ -840,7 +885,7 @@ def test_qml_bridge_shows_incomplete_search_cache_before_background_refresh():
     api = FakeApi()
     calls = {"search_cached": 0}
 
-    def search_cached(keyword, country="us", lang="en", limit=50):
+    def search_cached(keyword, country="us", lang="en", limit=50, platform="google_play"):
         calls["search_cached"] += 1
         api.calls.append(("search_cached", keyword, country, lang, limit))
         if calls["search_cached"] == 1:
@@ -910,7 +955,7 @@ def test_qml_bridge_refreshes_app_detail_cache_on_miss():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def cached_detail(app_id, country="us", lang="en"):
+    def cached_detail(app_id, country="us", lang="en", platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("cached_app_detail", app_id, country, lang))
         if cache_reads["count"] == 1:
@@ -946,7 +991,7 @@ def test_qml_bridge_refreshes_app_detail_cache_on_miss():
     assert (
         "request_refresh",
         "app",
-        {"app_id": "com.remote", "country": "us", "lang": "en"},
+        {"app_id": "com.remote", "country": "us", "lang": "en", "platform": "google_play"},
     ) in api.calls
     assert any(call[0] == "wait_refresh_job" for call in api.calls)
     assert "app_detail" not in [call[0] for call in api.calls]
@@ -957,7 +1002,7 @@ def test_qml_bridge_refreshes_incomplete_app_detail_cache():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def cached_detail(app_id, country="us", lang="en"):
+    def cached_detail(app_id, country="us", lang="en", platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("cached_app_detail", app_id, country, lang))
         if cache_reads["count"] == 1:
@@ -1014,7 +1059,7 @@ def test_qml_bridge_refreshes_incomplete_app_detail_cache():
     assert (
         "request_refresh",
         "app",
-        {"app_id": "com.remote", "country": "us", "lang": "en"},
+        {"app_id": "com.remote", "country": "us", "lang": "en", "platform": "google_play"},
     ) in api.calls
     assert any(call[0] == "wait_refresh_job" for call in api.calls)
 
@@ -1024,7 +1069,7 @@ def test_qml_bridge_waits_chart_refresh_job_on_cache_miss():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def fetch_chart_cached(chart_type, category, country, lang, limit):
+    def fetch_chart_cached(chart_type, category, country, lang, limit, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("fetch_chart_cached", chart_type, category, country, lang, limit))
         if cache_reads["count"] == 1:
@@ -1069,7 +1114,7 @@ def test_qml_bridge_ignores_stale_app_detail_result():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
 
-    def cached_detail(app_id, country="us", lang="en"):
+    def cached_detail(app_id, country="us", lang="en", platform="google_play"):
         api.calls.append(("cached_app_detail", app_id, country, lang))
         if app_id == "com.slow":
             time.sleep(0.2)
@@ -1098,7 +1143,36 @@ def test_qml_bridge_ignores_stale_app_detail_result():
     assert bridge.detail["title"] == "Fast Detail"
 
 
-def test_qml_bridge_blocks_app_store_local_source_in_api_mode():
+def test_qml_bridge_allows_app_store_platform_switch_in_api_mode():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+    statuses = []
+    bridge.statusMessage.connect(statuses.append)
+
+    bridge.setPlatform("app_store")
+    app.processEvents()
+
+    assert bridge.platform == "app_store"
+    assert not errors
+    assert statuses
+    assert "App Store" in statuses[-1]
+
+
+def test_qml_bridge_add_app_rejects_numeric_id_on_google_play_platform():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
     bridge = QmlBridge(
@@ -1116,12 +1190,41 @@ def test_qml_bridge_blocks_app_store_local_source_in_api_mode():
     errors = []
     bridge.errorMessage.connect(errors.append)
 
-    bridge.setPlatform("app_store")
-    app.processEvents()
+    assert bridge.platform == "google_play"
+    # A purely-numeric id looks like an App Store id, not a Google Play
+    # package name — must be rejected so it can never collide with an
+    # App Store row sharing the same (app_id, country, lang).
+    bridge.addApp("587366035", "us", "en", "daily")
+    _wait_idle(app, bridge)
+
+    assert errors
+    assert not any(call[0] == "add_tracked_app" for call in api.calls)
+
+
+def test_qml_bridge_add_chart_app_rejects_numeric_id_on_google_play_platform():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
 
     assert bridge.platform == "google_play"
+    bridge.addChartApp("587366035", "top_free", "APPLICATION", "us", "en")
+    _wait_idle(app, bridge)
+
     assert errors
-    assert "后端接口尚未接入" in errors[-1]
+    assert not any(call[0] == "add_tracked_chart_app" for call in api.calls)
 
 
 def test_qml_bridge_dashboard_ignores_optional_recent_keyword_api_error():
@@ -1318,17 +1421,85 @@ def test_qml_bridge_history_ignores_optional_recent_keyword_api_error():
     assert bridge.history["keywords"] == []
 
 
-def test_qml_bridge_reports_keyword_rank_api_failure_without_refresh_job():
+def test_qml_bridge_waits_keyword_rank_refresh_job_on_cache_miss():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
-    rank_calls = {"count": 0}
+    calls = {"cached_keyword_rank": 0}
 
-    def rank_keyword(keyword, app_id, country="us", lang="en", limit=100):
-        rank_calls["count"] += 1
-        api.calls.append(("rank_keyword", keyword, app_id, country, lang, limit))
-        raise RuntimeError("internal error (STORE_INTEL_INTERNAL_ERROR)")
+    def cached_keyword_rank(keyword, app_id, country="us", lang="en", limit=100, platform="google_play"):
+        calls["cached_keyword_rank"] += 1
+        api.calls.append(("cached_keyword_rank", keyword, app_id, country, lang, limit))
+        if calls["cached_keyword_rank"] == 1:
+            return None
+        return KeywordRankResult(
+            keyword=keyword,
+            app_id=app_id,
+            country=country,
+            lang=lang,
+            found=True,
+            rank=2,
+            checked_limit=limit,
+            captured_at="2026-06-18T00:00:00Z",
+            results=[AppSummary(app_id=app_id, title="Refreshed App")],
+        )
 
-    api.rank_keyword = rank_keyword
+    api.cached_keyword_rank = cached_keyword_rank
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchKeywordRank("notes", "com.remote", "us", "en", "10")
+    _wait_idle(app, bridge)
+
+    assert calls["cached_keyword_rank"] == 2
+    assert "前 30 条内排名 #2" in bridge.keywords["summary"]
+    assert any(
+        call[0] == "request_refresh" and call[1] == "keyword_rank" for call in api.calls
+    )
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
+    refresh_calls = [
+        call[2] for call in api.calls if call[0] == "request_refresh" and call[1] == "keyword_rank"
+    ]
+    assert refresh_calls == [
+        {
+            "keyword": "notes",
+            "app_id": "com.remote",
+            "country": "us",
+            "lang": "en",
+            "limit": 30,
+            "platform": "google_play",
+        }
+    ]
+    assert not any(call[0] == "rank_keyword" for call in api.calls)
+
+
+def test_qml_bridge_reports_keyword_rank_refresh_job_failure():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def cached_keyword_rank(keyword, app_id, country="us", lang="en", limit=100, platform="google_play"):
+        api.calls.append(("cached_keyword_rank", keyword, app_id, country, lang, limit))
+        return None
+
+    def wait_refresh_job(job_id, *, timeout=60.0, interval=1.0):
+        api.calls.append(("wait_refresh_job", job_id, timeout, interval))
+        return SimpleNamespace(
+            job_id=job_id,
+            status="failed",
+            error="internal error (STORE_INTEL_INTERNAL_ERROR)",
+        )
+
+    api.cached_keyword_rank = cached_keyword_rank
+    api.wait_refresh_job = wait_refresh_job
     bridge = QmlBridge(
         database=None,
         services={
@@ -1347,16 +1518,13 @@ def test_qml_bridge_reports_keyword_rank_api_failure_without_refresh_job():
     bridge.fetchKeywordRank("notes", "com.remote", "us", "en", "10")
     _wait_idle(app, bridge)
 
-    assert errors == ["服务器没有返回可用的关键词排名数据。"]
+    assert errors == ["internal error (STORE_INTEL_INTERNAL_ERROR)"]
     assert bridge.keywords["rows"] == []
-    assert rank_calls["count"] == 1
-    assert [
-        call[-1] for call in api.calls if call[0] == "rank_keyword"
-    ] == [30]
-    assert not any(
+    assert not any(call[0] == "rank_keyword" for call in api.calls)
+    assert any(
         call[0] == "request_refresh" and call[1] == "keyword_rank" for call in api.calls
     )
-    assert not any(call[0] == "wait_refresh_job" for call in api.calls)
+    assert any(call[0] == "wait_refresh_job" for call in api.calls)
 
 
 def test_qml_bridge_waits_coverage_refresh_job_on_cache_miss():
@@ -1364,7 +1532,7 @@ def test_qml_bridge_waits_coverage_refresh_job_on_cache_miss():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def cached_coverage(app_id, country="us", lang="en", deep=False):
+    def cached_coverage(app_id, country="us", lang="en", deep=False, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("cached_coverage", app_id, country, lang, deep))
         if cache_reads["count"] == 1:
@@ -1435,7 +1603,7 @@ def test_qml_bridge_uses_refresh_job_for_deep_remote_coverage():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def cached_coverage(app_id, country="us", lang="en", deep=False):
+    def cached_coverage(app_id, country="us", lang="en", deep=False, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("cached_coverage", app_id, country, lang, deep))
         if cache_reads["count"] == 1:
@@ -1505,7 +1673,7 @@ def test_qml_bridge_waits_reviews_refresh_job_on_cache_miss():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def list_cached_reviews(app_id, limit=10):
+    def list_cached_reviews(app_id, limit=10, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("list_cached_reviews", app_id, limit))
         if cache_reads["count"] == 1:
@@ -1547,7 +1715,7 @@ def test_qml_bridge_detail_extras_refresh_reviews_on_empty_cache():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def list_cached_reviews(app_id, limit=10):
+    def list_cached_reviews(app_id, limit=10, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("list_cached_reviews", app_id, limit))
         if cache_reads["count"] == 1:
@@ -1745,7 +1913,7 @@ def test_qml_bridge_reviews_refresh_payload_matches_backend_schema():
     api = FakeApi()
     cache_reads = {"count": 0}
 
-    def list_cached_reviews(app_id, limit=10):
+    def list_cached_reviews(app_id, limit=10, platform="google_play"):
         cache_reads["count"] += 1
         api.calls.append(("list_cached_reviews", app_id, limit))
         if cache_reads["count"] == 1:
@@ -1776,7 +1944,13 @@ def test_qml_bridge_reviews_refresh_payload_matches_backend_schema():
         (
             "request_refresh",
             "reviews",
-            {"app_id": "com.remote", "country": "us", "lang": "en", "limit": 50},
+            {
+                "app_id": "com.remote",
+                "country": "us",
+                "lang": "en",
+                "limit": 50,
+                "platform": "google_play",
+            },
         )
     ]
     assert bridge.reviews["rows"][0]["content"] == "cached review"

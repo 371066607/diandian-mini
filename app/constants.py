@@ -2,6 +2,7 @@ APP_TITLE = "catch-radar - Google Play 情报工具"
 # owner/name of the GitHub repo the in-app update checker queries for new releases
 GITHUB_REPO = "371066607/catch-radar"
 DEFAULT_STOREINTEL_API_URL = "https://catchradar.meshub.ai"
+AUTH_DEVICE_ID_SETTING = "auth_device_id"
 WINDOW_WIDTH = 1440
 WINDOW_HEIGHT = 900
 
