@@ -69,26 +69,40 @@ purpose: the hot-patch overlays a downloaded `app/` onto `sys.path` but never re
 `main.py`, so a newly-added service only reaches existing users via a code patch if it's
 registered here.
 
-**QML bridge (`app/ui/qml_bridge.py`, ~3700 lines, 241 methods total).** A single `QObject`
-aggregating ~70 `@Slot`/`@Property` members across every domain (search/detail/reviews/charts/
-keywords/coverage/tracking/alerts/settings), plus many private helpers — some domain-specific,
-some shared infrastructure used across domains (`_run` async dispatch, `_store_intel_api`,
-`_monitor_*` tree/series helpers spanning tracking+keyword+chart). Each slot delegates to the
-matching domain service from `composition.py` — API mode vs. legacy mode is decided once,
-centrally, when `build_services()` constructs those services, not by per-slot branching
-(`_api_mode_enabled()` is checked in exactly one place).
+**QML bridge (`app/ui/qml_bridge.py`, ~3400 lines and shrinking).** A single `QObject`
+aggregating `@Slot`/`@Property` members across every domain (search/detail/reviews/charts/
+keywords/coverage/tracking/alerts/settings), plus private helpers — some domain-specific, some
+shared infrastructure used across domains (`_run` async dispatch, `_store_intel_api`,
+`_request_api_refresh`, `_monitor_*` tree/series helpers spanning tracking+keyword+chart). Each
+slot delegates to the matching domain service from `composition.py` — API mode vs. legacy mode is
+decided once, centrally, when `build_services()` constructs those services, not by per-slot
+branching (`_api_mode_enabled()` is checked in exactly one place).
 
-A decomposition into `app/ui/controllers/*` (aggregate-root pattern: QmlBridge keeps every
-Signal/Slot/Property QML binds to, unchanged; slot bodies become one-line shims into plain
-Python controller classes that hold the actual domain logic) is in progress but far from
-complete — `ApiLogController` and `SettingsController` (`saveSettings`'s validation/persistence
-logic) are extracted as the first, verified slice. The remaining domains (search/detail/reviews/
-charts/keywords/coverage/tracking/monitor) are still on `QmlBridge` directly; the cross-domain
-helpers noted above make those extractions materially harder — read the whole file, not just the
-slot you're touching, before assuming a helper is domain-local. Follow the same pattern
-(`app/ui/controllers/settings_controller.py` is the reference example) and add tests before
-extracting — `tests/test_qml_bridge_api_adapter.py` did not cover `saveSettings`/`apiLogs` at all
-before this slice; check coverage exists for whatever you're about to move.
+A decomposition into `app/ui/controllers/*` is underway (aggregate-root pattern: QmlBridge keeps
+every Signal/Slot/Property QML binds to, unchanged; slot bodies become thin shims into plain
+Python controller classes that hold the actual domain logic). Extracted so far:
+`ApiLogController`, `SettingsController`, `AlertController`, `ReviewController`,
+`ChartController`, `KeywordController` — plus `app/ui/formatting.py`, a module of pure
+display-formatting functions (`fmt_count`, `short_time`, `review_row`, `alert_row`, etc.) that
+were previously duplicated-by-sharing across domains as private QmlBridge methods (e.g.
+`fmt_count` is used by both search results and the detail page). Two collaborator shapes exist —
+pick based on what the logic needs:
+- **`services`-only** (`SettingsController`, `AlertController`, `KeywordController` for its
+  legacy-mode path): construct with `self.services`, no bridge reference needed.
+- **`bridge`-reference** (`ReviewController`, `ChartController`, `KeywordController`'s API-mode
+  path): construct with `self` (the bridge), used when the logic needs the shared
+  `_store_intel_api`/`_request_api_refresh` helpers that many domains call into.
+
+Remaining on `QmlBridge` directly: search, detail, coverage, and tracking/monitor. These are the
+hardest slice — `_monitor_tree`/`_monitor_series` alone span tracking+keyword+chart formatting,
+and detail page assembly pulls in reviews, alerts, and coverage data. Read the whole file, not
+just the slot you're touching, before assuming a helper is domain-local; grep every helper's call
+sites before moving it (several "domain" helpers turned out to be shared and belonged in
+`formatting.py` instead of a single controller). Follow `app/ui/controllers/chart_controller.py`
+or `review_controller.py` as the reference example for bridge-coupled domains, and add tests
+before extracting — most of these slots (`saveSettings`, `apiLogs`, `saveReviews`,
+`saveChartSnapshot`) had zero direct test coverage before being extracted; check coverage exists
+for whatever you're about to move, and add it if it doesn't.
 
 **Auth & token refresh (API mode).** `StoreIntelApiClient` starts unauthenticated; a 401 triggers
 guest login (`POST /api/auth/guest`) on first use. Once a session exists, a later 401 prefers

@@ -489,6 +489,10 @@ class FakeApi:
         self.calls.append(("request_refresh", kind, kwargs))
         return SimpleNamespace(job_id=f"job-{len(self.calls)}", status="queued", kind=kind)
 
+    def save_reviews(self, app_id, country, lang, items, platform="google_play"):
+        self.calls.append(("save_reviews", app_id, country, lang, len(items), platform))
+        return len(items)
+
     def wait_refresh_job(self, job_id, *, timeout=60.0, interval=1.0):
         self.calls.append(("wait_refresh_job", job_id, timeout, interval))
         return SimpleNamespace(job_id=job_id, status="completed")
@@ -1954,6 +1958,58 @@ def test_qml_bridge_reviews_refresh_payload_matches_backend_schema():
         )
     ]
     assert bridge.reviews["rows"][0]["content"] == "cached review"
+
+
+def test_qml_bridge_save_reviews_api_mode_persists_via_backend():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    bridge.fetchReviews("com.remote", "us", "en", "newest")
+    _wait_idle(app, bridge)
+    bridge.saveReviews("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    save_calls = [call for call in api.calls if call[0] == "save_reviews"]
+    assert len(save_calls) == 1
+    assert save_calls[0][1] == "com.remote"
+    assert save_calls[0][5] == "google_play"
+
+
+def test_qml_bridge_save_reviews_requires_fetched_reviews_first():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.saveReviews("com.remote", "us", "en")
+    _wait_idle(app, bridge)
+
+    assert errors and "请先获取评论" in errors[0]
+    assert not any(call[0] == "save_reviews" for call in api.calls)
 
 
 def test_qml_bridge_save_settings_api_mode_persists_via_backend():

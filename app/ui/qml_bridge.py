@@ -13,20 +13,33 @@ from PySide6.QtWidgets import QApplication
 from app.config import DATA_DIR
 from app.constants import DEFAULT_SETTINGS
 from app.db.repositories import ChartRankRepository, KeywordRankRepository, SnapshotRepository
-from app.ui.alert_labels import ALERT_SEVERITY_COLORS, alert_severity_label, alert_type_label
+from app.ui.controllers.alert_controller import AlertController
 from app.ui.controllers.api_log_controller import ApiLogController
+from app.ui.controllers.chart_controller import ChartController
+from app.ui.controllers.keyword_controller import KEYWORD_RANK_CHECK_LIMIT, KeywordController
+from app.ui.controllers.review_controller import ReviewController
 from app.ui.controllers.settings_controller import SettingsController, SettingsError
+from app.ui.formatting import (
+    alert_row,
+    data_safety_text,
+    fail_label,
+    fmt_count,
+    fmt_dt,
+    fmt_size,
+    frequency_label,
+    histogram_rows,
+    latest_sync_time,
+    next_sync_label,
+    price_label,
+    rank_text,
+    review_row,
+    short_time,
+    yes_no,
+)
 from app.utils.normalize import normalize_app_id, safe_int
 from app.utils.proxy_pool import ProxyPool, load_proxies
-from app.utils.time_utils import (
-    FREQUENCY_HOURS,
-    is_sync_due,
-    now_iso,
-)
+from app.utils.time_utils import now_iso
 from app.utils.worker import Worker
-
-
-KEYWORD_RANK_CHECK_LIMIT = 30
 
 
 class QmlBridge(QObject):
@@ -106,6 +119,10 @@ class QmlBridge(QObject):
         self._history_selection: tuple[str, str, str] | None = None
         self._api_log = ApiLogController(limit=200)
         self._settings_controller = SettingsController(self.services)
+        self._alert_controller = AlertController(self.services)
+        self._review_controller = ReviewController(self)
+        self._chart_controller = ChartController(self)
+        self._keyword_controller = KeywordController(self)
         self._apiLogEntry.connect(self._append_api_log_entry)
         client = self.services.get("store_intel_api_client")
         if client is not None and hasattr(client, "set_log_sink"):
@@ -465,10 +482,6 @@ class QmlBridge(QObject):
             busy=False,
         )
 
-    @staticmethod
-    def _rank_text(rank) -> str:
-        return ("#" + str(rank)) if rank else "未命中"
-
     @Slot(result="QVariant")
     def monitorTree(self) -> dict[str, Any]:
         """App-centric tree of monitored objects: each tracked app with its own tracked
@@ -488,7 +501,7 @@ class QmlBridge(QObject):
                     "appId": a.app_id,
                     "country": a.country,
                     "lang": a.lang,
-                    "lastSynced": self._fmt_dt(a.last_synced_at),
+                    "lastSynced": fmt_dt(a.last_synced_at),
                     "keywords": [
                         {
                             "keyword": k.keyword,
@@ -528,7 +541,7 @@ class QmlBridge(QObject):
                         "appId": app_id,
                         "country": getattr(app, "country", "us"),
                         "lang": getattr(app, "lang", "en"),
-                        "lastSynced": self._fmt_dt(getattr(app, "last_synced_at", "")),
+                        "lastSynced": fmt_dt(getattr(app, "last_synced_at", "")),
                         "keywords": [
                             {
                                 "keyword": getattr(keyword, "keyword", ""),
@@ -599,7 +612,7 @@ class QmlBridge(QObject):
                     )
                     labels = [r.captured_at[5:10] for r in rows]
                     values = [r.rank if r.rank else 0 for r in rows]
-                    cur = self._rank_text(rows[-1].rank if rows else None)
+                    cur = rank_text(rows[-1].rank if rows else None)
                     return {
                         "title": key,
                         "subtitle": f"{app_id} · {country}/{lang}",
@@ -620,7 +633,7 @@ class QmlBridge(QObject):
                     )
                     labels = [r.captured_at[5:10] for r in rows]
                     values = [r.rank if r.rank else 0 for r in rows]
-                    cur = self._rank_text(rows[-1].rank if rows else None)
+                    cur = rank_text(rows[-1].rank if rows else None)
                     return {
                         "title": coll + (f" · {cat}" if cat else ""),
                         "subtitle": app_id,
@@ -720,7 +733,7 @@ class QmlBridge(QObject):
                 rows = win(
                     api.list_keyword_rank_history(key, app_id, country, lang, platform=platform)
                 )
-                labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+                labels = [short_time(getattr(row, "captured_at", "")) for row in rows]
                 values = [
                     getattr(row, "rank", None) or getattr(row, "checked_limit", None) or 0
                     for row in rows
@@ -734,7 +747,7 @@ class QmlBridge(QObject):
                             "name": "排名",
                             "labels": labels,
                             "values": values,
-                            "current": self._rank_text(current_rank),
+                            "current": rank_text(current_rank),
                             "invert": True,
                         }
                     ],
@@ -751,7 +764,7 @@ class QmlBridge(QObject):
                         platform=platform,
                     )
                 )
-                labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+                labels = [short_time(getattr(row, "captured_at", "")) for row in rows]
                 values = [
                     getattr(row, "rank", None) or getattr(row, "checked_limit", None) or 0
                     for row in rows
@@ -765,13 +778,13 @@ class QmlBridge(QObject):
                             "name": "榜单名次",
                             "labels": labels,
                             "values": values,
-                            "current": self._rank_text(current_rank),
+                            "current": rank_text(current_rank),
                             "invert": True,
                         }
                     ],
                 }
             rows = win(api.list_app_snapshots(app_id, country, lang, limit=0, platform=platform))
-            labels = [self._short_time(getattr(row, "captured_at", "")) for row in rows]
+            labels = [short_time(getattr(row, "captured_at", "")) for row in rows]
             last = rows[-1] if rows else None
             return {
                 "title": (getattr(last, "title", "") if last else "") or app_id,
@@ -1279,7 +1292,7 @@ class QmlBridge(QObject):
         self._run(
             save,
             lambda result: self._after_mutation(
-                f"同步频率已设为「{self._frequency_label(result)}」。"
+                f"同步频率已设为「{frequency_label(result)}」。"
             ),
             label="正在设置同步频率...",
         )
@@ -1366,9 +1379,7 @@ class QmlBridge(QObject):
     def markAllAlertsRead(self) -> None:
         api = self._store_intel_api()
         self._run(
-            api.mark_alerts_read
-            if api is not None
-            else self.services["alert_service"].mark_all_read,
+            self._alert_controller.mark_all_read_fn(api),
             lambda count: self._after_mutation(f"已标记 {count} 条为已读。"),
             label="正在标记提醒...",
         )
@@ -1380,11 +1391,7 @@ class QmlBridge(QObject):
             return
         api = self._store_intel_api()
         self._run(
-            lambda: (
-                api.mark_alerts_read([alert_id])
-                if api is not None
-                else self.services["alert_service"].mark_read([alert_id])
-            ),
+            lambda: self._alert_controller.mark_read(api, alert_id),
             lambda count: self._after_mutation(f"已标记 {count} 条为已读。"),
             label="正在标记提醒...",
         )
@@ -1763,59 +1770,8 @@ class QmlBridge(QObject):
         }
         if self._chart_context["category"]:
             self._remember_input("chart_category", self._chart_context["category"])
-        api = self._store_intel_api(self._chart_context["platform"])
-
-        def chart():
-            limit_value = safe_int(limit, 100)
-            if api is None:
-                return {
-                    "items": self.services["chart_service"].fetch(
-                        self._chart_context["chart_type"],
-                        self._chart_context["category"],
-                        self._chart_context["country"],
-                        self._chart_context["lang"],
-                        limit_value,
-                        platform=self._chart_context["platform"],
-                    ),
-                    "queued": False,
-                }
-            try:
-                items = api.fetch_chart_cached(
-                    self._chart_context["chart_type"],
-                    self._chart_context["category"],
-                    self._chart_context["country"],
-                    self._chart_context["lang"],
-                    limit_value,
-                    platform=self._chart_context["platform"],
-                )
-            except Exception:
-                items = []
-            queued = False
-            if not items:
-                self._request_api_refresh(
-                    api,
-                    "chart",
-                    collection=self._chart_context["chart_type"],
-                    category=self._chart_context["category"],
-                    country=self._chart_context["country"],
-                    lang=self._chart_context["lang"],
-                    limit=limit_value,
-                    platform=self._chart_context["platform"],
-                )
-                items = api.fetch_chart_cached(
-                    self._chart_context["chart_type"],
-                    self._chart_context["category"],
-                    self._chart_context["country"],
-                    self._chart_context["lang"],
-                    limit_value,
-                    platform=self._chart_context["platform"],
-                )
-            if not items:
-                raise RuntimeError("服务器没有返回可用的榜单数据。")
-            return {"items": items, "queued": queued}
-
         self._run(
-            chart,
+            lambda: self._chart_controller.fetch(self._chart_context, safe_int(limit, 100)),
             self._set_chart_result_payload,
             label="正在获取榜单...",
         )
@@ -1837,13 +1793,7 @@ class QmlBridge(QObject):
             self.statusMessage.emit("API 模式下榜单快照由服务器后台维护。")
             return
         self._run(
-            lambda: self.services["chart_service"].save(
-                ctx["chart_type"],
-                ctx["category"],
-                ctx["country"],
-                ctx["lang"],
-                self._chart_items,
-            ),
+            lambda: self._chart_controller.save_legacy(ctx, self._chart_items),
             lambda count: self._after_mutation(f"已保存 {count} 条榜单快照。"),
             label="正在保存榜单快照...",
         )
@@ -1870,58 +1820,26 @@ class QmlBridge(QObject):
         platform = self._platform
         api = self._store_intel_api()
         if api is not None:
-            def keyword_rank():
-                country_value = country.strip() or "us"
-                lang_value = lang.strip() or "en"
-                result = api.cached_keyword_rank(
+            self._run(
+                lambda: self._keyword_controller.fetch_rank_api(
+                    api,
                     keyword_value,
                     app_id_value,
-                    country=country_value,
-                    lang=lang_value,
-                    limit=KEYWORD_RANK_CHECK_LIMIT,
-                    platform=platform,
-                )
-                if result is None:
-                    self._request_api_refresh(
-                        api,
-                        "keyword_rank",
-                        keyword=keyword_value,
-                        app_id=app_id_value,
-                        country=country_value,
-                        lang=lang_value,
-                        limit=KEYWORD_RANK_CHECK_LIMIT,
-                        platform=platform,
-                    )
-                    result = api.cached_keyword_rank(
-                        keyword_value,
-                        app_id_value,
-                        country=country_value,
-                        lang=lang_value,
-                        limit=KEYWORD_RANK_CHECK_LIMIT,
-                        platform=platform,
-                    )
-                if result is None:
-                    raise RuntimeError("服务器没有返回可用的关键词排名数据。")
-                return {"result": result, "queued": False}
-
-            self._run(
-                keyword_rank,
+                    country.strip() or "us",
+                    lang.strip() or "en",
+                    platform,
+                ),
                 self._set_keyword_payload_from_api,
                 label="正在同步关键词排名...",
             )
             return
-        # Strict lookup: a missing platform service must fail loudly, not silently
-        # answer with Google Play data labeled as the other store.
-        keyword_service = self.services[
-            "keyword_service_app_store" if self._platform == "app_store" else "keyword_service"
-        ]
         self._run(
-            lambda: keyword_service.rank(
+            lambda: self._keyword_controller.fetch_rank_legacy(
                 keyword.strip(),
                 app_id.strip(),
-                country=country.strip() or "us",
-                lang=lang.strip() or "en",
-                limit=KEYWORD_RANK_CHECK_LIMIT,
+                country.strip() or "us",
+                lang.strip() or "en",
+                self._platform,
             ),
             self._set_keyword_result,
             label="正在查询关键词排名...",
@@ -1936,7 +1854,7 @@ class QmlBridge(QObject):
             self._after_mutation("关键词排名已保存。")
             return
         self._run(
-            lambda: self.services["keyword_service"].save_result(self._keyword_result),
+            lambda: self._keyword_controller.save_legacy(self._keyword_result),
             lambda _: self._after_mutation("关键词排名已保存。"),
             label="正在保存关键词排名...",
         )
@@ -2196,7 +2114,7 @@ class QmlBridge(QObject):
         self._reviews_items = []
         self._reviews_token = None
         self._run(
-            lambda: self._fetch_reviews_for(self._reviews_context, None),
+            lambda: self._review_controller.fetch_page(self._reviews_context, None),
             self._set_reviews_result,
             label="正在获取评论...",
         )
@@ -2209,42 +2127,9 @@ class QmlBridge(QObject):
             self.errorMessage.emit("没有更多评论可加载。")
             return
         self._run(
-            lambda: self._fetch_reviews_for(ctx, token),
+            lambda: self._review_controller.fetch_page(ctx, token),
             self._append_reviews_result,
             label="正在加载更多评论...",
-        )
-
-    def _fetch_reviews_for(self, ctx: dict[str, str], token):
-        """Fetch one reviews page from the platform the context was created under,
-        so a mid-flight platform switch can't mix sources."""
-        platform = ctx.get("platform") or "google_play"
-        api = self._store_intel_api(platform)
-        if api is not None:
-            if token is not None:
-                return [], None
-            items = api.list_cached_reviews(ctx["app_id"], limit=50, platform=platform)
-            if not items:
-                self._request_api_refresh(
-                    api,
-                    "reviews",
-                    app_id=ctx["app_id"],
-                    country=ctx["country"],
-                    lang=ctx["lang"],
-                    limit=50,
-                    platform=platform,
-                )
-                items = api.list_cached_reviews(ctx["app_id"], limit=50, platform=platform)
-            return items, None
-        if ctx.get("platform") == "app_store":
-            return self.services["app_store_service"].reviews(
-                ctx["app_id"],
-                country=ctx["country"],
-                lang=ctx["lang"],
-                sort=ctx.get("sort", "newest"),
-                continuation_token=token,
-            )
-        return self.services["review_service"].fetch(
-            ctx["app_id"], ctx["country"], ctx["lang"], ctx.get("sort", "newest"), token
         )
 
     @Slot(str, str, str)
@@ -2256,19 +2141,9 @@ class QmlBridge(QObject):
             self.errorMessage.emit("请先获取评论。")
             return
         reviews_platform = self._reviews_context.get("platform") or "google_play"
-        api = self._store_intel_api(reviews_platform)
         self._run(
-            lambda: (
-                api.save_reviews(
-                    app_id, country, lang, self._reviews_items, platform=reviews_platform
-                )
-                if api is not None
-                else self.services["review_service"].save(
-                    app_id,
-                    country,
-                    lang,
-                    self._reviews_items,
-                )
+            lambda: self._review_controller.save(
+                app_id, country, lang, self._reviews_items, reviews_platform
             ),
             lambda saved: self._after_mutation(f"新保存 {saved} 条评论。"),
             label="正在保存评论...",
@@ -2442,7 +2317,7 @@ class QmlBridge(QObject):
                 )
         unread = alert_service.unread_count()
         alerts = alert_service.recent_alerts(limit=6)
-        latest_sync = self._latest_sync_time(tracked_apps, tracked_keywords, chart_apps)
+        latest_sync = latest_sync_time(tracked_apps, tracked_keywords, chart_apps)
         health = tracking_service.monitor_overview()
         return {
             "stats": [
@@ -2456,16 +2331,16 @@ class QmlBridge(QObject):
                 {"label": "历史快照", "value": snapshots_count, "meta": "SQLite 本地数据"},
                 {"label": "未读提醒", "value": unread, "meta": "评分 / 版本 / 排名变化"},
             ],
-            "latestSync": self._short_time(latest_sync) if latest_sync else "-",
-            "alerts": [self._alert_row(alert) for alert in alerts],
+            "latestSync": short_time(latest_sync) if latest_sync else "-",
+            "alerts": [alert_row(alert) for alert in alerts],
             "health": [self._health_row(item) for item in health],
-            "ratingLabels": [self._short_time(item.captured_at) for item in recent_snapshots],
+            "ratingLabels": [short_time(item.captured_at) for item in recent_snapshots],
             "ratingValues": [
                 getattr(item, "rating", None) or getattr(item, "latest_rating", None) or 0
                 for item in recent_snapshots
             ],
             "keywordName": keyword_name,
-            "keywordLabels": [self._short_time(item.captured_at) for item in keyword_history],
+            "keywordLabels": [short_time(item.captured_at) for item in keyword_history],
             "keywordValues": [
                 getattr(item, "rank", None) or getattr(item, "checked_limit", None) or 0
                 for item in keyword_history
@@ -2499,7 +2374,7 @@ class QmlBridge(QObject):
                 )
             except Exception:
                 keyword_history = []
-        latest_sync = self._latest_sync_time(tracked_apps, tracked_keywords, chart_apps)
+        latest_sync = latest_sync_time(tracked_apps, tracked_keywords, chart_apps)
         return {
             "stats": [
                 {
@@ -2512,18 +2387,18 @@ class QmlBridge(QObject):
                 {"label": "历史快照", "value": snapshots_count, "meta": "Go 后端数据"},
                 {"label": "未读提醒", "value": unread, "meta": "评分 / 版本 / 排名变化"},
             ],
-            "latestSync": self._short_time(latest_sync) if latest_sync else "-",
-            "alerts": [self._alert_row(alert) for alert in alerts],
+            "latestSync": short_time(latest_sync) if latest_sync else "-",
+            "alerts": [alert_row(alert) for alert in alerts],
             "health": [
                 self._health_row_from_tracked(item) for item in tracked_apps if item.enabled
             ],
-            "ratingLabels": [self._short_time(item.captured_at) for item in recent_snapshots],
+            "ratingLabels": [short_time(item.captured_at) for item in recent_snapshots],
             "ratingValues": [
                 getattr(item, "rating", None) or getattr(item, "latest_rating", None) or 0
                 for item in recent_snapshots
             ],
             "keywordName": keyword_name,
-            "keywordLabels": [self._short_time(item.captured_at) for item in keyword_history],
+            "keywordLabels": [short_time(item.captured_at) for item in keyword_history],
             "keywordValues": [
                 getattr(item, "rank", None) or getattr(item, "checked_limit", None) or 0
                 for item in keyword_history
@@ -2551,10 +2426,10 @@ class QmlBridge(QObject):
                     "appId": item.app_id,
                     "country": item.country,
                     "lang": item.lang,
-                    "frequency": self._frequency_label(item.frequency),
-                    "lastSynced": self._fmt_dt(item.last_synced_at),
-                    "nextSync": self._next_sync_label(item.last_synced_at, item.frequency),
-                    "failures": self._fail_label(item),
+                    "frequency": frequency_label(item.frequency),
+                    "lastSynced": fmt_dt(item.last_synced_at),
+                    "nextSync": next_sync_label(item.last_synced_at, item.frequency),
+                    "failures": fail_label(item),
                     "tag": item.tag or "-",
                     "enabled": "启用" if item.enabled else "禁用",
                 }
@@ -2566,10 +2441,10 @@ class QmlBridge(QObject):
                     "appId": item.app_id,
                     "rank": self._keyword_rank_label(item),
                     "country": item.country,
-                    "frequency": self._frequency_label(item.frequency),
-                    "lastSynced": self._fmt_dt(item.last_synced_at),
-                    "nextSync": self._next_sync_label(item.last_synced_at, item.frequency),
-                    "failures": self._fail_label(item),
+                    "frequency": frequency_label(item.frequency),
+                    "lastSynced": fmt_dt(item.last_synced_at),
+                    "nextSync": next_sync_label(item.last_synced_at, item.frequency),
+                    "failures": fail_label(item),
                     "enabled": "启用" if item.enabled else "禁用",
                 }
                 for item in keywords
@@ -2581,8 +2456,8 @@ class QmlBridge(QObject):
                     "category": item.category or "-",
                     "country": item.country,
                     "rank": self._chart_rank_label(item),
-                    "lastSynced": self._fmt_dt(item.last_synced_at),
-                    "failures": self._fail_label(item),
+                    "lastSynced": fmt_dt(item.last_synced_at),
+                    "failures": fail_label(item),
                     "enabled": "启用" if item.enabled else "禁用",
                 }
                 for item in chart_apps
@@ -2606,13 +2481,13 @@ class QmlBridge(QObject):
                     "appId": getattr(item, "app_id", ""),
                     "country": getattr(item, "country", "us"),
                     "lang": getattr(item, "lang", "en"),
-                    "frequency": self._frequency_label(getattr(item, "frequency", "daily")),
-                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
-                    "nextSync": self._next_sync_label(
+                    "frequency": frequency_label(getattr(item, "frequency", "daily")),
+                    "lastSynced": fmt_dt(getattr(item, "last_synced_at", "")),
+                    "nextSync": next_sync_label(
                         getattr(item, "last_synced_at", ""),
                         getattr(item, "frequency", "daily"),
                     ),
-                    "failures": self._fail_label(item),
+                    "failures": fail_label(item),
                     "tag": getattr(item, "tag", "") or "-",
                     "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
                 }
@@ -2629,13 +2504,13 @@ class QmlBridge(QObject):
                         getattr(item, "lang", "en"),
                     ),
                     "country": getattr(item, "country", "us"),
-                    "frequency": self._frequency_label(getattr(item, "frequency", "daily")),
-                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
-                    "nextSync": self._next_sync_label(
+                    "frequency": frequency_label(getattr(item, "frequency", "daily")),
+                    "lastSynced": fmt_dt(getattr(item, "last_synced_at", "")),
+                    "nextSync": next_sync_label(
                         getattr(item, "last_synced_at", ""),
                         getattr(item, "frequency", "daily"),
                     ),
-                    "failures": self._fail_label(item),
+                    "failures": fail_label(item),
                     "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
                 }
                 for item in keywords
@@ -2653,8 +2528,8 @@ class QmlBridge(QObject):
                         getattr(item, "country", "us"),
                         getattr(item, "lang", "en"),
                     ),
-                    "lastSynced": self._fmt_dt(getattr(item, "last_synced_at", "")),
-                    "failures": self._fail_label(item),
+                    "lastSynced": fmt_dt(getattr(item, "last_synced_at", "")),
+                    "failures": fail_label(item),
                     "enabled": "启用" if getattr(item, "enabled", True) else "禁用",
                 }
                 for item in chart_apps
@@ -2662,19 +2537,7 @@ class QmlBridge(QObject):
         }
 
     def _collect_alerts(self) -> dict[str, Any]:
-        api = self._store_intel_api()
-        if api is not None:
-            alerts = api.list_alerts(limit=200)
-            return {
-                "rows": [self._alert_row(alert) for alert in alerts],
-                "unread": api.unread_count(),
-            }
-        alert_service = self.services["alert_service"]
-        alerts = alert_service.list_alerts(limit=200)
-        return {
-            "rows": [self._alert_row(alert) for alert in alerts],
-            "unread": alert_service.unread_count(),
-        }
+        return self._alert_controller.collect(self._store_intel_api())
 
     def _collect_history(self) -> dict[str, Any]:
         api = self._store_intel_api()
@@ -2726,7 +2589,7 @@ class QmlBridge(QObject):
             "selected": selected.app_id if selected is not None else "",
             "snapshots": [
                 {
-                    "time": self._short_time(item.captured_at),
+                    "time": short_time(item.captured_at),
                     "title": item.title or item.app_id,
                     "rating": getattr(item, "rating", None) or "-",
                     "ratings": getattr(item, "ratings_count", None) or "-",
@@ -2738,7 +2601,7 @@ class QmlBridge(QObject):
             ],
             "keywords": [
                 {
-                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "time": short_time(getattr(item, "captured_at", "")),
                     "keyword": getattr(item, "keyword", ""),
                     "rank": getattr(item, "rank", None)
                     if getattr(item, "rank", None) is not None
@@ -2807,7 +2670,7 @@ class QmlBridge(QObject):
             "selected": selected.app_id if selected is not None else "",
             "snapshots": [
                 {
-                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "time": short_time(getattr(item, "captured_at", "")),
                     "title": getattr(item, "title", "") or getattr(item, "app_id", ""),
                     "rating": getattr(item, "rating", None) or "-",
                     "ratings": getattr(item, "ratings_count", None) or "-",
@@ -2819,7 +2682,7 @@ class QmlBridge(QObject):
             ],
             "keywords": [
                 {
-                    "time": self._short_time(getattr(item, "captured_at", "")),
+                    "time": short_time(getattr(item, "captured_at", "")),
                     "keyword": getattr(item, "keyword", ""),
                     "rank": getattr(item, "rank", None)
                     if getattr(item, "rank", None) is not None
@@ -2863,7 +2726,7 @@ class QmlBridge(QObject):
                         if getattr(item, "rating", None) is not None
                         else "-"
                     ),
-                    "ratings": self._fmt_count(getattr(item, "ratings_count", None)),
+                    "ratings": fmt_count(getattr(item, "ratings_count", None)),
                     "installs": getattr(item, "installs", "") or "-",
                     "price": getattr(item, "price", "") or "免费",
                     "hasIap": "内购" if getattr(item, "has_iap", False) else "",
@@ -2988,19 +2851,19 @@ class QmlBridge(QObject):
             "categories": list(item.categories or ([] if not item.category else [item.category])),
             "summary": item.summary or "",
             "storeUrl": item.store_url or "",
-            "priceLabel": self._price_label(item),
+            "priceLabel": price_label(item),
             "available": item.available,
             # --- metric chips (label/value computed bridge-side; QML just repeats) ---
             "metrics": self._detail_metrics(item),
             # --- rating histogram ---
-            "histogram": self._histogram_rows(item.histogram),
+            "histogram": histogram_rows(item.histogram),
             # --- developer / links ---
             "devLinks": self._detail_dev_links(item, is_ios),
             "devPlain": self._detail_dev_plain(item, is_ios),
             # --- more info ---
             "moreInfo": self._detail_more_info(item, is_ios),
             "contentRatingDescription": item.content_rating_description or "",
-            "dataSafety": self._data_safety_text(item.data_safety),
+            "dataSafety": data_safety_text(item.data_safety),
             # --- monetization ---
             "monetizationScore": score.get("score", 0),
             "monetizationNote": "；".join(score.get("signals", [])[:3]) or score.get("note", ""),
@@ -3102,8 +2965,8 @@ class QmlBridge(QObject):
             {"label": "类目 ID", "value": item.genre_id or "-"},
             {"label": "开发者 ID", "value": item.developer_id or "-"},
             {"label": "货币", "value": item.currency or "-"},
-            {"label": "最低日均安装", "value": self._fmt_count(item.min_daily_installs)},
-            {"label": "最低月均安装", "value": self._fmt_count(item.min_monthly_installs)},
+            {"label": "最低日均安装", "value": fmt_count(item.min_daily_installs)},
+            {"label": "最低月均安装", "value": fmt_count(item.min_monthly_installs)},
             {"label": "预告片", "value": "观看", "url": item.video or ""},
             {"label": "头图", "value": "查看", "url": item.header_image or ""},
         ]
@@ -3144,17 +3007,17 @@ class QmlBridge(QObject):
                 else "-",
                 "accent": "blue",
             },
-            {"label": "评分数", "value": self._fmt_count(getattr(item, "ratings_count", None))},
-            {"label": "评论数", "value": self._fmt_count(getattr(item, "reviews_count", None))},
+            {"label": "评分数", "value": fmt_count(getattr(item, "ratings_count", None))},
+            {"label": "评论数", "value": fmt_count(getattr(item, "reviews_count", None))},
             {"label": "安装量", "value": getattr(item, "installs", "") or "-", "accent": "blue"},
-            {"label": "最低安装", "value": self._fmt_count(getattr(item, "min_installs", None))},
+            {"label": "最低安装", "value": fmt_count(getattr(item, "min_installs", None))},
             {
                 "label": "真实安装",
-                "value": self._fmt_count(getattr(item, "real_installs", None)),
+                "value": fmt_count(getattr(item, "real_installs", None)),
                 "accent": "blue",
             },
-            {"label": "日均安装", "value": self._fmt_count(daily)},
-            {"label": "月均安装", "value": self._fmt_count(monthly)},
+            {"label": "日均安装", "value": fmt_count(daily)},
+            {"label": "月均安装", "value": fmt_count(monthly)},
             {
                 "label": "上线天数",
                 "value": f"{getattr(item, 'app_age_days'):,} 天"
@@ -3174,11 +3037,11 @@ class QmlBridge(QObject):
                 ),
             },
             {"label": "原价", "value": original},
-            {"label": "促销", "value": self._yes_no(getattr(item, "sale", None))},
-            {"label": "内购", "value": self._yes_no(getattr(item, "has_iap", None))},
+            {"label": "促销", "value": yes_no(getattr(item, "sale", None))},
+            {"label": "内购", "value": yes_no(getattr(item, "has_iap", None))},
             {"label": "内购价", "value": getattr(item, "iap_price_range", "") or "-"},
-            {"label": "含广告", "value": self._yes_no(ads)},
-            {"label": "可下载", "value": self._yes_no(getattr(item, "available", None))},
+            {"label": "含广告", "value": yes_no(ads)},
+            {"label": "可下载", "value": yes_no(getattr(item, "available", None))},
         ]
 
     def _detail_metrics_app_store(self, item) -> list[dict[str, Any]]:
@@ -3196,22 +3059,22 @@ class QmlBridge(QObject):
                 else "-",
                 "accent": "blue",
             },
-            {"label": "评分数", "value": self._fmt_count(getattr(item, "ratings_count", None))},
+            {"label": "评分数", "value": fmt_count(getattr(item, "ratings_count", None))},
             {
                 "label": "当前版本评分",
                 "value": f"{current_rating:.2f}" if current_rating else "-",
             },
             {
                 "label": "当前版本评分数",
-                "value": self._fmt_count(raw.get("userRatingCountForCurrentVersion")),
+                "value": fmt_count(raw.get("userRatingCountForCurrentVersion")),
             },
             {
                 "label": "价格",
                 "value": item.price or ("免费" if item.free else "-"),
                 "accent": "blue",
             },
-            {"label": "内购", "value": self._yes_no(item.has_iap)},
-            {"label": "大小", "value": self._fmt_size(raw.get("fileSizeBytes"))},
+            {"label": "内购", "value": yes_no(item.has_iap)},
+            {"label": "大小", "value": fmt_size(raw.get("fileSizeBytes"))},
             {
                 "label": "最低系统",
                 "value": f"iOS {raw['minimumOsVersion']}+" if raw.get("minimumOsVersion") else "-",
@@ -3226,81 +3089,8 @@ class QmlBridge(QObject):
                 "value": f"{item.app_age_days:,} 天" if item.app_age_days else "-",
             },
             {"label": "内容分级", "value": item.content_rating or "-"},
-            {"label": "可下载", "value": self._yes_no(item.available)},
+            {"label": "可下载", "value": yes_no(item.available)},
         ]
-
-    @staticmethod
-    def _fmt_size(value) -> str:
-        try:
-            size = int(value)
-        except (TypeError, ValueError):
-            return "-"
-        if size >= 1024**3:
-            return f"{size / 1024**3:.2f} GB"
-        return f"{size / 1024**2:.1f} MB"
-
-    @staticmethod
-    def _histogram_rows(histogram) -> list[dict[str, Any]]:
-        counts = list(histogram or [])
-        if not counts or sum(counts) == 0:
-            return []
-        total = sum(counts)
-        maximum = max(counts) or 1
-        rows = []
-        for star in range(5, 0, -1):
-            count = counts[star - 1] if len(counts) >= star else 0
-            rows.append(
-                {
-                    "star": star,
-                    "count": count,
-                    "ratio": count / maximum,
-                    "text": f"{count:,} ({count / total * 100:.0f}%)",
-                }
-            )
-        return rows
-
-    @staticmethod
-    def _price_label(item) -> str:
-        # None means "unknown" (e.g. iTunes has no IAP/ads flags) — say nothing then.
-        parts = [item.price or ("免费" if item.free in (True, None) else "-")]
-        if item.has_iap is not None:
-            parts.append("含内购" if item.has_iap else "无内购")
-        ads = item.contains_ads if item.contains_ads is not None else item.ad_supported
-        if ads is not None:
-            parts.append("含广告" if ads else "无广告")
-        return " · ".join(parts)
-
-    @staticmethod
-    def _fmt_count(value) -> str:
-        return f"{value:,}" if isinstance(value, (int, float)) and value else "-"
-
-    @staticmethod
-    def _yes_no(value) -> str:
-        if value is None:
-            return "-"
-        return "是" if value else "否"
-
-    @staticmethod
-    def _data_safety_text(data_safety) -> str:
-        """Render the dataSafety list (shape varies by source) into a short summary."""
-        if not data_safety:
-            return "-"
-        parts: list[str] = []
-        for entry in data_safety:
-            if isinstance(entry, dict):
-                name = (
-                    entry.get("data")
-                    or entry.get("type")
-                    or entry.get("name")
-                    or entry.get("category")
-                )
-                if name:
-                    parts.append(str(name))
-            elif entry:
-                parts.append(str(entry))
-        if not parts:
-            return f"{len(data_safety)} 项"
-        return "、".join(parts[:8]) + (" …" if len(parts) > 8 else "")
 
     def _collect_detail_extras(self, item) -> dict[str, Any]:
         ctx = self._detail_context or {"country": "us", "lang": "en"}
@@ -3380,8 +3170,8 @@ class QmlBridge(QObject):
             "ratingValues": rating_values,
             "reviewsValues": reviews_values,
             "installsValues": installs_values,
-            "recentAlerts": [self._alert_row(alert) for alert in alerts],
-            "recentReviews": [self._review_row(r) for r in reviews],
+            "recentAlerts": [alert_row(alert) for alert in alerts],
+            "recentReviews": [review_row(r) for r in reviews],
         }
 
     def _list_cached_reviews(
@@ -3400,46 +3190,6 @@ class QmlBridge(QObject):
             platform=platform,
         )
         return api.list_cached_reviews(app_id, limit=limit, platform=platform)
-
-    @staticmethod
-    def _compact_text(value: Any, limit: int = 0) -> str:
-        text = "" if value is None else str(value)
-        text = " ".join(text.split())
-        if limit > 0 and len(text) > limit:
-            return text[: limit - 1] + "…"
-        return text
-
-    def _review_row(self, item) -> dict[str, Any]:
-        raw = getattr(item, "raw", None) or {}
-        raw_text = ""
-        if raw:
-            try:
-                raw_text = json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
-            except TypeError:
-                raw_text = str(raw)
-        rating = getattr(item, "rating", None)
-        helpful = getattr(item, "helpful_count", None)
-        review_created_at = getattr(item, "review_created_at", "") or ""
-        captured_at = getattr(item, "captured_at", "") or ""
-        content = getattr(item, "content", "") or ""
-        return {
-            "platform": getattr(item, "platform", "") or "-",
-            "appId": getattr(item, "app_id", "") or "-",
-            "country": getattr(item, "country", "") or "-",
-            "lang": getattr(item, "lang", "") or "-",
-            "reviewId": getattr(item, "review_id", "") or "-",
-            "user": getattr(item, "user_name", "") or "-",
-            "rating": rating if rating is not None else "-",
-            "version": getattr(item, "app_version", "") or "-",
-            "helpful": helpful if helpful is not None else "-",
-            "time": review_created_at[:10] or "-",
-            "reviewCreatedAt": review_created_at[:19].replace("T", " ") or "-",
-            "capturedAt": captured_at[:19].replace("T", " ") or "-",
-            "content": self._compact_text(content),
-            "contentFull": str(content),
-            "rawText": self._compact_text(raw_text, 500),
-            "rawFull": raw_text,
-        }
 
     def _apply_detail_extras(self, gen: int, extras: dict[str, Any]) -> None:
         if gen != self._detail_gen or not self._detail.get("loaded"):
@@ -3601,7 +3351,7 @@ class QmlBridge(QObject):
         self._emit_reviews(f"共 {len(self._reviews_items)} 条评论")
 
     def _emit_reviews(self, summary: str) -> None:
-        rows = [self._review_row(item) for item in self._reviews_items]
+        rows = [review_row(item) for item in self._reviews_items]
         self._reviews = {
             "rows": rows,
             "summary": summary,
@@ -3621,57 +3371,6 @@ class QmlBridge(QObject):
             payload = payload.toVariant()
         return dict(payload or {})
 
-    @staticmethod
-    def _short_time(value: str | None) -> str:
-        if not value:
-            return "-"
-        return value[5:16].replace("T", " ") if len(value) >= 16 else value
-
-    @staticmethod
-    def _fmt_dt(value: str | None) -> str:
-        if not value:
-            return "未同步"
-        try:
-            return datetime.fromisoformat(value).strftime("%m-%d %H:%M")
-        except (TypeError, ValueError):
-            return value[:10] if len(value) >= 10 else value
-
-    @staticmethod
-    def _latest_sync_time(*groups) -> str | None:
-        values = [
-            item.last_synced_at
-            for group in groups
-            for item in group
-            if getattr(item, "last_synced_at", None)
-        ]
-        return max(values) if values else None
-
-    @staticmethod
-    def _frequency_label(value: str | None) -> str:
-        return {"daily": "每日", "weekly": "每周", "manual": "手动"}.get(value or "daily", value)
-
-    @staticmethod
-    def _fail_label(item) -> str:
-        count = getattr(item, "consecutive_failures", 0) or 0
-        return "-" if count == 0 else f"{count} 次"
-
-    @staticmethod
-    def _next_sync_label(last_synced_at: str | None, frequency: str | None) -> str:
-        freq = (frequency or "daily").lower()
-        if freq == "manual":
-            return "手动"
-        if not last_synced_at:
-            return "待首次同步"
-        if is_sync_due(last_synced_at, freq):
-            return "已到期"
-        interval = FREQUENCY_HOURS.get(freq, FREQUENCY_HOURS["daily"])
-        if interval is None:
-            return "手动"
-        try:
-            last = datetime.fromisoformat(last_synced_at)
-        except (ValueError, TypeError):
-            return "待首次同步"
-        return (last + timedelta(hours=interval)).strftime("%m-%d %H:%M")
 
     def _keyword_rank_label(self, item) -> str:
         # Rank snapshots are platform-scoped — read via the service matching the ROW's
@@ -3697,20 +3396,6 @@ class QmlBridge(QObject):
         return f"#{snapshot.rank}" if snapshot.found and snapshot.rank is not None else "未命中"
 
     @staticmethod
-    def _alert_row(alert) -> dict[str, Any]:
-        return {
-            "id": alert.id,
-            "time": QmlBridge._short_time(alert.created_at),
-            "severity": alert_severity_label(alert.severity),
-            "severityColor": ALERT_SEVERITY_COLORS.get(alert.severity, "#64748B"),
-            "type": alert_type_label(alert.type),
-            "appId": alert.app_id or "-",
-            "message": alert.message,
-            "isRead": "已读" if alert.is_read else "未读",
-            "unread": not alert.is_read,
-        }
-
-    @staticmethod
     def _health_row(item) -> dict[str, Any]:
         color = {"normal": "#16A34A", "failing": "#D97706", "escalated": "#DC2626"}.get(
             item.fail_status, "#16A34A"
@@ -3723,7 +3408,7 @@ class QmlBridge(QObject):
             "unread": item.unread_count,
             "failures": item.consecutive_failures,
             "statusColor": color,
-            "lastSynced": QmlBridge._fmt_dt(item.last_synced_at),
+            "lastSynced": fmt_dt(item.last_synced_at),
         }
 
     @staticmethod
@@ -3739,5 +3424,5 @@ class QmlBridge(QObject):
             "unread": 0,
             "failures": failures,
             "statusColor": color,
-            "lastSynced": QmlBridge._fmt_dt(getattr(item, "last_synced_at", "")),
+            "lastSynced": fmt_dt(getattr(item, "last_synced_at", "")),
         }
