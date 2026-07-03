@@ -30,9 +30,9 @@ ruff check .    # 静态检查
 
 ## 下载即用
 
-到 [Releases](https://github.com/371066607/catch-radar/releases) 下载对应平台整合包，解压双击即用（无需装 Python）：
+到 [Releases](https://github.com/371066607/diandian-mini/releases) 下载对应平台整合包，解压双击即用（无需装 Python）：
 
-- **macOS**：`macos` 标签下的 `CatchRadar-macos.zip` → 解压双击 `CatchRadar.app`
+- **macOS**：`macos` 标签下按芯片下载 `CatchRadar-AppleSilicon.dmg`（M1/M2/M3…）或 `CatchRadar-Intel.dmg` → 双击安装 `CatchRadar.app`
   - 首次打开若提示「无法验证开发者」，右键 App 选「打开」，或终端 `xattr -cr CatchRadar.app`
 - **Windows**：`windows` 标签下的 `CatchRadar-windows.zip` → 解压双击 `CatchRadar.exe`
 
