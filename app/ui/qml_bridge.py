@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -30,6 +29,11 @@ from app.ui.controllers.search_controller import (
     search_items_signature,
 )
 from app.ui.controllers.settings_controller import SettingsController, SettingsError
+from app.ui.controllers.tracking_controller import (
+    TrackingController,
+    bulk_app_ids,
+    is_valid_app_id,
+)
 from app.ui.formatting import (
     alert_row,
     data_safety_text,
@@ -134,6 +138,7 @@ class QmlBridge(QObject):
         self._detail_controller = DetailController(self)
         self._search_controller = SearchController(self)
         self._coverage_controller = CoverageController(self)
+        self._tracking_controller = TrackingController(self)
         self._apiLogEntry.connect(self._append_api_log_entry)
         client = self.services.get("store_intel_api_client")
         if client is not None and hasattr(client, "set_log_sink"):
@@ -869,77 +874,8 @@ class QmlBridge(QObject):
             return None
         return kind, app_id, country, lang, key
 
-    @staticmethod
-    def _split_monitor_chart_key(key: str) -> tuple[str, str]:
-        parts = (key or "").split("|", 1)
-        collection = parts[0].strip() or "top_free"
-        category = parts[1].strip() if len(parts) > 1 else "APPLICATION"
-        return collection, category or "APPLICATION"
-
-    def _find_monitor_item(self, api, kind: str, app_id: str, country: str, lang: str, key: str):
-        """The QML monitor list only round-trips kind/app_id/country/lang/key through
-        these slots, not platform — look the row back up so mutation calls route to the
-        upstream that actually owns it instead of silently defaulting to Google Play."""
-        if kind == "app":
-            return next(
-                (
-                    item
-                    for item in api.list_tracked_apps()
-                    if getattr(item, "app_id", "") == app_id
-                    and getattr(item, "country", "us") == country
-                    and getattr(item, "lang", "en") == lang
-                ),
-                None,
-            )
-        if kind == "keyword":
-            return next(
-                (
-                    item
-                    for item in api.list_tracked_keywords()
-                    if getattr(item, "keyword", "") == key
-                    and getattr(item, "app_id", "") == app_id
-                    and getattr(item, "country", "us") == country
-                    and getattr(item, "lang", "en") == lang
-                ),
-                None,
-            )
-        collection, category = self._split_monitor_chart_key(key)
-        return next(
-            (
-                item
-                for item in api.list_tracked_chart_apps()
-                if getattr(item, "app_id", "") == app_id
-                and getattr(item, "collection", "") == collection
-                and (getattr(item, "category", "") or "APPLICATION") == category
-                and getattr(item, "country", "us") == country
-                and getattr(item, "lang", "en") == lang
-            ),
-            None,
-        )
-
     def _monitor_platform(self, api, kind: str, app_id: str, country: str, lang: str, key: str) -> str:
-        current = self._find_monitor_item(api, kind, app_id, country, lang, key)
-        return getattr(current, "platform", "google_play") if current else "google_play"
-
-    def _toggle_monitor_api(
-        self, api, kind: str, app_id: str, country: str, lang: str, key: str
-    ) -> bool:
-        current = self._find_monitor_item(api, kind, app_id, country, lang, key)
-        enabled = not bool(getattr(current, "enabled", False)) if current else True
-        platform = getattr(current, "platform", "google_play") if current else "google_play"
-        if kind == "app":
-            result = api.set_tracked_app_enabled(app_id, enabled, country, lang, platform)
-            return bool(getattr(result, "enabled", enabled))
-        if kind == "keyword":
-            result = api.set_tracked_keyword_enabled(
-                key, app_id, enabled, country, lang, platform
-            )
-            return bool(getattr(result, "enabled", enabled))
-        collection, category = self._split_monitor_chart_key(key)
-        result = api.set_tracked_chart_app_enabled(
-            app_id, collection, enabled, category, country, lang, platform
-        )
-        return bool(getattr(result, "enabled", enabled))
+        return self._tracking_controller.platform_of(api, kind, app_id, country, lang, key)
 
     @Slot()
     def refreshTracking(self) -> None:
@@ -989,7 +925,7 @@ class QmlBridge(QObject):
         if not app_id:
             self.errorMessage.emit("请输入要监控的包名。")
             return
-        if not self._is_valid_app_id(app_id, self._platform):
+        if not is_valid_app_id(app_id, self._platform):
             if self._platform == "app_store":
                 self.errorMessage.emit("App Store 目标请填数字 App ID，如 587366035。")
             else:
@@ -1002,18 +938,14 @@ class QmlBridge(QObject):
         platform = self._platform
         api = self._store_intel_api()
         self._run(
-            lambda: (
-                api.add_tracked_app(app_id, country, lang, frequency, platform=platform)
-                if api is not None
-                else self.services["tracking_service"].add_app(app_id, country, lang, frequency)
-            ),
+            lambda: self._tracking_controller.add_app(api, app_id, country, lang, frequency, platform),
             lambda _: self._after_mutation("已添加 App 监控。"),
             label="正在添加 App 监控...",
         )
 
     @Slot(str, str, str, str)
     def bulkImportApps(self, raw_text: str, country: str, lang: str, frequency: str) -> None:
-        app_ids = self._bulk_app_ids(raw_text)
+        app_ids = bulk_app_ids(raw_text)
         if not app_ids:
             self.errorMessage.emit("请粘贴至少一个包名。")
             return
@@ -1025,57 +957,11 @@ class QmlBridge(QObject):
         frequency = (frequency or "").strip() or "daily"
         platform = self._platform
         api = self._store_intel_api()
-
-        def bulk_import() -> dict[str, Any]:
-            if api is None:
-                return self.services["tracking_service"].add_apps_bulk(
-                    app_ids, country, lang, frequency
-                )
-
-            existing_keys = {
-                (getattr(item, "app_id", ""), getattr(item, "country", "us"), getattr(item, "lang", "en"))
-                for item in api.list_tracked_apps(platform=platform)
-            }
-            added = 0
-            existing = 0
-            failed: list[dict[str, str]] = []
-            for app_id in app_ids:
-                if not self._is_valid_app_id(app_id, platform):
-                    failed.append({"app_id": app_id, "reason": "包名格式不合法"})
-                    continue
-                try:
-                    already = (app_id, country, lang) in existing_keys
-                    api.add_tracked_app(app_id, country, lang, frequency, platform=platform)
-                    if already:
-                        existing += 1
-                    else:
-                        added += 1
-                        existing_keys.add((app_id, country, lang))
-                except Exception as exc:  # noqa: BLE001 - keep bulk import best-effort.
-                    failed.append({"app_id": app_id, "reason": str(exc)})
-            return {"added": added, "existing": existing, "failed": failed, "total": len(app_ids)}
-
-        self._run(bulk_import, self._after_bulk_imported, label="正在批量导入...")
-
-    @staticmethod
-    def _bulk_app_ids(raw_text: str) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for raw in (raw_text or "").splitlines():
-            app_id = raw.strip()
-            if not app_id or app_id in seen:
-                continue
-            seen.add(app_id)
-            cleaned.append(app_id)
-        return cleaned
-
-    @staticmethod
-    def _is_valid_app_id(app_id: str, platform: str = "google_play") -> bool:
-        if not app_id or " " in app_id:
-            return False
-        if platform == "app_store":
-            return app_id.isdigit()
-        return bool(re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", app_id))
+        self._run(
+            lambda: self._tracking_controller.bulk_import(api, app_ids, country, lang, frequency, platform),
+            self._after_bulk_imported,
+            label="正在批量导入...",
+        )
 
     @Slot(str, str, str, str, str)
     def addChartApp(
@@ -1090,7 +976,7 @@ class QmlBridge(QObject):
         if not app_id:
             self.errorMessage.emit("请输入要监控榜单的包名。")
             return
-        if not self._is_valid_app_id(app_id, self._platform):
+        if not is_valid_app_id(app_id, self._platform):
             if self._platform == "app_store":
                 self.errorMessage.emit("App Store 目标请填数字 App ID，如 587366035。")
             else:
@@ -1100,23 +986,14 @@ class QmlBridge(QObject):
         platform = self._platform
         api = self._store_intel_api()
         self._run(
-            lambda: (
-                api.add_tracked_chart_app(
-                    app_id,
-                    collection.strip() or "top_free",
-                    category.strip() or None,
-                    country.strip() or "us",
-                    lang.strip() or "en",
-                    platform=platform,
-                )
-                if api is not None
-                else self.services["tracking_service"].add_chart_app(
-                    app_id,
-                    collection.strip() or "top_free",
-                    category.strip() or "APPLICATION",
-                    country.strip() or "us",
-                    lang.strip() or "en",
-                )
+            lambda: self._tracking_controller.add_chart_app(
+                api,
+                app_id,
+                collection.strip(),
+                category.strip(),
+                country.strip() or "us",
+                lang.strip() or "en",
+                platform,
             ),
             lambda _: self._after_mutation("已添加榜单监控。"),
             label="正在添加榜单监控...",
@@ -1170,62 +1047,12 @@ class QmlBridge(QObject):
         if target is None:
             return
         api = self._store_intel_api()
-
-        def sync():
-            target_kind, target_app, target_country, target_lang, target_key = target
-            if api is not None:
-                platform = self._monitor_platform(
-                    api, target_kind, target_app, target_country, target_lang, target_key
-                )
-                if target_kind == "app":
-                    job = api.request_refresh(
-                        "app",
-                        app_id=target_app,
-                        country=target_country,
-                        lang=target_lang,
-                        platform=platform,
-                    )
-                    return f"已提交应用后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
-                if target_kind == "keyword":
-                    job = api.request_refresh(
-                        "keyword",
-                        keyword=target_key,
-                        app_id=target_app,
-                        country=target_country,
-                        lang=target_lang,
-                        platform=platform,
-                    )
-                    return f"已提交关键词后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
-                collection, category = self._split_monitor_chart_key(target_key)
-                job = api.request_refresh(
-                    "chart",
-                    app_id=target_app,
-                    collection=collection,
-                    category=category,
-                    country=target_country,
-                    lang=target_lang,
-                    platform=platform,
-                )
-                return f"已提交榜单后台刷新（任务 {getattr(job, 'job_id', '-')}）。"
-            tracking_service = self.services["tracking_service"]
-            if target_kind == "app":
-                tracking_service.sync_app_now(target_app, target_country, target_lang)
-                return "应用同步完成。"
-            if target_kind == "keyword":
-                result = tracking_service.sync_keyword_now(
-                    target_key, target_app, target_country, target_lang
-                )
-                rank = result.rank if getattr(result, "rank", None) is not None else "未命中"
-                return f"关键词同步完成，当前排名 {rank}。"
-            collection, category = self._split_monitor_chart_key(target_key)
-            result = tracking_service.sync_chart_now(
-                target_app, collection, category, target_country, target_lang
-            )
-            rank = result.rank if getattr(result, "rank", None) is not None else "未命中"
-            return f"榜单同步完成，当前排名 {rank}。"
-
         label = "正在提交刷新请求..." if api is not None else "正在同步选中监控项..."
-        self._run(sync, self._after_mutation, label=label)
+        self._run(
+            lambda: self._tracking_controller.sync_one(api, target),
+            self._after_mutation,
+            label=label,
+        )
 
     @Slot(str, str, str, str, str)
     def toggleMonitor(self, kind: str, app_id: str, country: str, lang: str, key: str) -> None:
@@ -1234,26 +1061,6 @@ class QmlBridge(QObject):
             return
         api = self._store_intel_api()
 
-        def toggle() -> tuple[str, bool]:
-            target_kind, target_app, target_country, target_lang, target_key = target
-            if api is not None:
-                return target_kind, self._toggle_monitor_api(
-                    api, target_kind, target_app, target_country, target_lang, target_key
-                )
-            tracking_service = self.services["tracking_service"]
-            if target_kind == "app":
-                return target_kind, tracking_service.toggle_app(
-                    target_app, target_country, target_lang
-                )
-            if target_kind == "keyword":
-                return target_kind, tracking_service.toggle_keyword(
-                    target_key, target_app, target_country, target_lang
-                )
-            collection, category = self._split_monitor_chart_key(target_key)
-            return target_kind, tracking_service.toggle_chart_app(
-                target_app, collection, category, target_country, target_lang
-            )
-
         def done(result: tuple[str, bool]) -> None:
             target_kind, enabled = result
             label = {"app": "应用监控", "keyword": "关键词监控", "chart": "榜单监控"}[
@@ -1261,7 +1068,11 @@ class QmlBridge(QObject):
             ]
             self._after_mutation(f"{label}已{'启用' if enabled else '禁用'}。")
 
-        self._run(toggle, done, label="正在切换监控状态...")
+        self._run(
+            lambda: self._tracking_controller.toggle_one(api, target),
+            done,
+            label="正在切换监控状态...",
+        )
 
     @Slot(str, str, str, str, str, str)
     def setMonitorFrequency(
@@ -1270,38 +1081,14 @@ class QmlBridge(QObject):
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
-        target_kind, target_app, target_country, target_lang, target_key = target
+        target_kind = target[0]
         frequency = (frequency or "").strip() or "daily"
         if target_kind == "chart":
             self.errorMessage.emit("榜单监控暂不支持修改频率。")
             return
         api = self._store_intel_api()
-
-        def save() -> str:
-            if api is not None:
-                platform = self._monitor_platform(
-                    api, target_kind, target_app, target_country, target_lang, target_key
-                )
-                if target_kind == "app":
-                    result = api.set_tracked_app_frequency(
-                        target_app, frequency, target_country, target_lang, platform
-                    )
-                else:
-                    result = api.set_tracked_keyword_frequency(
-                        target_key, target_app, frequency, target_country, target_lang, platform
-                    )
-                return getattr(result, "frequency", frequency)
-            tracking_service = self.services["tracking_service"]
-            if target_kind == "app":
-                return tracking_service.set_app_frequency(
-                    target_app, target_country, target_lang, frequency
-                )
-            return tracking_service.set_keyword_frequency(
-                target_key, target_app, target_country, target_lang, frequency
-            )
-
         self._run(
-            save,
+            lambda: self._tracking_controller.set_frequency(api, target, frequency),
             lambda result: self._after_mutation(
                 f"同步频率已设为「{frequency_label(result)}」。"
             ),
@@ -1315,29 +1102,13 @@ class QmlBridge(QObject):
         target = self._monitor_target(kind, app_id, country, lang, key)
         if target is None:
             return
-        target_kind, target_app, target_country, target_lang, target_key = target
-        if target_kind != "app":
+        if target[0] != "app":
             self.errorMessage.emit("只有 App 监控支持标签。")
             return
         tag = (tag or "").strip()
         api = self._store_intel_api()
-
-        def save() -> str:
-            if api is not None:
-                platform = self._monitor_platform(
-                    api, target_kind, target_app, target_country, target_lang, target_key
-                )
-                result = api.set_tracked_app_tag(
-                    target_app, tag, target_country, target_lang, platform
-                )
-                return getattr(result, "tag", tag)
-            result = self.services["tracking_service"].set_app_tag(
-                target_app, target_country, target_lang, tag
-            )
-            return result or ""
-
         self._run(
-            save,
+            lambda: self._tracking_controller.set_tag(api, target, tag),
             lambda result: self._after_mutation(
                 f"已设置标签「{result}」。" if result else "已清除标签。"
             ),
@@ -1350,41 +1121,11 @@ class QmlBridge(QObject):
         if target is None:
             return
         api = self._store_intel_api()
-
-        def remove() -> str:
-            target_kind, target_app, target_country, target_lang, target_key = target
-            if api is not None:
-                # Resolve platform before removing — the row won't exist to look up afterward.
-                platform = self._monitor_platform(
-                    api, target_kind, target_app, target_country, target_lang, target_key
-                )
-                if target_kind == "app":
-                    api.remove_tracked_app(target_app, target_country, target_lang, platform)
-                    return "已删除应用监控。"
-                if target_kind == "keyword":
-                    api.remove_tracked_keyword(
-                        target_key, target_app, target_country, target_lang, platform
-                    )
-                    return "已删除关键词监控。"
-                collection, category = self._split_monitor_chart_key(target_key)
-                api.remove_tracked_chart_app(
-                    target_app, collection, category, target_country, target_lang, platform
-                )
-                return "已删除榜单监控。"
-            tracking_service = self.services["tracking_service"]
-            if target_kind == "app":
-                tracking_service.remove_app(target_app, target_country, target_lang)
-                return "已删除应用监控。"
-            if target_kind == "keyword":
-                tracking_service.remove_keyword(target_key, target_app, target_country, target_lang)
-                return "已删除关键词监控。"
-            collection, category = self._split_monitor_chart_key(target_key)
-            tracking_service.remove_chart_app(
-                target_app, collection, category, target_country, target_lang
-            )
-            return "已删除榜单监控。"
-
-        self._run(remove, self._after_mutation, label="正在删除监控项...")
+        self._run(
+            lambda: self._tracking_controller.remove_one(api, target),
+            self._after_mutation,
+            label="正在删除监控项...",
+        )
 
     @Slot()
     def markAllAlertsRead(self) -> None:
