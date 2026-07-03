@@ -25,6 +25,10 @@ from app.ui.controllers.detail_controller import (
 )
 from app.ui.controllers.keyword_controller import KEYWORD_RANK_CHECK_LIMIT, KeywordController
 from app.ui.controllers.review_controller import ReviewController
+from app.ui.controllers.search_controller import (
+    SearchController,
+    search_items_signature,
+)
 from app.ui.controllers.settings_controller import SettingsController, SettingsError
 from app.ui.formatting import (
     alert_row,
@@ -128,6 +132,7 @@ class QmlBridge(QObject):
         self._chart_controller = ChartController(self)
         self._keyword_controller = KeywordController(self)
         self._detail_controller = DetailController(self)
+        self._search_controller = SearchController(self)
         self._apiLogEntry.connect(self._append_api_log_entry)
         client = self.services.get("store_intel_api_client")
         if client is not None and hasattr(client, "set_log_sink"):
@@ -1452,7 +1457,6 @@ class QmlBridge(QObject):
             return
         self._remember_input("search_keyword", keyword)
         api = self._store_intel_api()
-        store = None if api is not None else self._active_store()
         country_value = country.strip() or "us"
         lang_value = lang.strip() or "en"
         limit_value = safe_int(limit, 50)
@@ -1461,49 +1465,11 @@ class QmlBridge(QObject):
         request_id = self._search_request_id
 
         def search():
-            if api is None:
-                return {
-                    "items": store.search(
-                        keyword,
-                        country=country_value,
-                        lang=lang_value,
-                        limit=limit_value,
-                    ),
-                    "queued": False,
-                }
-            items = api.search_cached(
-                keyword,
-                country=country_value,
-                lang=lang_value,
-                limit=limit_value,
-                platform=platform,
+            payload = self._search_controller.search(
+                keyword, country_value, lang_value, limit_value, platform
             )
-            had_cached_items = bool(items)
-            if not items:
-                self._request_api_refresh(
-                    api,
-                    "search",
-                    query=keyword,
-                    country=country_value,
-                    lang=lang_value,
-                    limit=limit_value,
-                    platform=platform,
-                )
-                items = api.search_cached(
-                    keyword,
-                    country=country_value,
-                    lang=lang_value,
-                    limit=limit_value,
-                    platform=platform,
-                )
-            return {
-                "items": items,
-                "queued": False,
-                "request_id": request_id,
-                "refresh_in_background": had_cached_items and not all(
-                    self._has_search_display_data(item) for item in items
-                ),
-            }
+            payload["request_id"] = request_id
+            return payload
 
         def finish(payload):
             self._set_search_result_payload(payload)
@@ -2151,22 +2117,9 @@ class QmlBridge(QObject):
         platform: str = "google_play",
     ) -> None:
         def refresh():
-            self._request_api_refresh(
-                api,
-                "search",
-                query=keyword,
-                country=country,
-                lang=lang,
-                limit=limit,
-                platform=platform,
-            )
             return {
-                "items": api.search_cached(
-                    keyword,
-                    country=country,
-                    lang=lang,
-                    limit=limit,
-                    platform=platform,
+                "items": self._search_controller.refresh_cache(
+                    api, keyword, country, lang, limit, platform
                 ),
                 "request_id": request_id,
             }
@@ -2177,9 +2130,7 @@ class QmlBridge(QObject):
             items = payload.get("items") or []
             if not items:
                 return
-            if self._search_items_signature(items) == self._search_items_signature(
-                self._search_items
-            ):
+            if search_items_signature(items) == search_items_signature(self._search_items):
                 self.statusMessage.emit("搜索结果已是最新。")
                 return
             self._set_search_results(items)
@@ -2683,38 +2634,6 @@ class QmlBridge(QObject):
             self._set_search_results(payload.get("items") or [])
             return
         self._set_search_results(payload)
-
-    @staticmethod
-    def _search_items_signature(items) -> tuple:
-        fields = (
-            "app_id",
-            "title",
-            "developer",
-            "rating",
-            "ratings_count",
-            "installs",
-            "price",
-            "has_iap",
-            "category",
-            "summary",
-            "icon_url",
-        )
-        return tuple(
-            tuple(getattr(item, field, None) for field in fields)
-            for item in (items or [])
-        )
-
-    @staticmethod
-    def _has_search_display_data(item) -> bool:
-        if item is None or not getattr(item, "app_id", ""):
-            return False
-        fields = (
-            "developer",
-            "rating",
-            "ratings_count",
-            "installs",
-        )
-        return all(getattr(item, field, None) not in (None, "", [], {}) for field in fields)
 
     def _set_detail_payload(self, payload) -> None:
         if isinstance(payload, dict):

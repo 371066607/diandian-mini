@@ -82,7 +82,8 @@ A decomposition into `app/ui/controllers/*` is underway (aggregate-root pattern:
 every Signal/Slot/Property QML binds to, unchanged; slot bodies become thin shims into plain
 Python controller classes that hold the actual domain logic). Extracted so far:
 `ApiLogController`, `SettingsController`, `AlertController`, `ReviewController`,
-`ChartController`, `KeywordController`, `DetailController` — plus `app/ui/formatting.py`, a
+`ChartController`, `KeywordController`, `DetailController`, `SearchController` — plus
+`app/ui/formatting.py`, a
 module of pure display-formatting functions (`fmt_count`, `short_time`, `review_row`, `alert_row`,
 etc.) that were previously duplicated-by-sharing across domains as private QmlBridge methods (e.g.
 `fmt_count` is used by both search results and the detail page). `DetailController` itself
@@ -93,11 +94,12 @@ exist — pick based on what the logic needs:
 - **`services`-only** (`SettingsController`, `AlertController`, `KeywordController` for its
   legacy-mode path): construct with `self.services`, no bridge reference needed.
 - **`bridge`-reference** (`ReviewController`, `ChartController`, `KeywordController`'s API-mode
-  path, `DetailController`): construct with `self` (the bridge), used when the logic needs the
-  shared `_store_intel_api`/`_request_api_refresh`/`_active_store` helpers many domains call into.
+  path, `DetailController`, `SearchController`): construct with `self` (the bridge), used when the
+  logic needs the shared `_store_intel_api`/`_request_api_refresh`/`_active_store` helpers many
+  domains call into.
 
-Remaining on `QmlBridge` directly: search, coverage, and tracking/monitor. These are the hardest
-slice — `_monitor_tree`/`_monitor_series` alone span tracking+keyword+chart formatting. Read the
+Remaining on `QmlBridge` directly: coverage and tracking/monitor. These are the hardest slice —
+`_monitor_tree`/`_monitor_series` alone span tracking+keyword+chart formatting. Read the
 whole file, not just the slot you're touching, before assuming a helper is domain-local; grep
 every helper's call sites before moving it (several "domain" helpers turned out to be shared and belonged in
 `formatting.py` instead of a single controller). Follow `app/ui/controllers/chart_controller.py`
