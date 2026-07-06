@@ -13,6 +13,7 @@ from app.db.repositories import ChartRankRepository, KeywordRankRepository, Snap
 from app.ui.controllers.alert_controller import AlertController
 from app.ui.controllers.api_log_controller import ApiLogController
 from app.ui.controllers.chart_controller import ChartController
+from app.ui.controllers.competitor_controller import CompetitorController
 from app.ui.controllers.coverage_controller import CoverageController
 from app.ui.controllers.dashboard_controller import DashboardController
 from app.ui.controllers.detail_controller import (
@@ -70,6 +71,9 @@ class QmlBridge(QObject):
     updateApplied = Signal(str)  # (message) -> QML restart dialog
     coverageChanged = Signal()
     coverageProgress = Signal(str, float)  # (message, fraction 0..1) during a scan
+    competitorChanged = Signal()
+    monitorTreeReady = Signal("QVariant")  # async result of requestMonitorTree()
+    monitorSeriesReady = Signal("QVariant")  # async result of requestMonitorSeries()
     _apiLogEntry = Signal("QVariant")
 
     def __init__(self, database, services: dict[str, object], logger, parent=None):
@@ -88,6 +92,7 @@ class QmlBridge(QObject):
         self._pending_update: Any | None = None
         self._last_update_prompt_key = ""
         self._coverage: dict[str, Any] = self._coverage_state()
+        self._competitor: dict[str, Any] = self._competitor_state()
         # Candidate pools from finished scans, keyed by (platform, app_id, country, lang, deep)
         # — a re-scan of the same identity reuses them instead of re-paying the detail +
         # autocomplete requests (the candidates only derive from slow-moving metadata).
@@ -116,8 +121,13 @@ class QmlBridge(QObject):
         self._detail_request_id = 0
         self._chart_items: list[Any] = []
         self._chart_context: dict[str, Any] = {}
+        self._chart_request_id = 0
+        self._monitor_tree_request_id = 0
+        self._monitor_series_request_id = 0
         self._keyword_result: Any | None = None
         self._keyword_result_remote = False
+        self._keyword_request_id = 0
+        self._reviews_request_id = 0
         self._reviews_items: list[Any] = []
         self._reviews_context: dict[str, str] = {}
         self._reviews_token: Any | None = None
@@ -131,6 +141,7 @@ class QmlBridge(QObject):
         self._detail_controller = DetailController(self)
         self._search_controller = SearchController(self)
         self._coverage_controller = CoverageController(self)
+        self._competitor_controller = CompetitorController(self)
         self._tracking_controller = TrackingController(self)
         self._dashboard_controller = DashboardController(self)
         self._apiLogEntry.connect(self._append_api_log_entry)
@@ -224,7 +235,13 @@ class QmlBridge(QObject):
 
     def _clear_platform_results(self) -> None:
         """Drop fetched rows from the previous platform — stale rows carry the other
-        store's app ids, so acting on them (open detail / load more) would mis-route."""
+        store's app ids, so acting on them (open detail / load more) would mis-route.
+        Bumping every request counter also discards in-flight fetches started on the
+        old platform, so a late result can't repopulate the page after the switch."""
+        self._search_request_id += 1
+        self._chart_request_id += 1
+        self._keyword_request_id += 1
+        self._reviews_request_id += 1
         self._search_items = []
         self._search = {"rows": [], "summary": "等待搜索"}
         self.searchChanged.emit()
@@ -272,6 +289,32 @@ class QmlBridge(QObject):
     def _set_coverage(self, **kwargs) -> None:
         self._coverage = self._coverage_state(**kwargs)
         self.coverageChanged.emit()
+
+    @staticmethod
+    def _competitor_state(**overrides) -> dict:
+        state = {
+            "mode": "single",
+            "queried": False,
+            "running": False,
+            "appId": "",
+            "competitorAppId": "",
+            "country": "",
+            "lang": "",
+            "summary": "",
+            "rows": [],
+            "gapRows": [],
+            "overlapRows": [],
+            "exclusiveRows": [],
+            "gapTotal": 0,
+            "overlapTotal": 0,
+            "exclusiveTotal": 0,
+        }
+        state.update(overrides)
+        return state
+
+    def _set_competitor(self, payload: dict) -> None:
+        self._competitor = payload
+        self.competitorChanged.emit()
 
     def _active_store(self):
         """The scraping service matching the currently selected platform."""
@@ -447,8 +490,11 @@ class QmlBridge(QObject):
             self._run(service.git_pull, self._after_git, label="正在更新（git pull）...")
         else:
             self._set_update_status("正在下载并应用更新补丁...")
+            # check() already parsed the release body: "" means it publishes no
+            # checksum (skip the refetch inside download_and_apply_patch).
+            expected_sha = getattr(result, "sha256", "")
             self._run(
-                service.download_and_apply_patch,
+                lambda: service.download_and_apply_patch(expected_sha256=expected_sha),
                 lambda _: self._after_patch(),
                 label="正在下载并应用更新补丁...",
             )
@@ -495,8 +541,26 @@ class QmlBridge(QObject):
     @Slot(result="QVariant")
     def monitorTree(self) -> dict[str, Any]:
         """App-centric tree of monitored objects: each tracked app with its own tracked
-        keywords and chart positions nested under it (grouped by app_id)."""
+        keywords and chart positions nested under it (grouped by app_id).
+
+        Synchronous — in API mode this issues one HTTP call per tracked keyword/chart,
+        so the QML page must use requestMonitorTree() instead of blocking the UI thread."""
         return self._dashboard_controller.monitor_tree()
+
+    @Slot()
+    def requestMonitorTree(self) -> None:
+        """Async monitorTree: computes off the UI thread, result arrives via
+        monitorTreeReady. Guarded so an older refresh can't overwrite a newer one."""
+        self._monitor_tree_request_id += 1
+        self._run(
+            self._dashboard_controller.monitor_tree,
+            self._guarded(
+                "_monitor_tree_request_id", self._monitor_tree_request_id,
+                self.monitorTreeReady.emit,
+            ),
+            label="正在加载监控列表...",
+            busy=False,
+        )
 
     @Slot(str, str, str, str, str, int, result="QVariant")
     def monitorSeries(
@@ -505,8 +569,29 @@ class QmlBridge(QObject):
         """Time-series for a selected monitored object, ready to chart. kind: 'app'
         (rating/installs/reviews) | 'keyword' (rank) | 'chart' (rank). key: the keyword,
         or 'collection|category' for a chart. ``days`` windows to the last N days
-        (<=0 = all history) — drives the date-range selector in the UI."""
+        (<=0 = all history) — drives the date-range selector in the UI.
+
+        Synchronous — QML uses requestMonitorSeries() to keep the UI thread free."""
         return self._dashboard_controller.monitor_series(kind, app_id, country, lang, key, days)
+
+    @Slot(str, str, str, str, str, int)
+    def requestMonitorSeries(
+        self, kind: str, app_id: str, country: str, lang: str, key: str, days: int = 30
+    ) -> None:
+        """Async monitorSeries: result arrives via monitorSeriesReady. Guarded so
+        clicking through items quickly can't apply a stale series last."""
+        self._monitor_series_request_id += 1
+        self._run(
+            lambda: self._dashboard_controller.monitor_series(
+                kind, app_id, country, lang, key, days
+            ),
+            self._guarded(
+                "_monitor_series_request_id", self._monitor_series_request_id,
+                self.monitorSeriesReady.emit,
+            ),
+            label="正在加载监控趋势...",
+            busy=False,
+        )
 
     def _monitor_target(
         self, kind: str, app_id: str, country: str, lang: str, key: str
@@ -983,13 +1068,14 @@ class QmlBridge(QObject):
                 label="正在提交刷新请求...",
             )
             return
+        gen = self._detail_gen
         self._run(
             lambda: self.services["tracking_service"].sync_app_now(
                 app_id,
                 country=country.strip() or "us",
                 lang=lang.strip() or "en",
             ),
-            lambda detail: self._after_detail_saved(detail),
+            lambda detail: self._after_detail_saved(detail, gen),
             label="正在保存快照...",
         )
 
@@ -1065,9 +1151,11 @@ class QmlBridge(QObject):
         }
         if self._chart_context["category"]:
             self._remember_input("chart_category", self._chart_context["category"])
+        self._chart_request_id += 1
+        context = self._chart_context
         self._run(
-            lambda: self._chart_controller.fetch(self._chart_context, safe_int(limit, 100)),
-            self._set_chart_result_payload,
+            lambda: self._chart_controller.fetch(context, safe_int(limit, 100)),
+            self._guarded("_chart_request_id", self._chart_request_id, self._set_chart_result_payload),
             label="正在获取榜单...",
         )
 
@@ -1114,6 +1202,8 @@ class QmlBridge(QObject):
         self._remember_input("app_id", app_id_value)
         platform = self._platform
         api = self._store_intel_api()
+        self._keyword_request_id += 1
+        request_id = self._keyword_request_id
         if api is not None:
             self._run(
                 lambda: self._keyword_controller.fetch_rank_api(
@@ -1124,7 +1214,7 @@ class QmlBridge(QObject):
                     lang.strip() or "en",
                     platform,
                 ),
-                self._set_keyword_payload_from_api,
+                self._guarded("_keyword_request_id", request_id, self._set_keyword_payload_from_api),
                 label="正在同步关键词排名...",
             )
             return
@@ -1136,7 +1226,7 @@ class QmlBridge(QObject):
                 lang.strip() or "en",
                 self._platform,
             ),
-            self._set_keyword_result,
+            self._guarded("_keyword_request_id", request_id, self._set_keyword_result),
             label="正在查询关键词排名...",
         )
 
@@ -1199,6 +1289,10 @@ class QmlBridge(QObject):
     @Property("QVariant", notify=coverageChanged)
     def coverage(self) -> dict[str, Any]:
         return self._coverage
+
+    @Property("QVariant", notify=competitorChanged)
+    def competitor(self) -> dict[str, Any]:
+        return self._competitor
 
     @Slot(str, str, str, bool)
     def discoverCoverage(self, app_id: str, country: str, lang: str, deep: bool = False) -> None:
@@ -1292,6 +1386,53 @@ class QmlBridge(QObject):
         )
 
     @Slot(str, str, str, str)
+    def analyzeCompetitor(
+        self, app_id: str, competitor_app_id: str, country: str, lang: str
+    ) -> None:
+        if self._competitor.get("running"):
+            self.statusMessage.emit("已有竞品词查询进行中，请等待其完成。")
+            return
+        app_id = (app_id or "").strip()
+        competitor_app_id = (competitor_app_id or "").strip()
+        self._remember_input("app_id", app_id)
+        if competitor_app_id:
+            self._remember_input("app_id", competitor_app_id)
+        country = (country or "").strip() or "us"
+        lang = (lang or "").strip() or "en"
+        label = "正在对比竞品关键词..." if competitor_app_id else "正在反查关键词覆盖..."
+        # Reset to a running placeholder before the request lands — otherwise the
+        # previous query's rows/tables stay bound to the UI (and selectable/
+        # trackable) for the entire duration of this new, un-cached, synchronous
+        # request, same as discoverCoverage's pre-run _set_coverage(...).
+        self._set_competitor(self._competitor_state(running=True, summary=label))
+
+        def work():
+            try:
+                return ("ok", self._competitor_controller.analyze(
+                    self._store_intel_api(),
+                    app_id,
+                    competitor_app_id,
+                    country,
+                    lang,
+                    self._platform,
+                ))
+            except Exception as exc:  # surface a clean message, never leave it "running"
+                return ("error", str(exc))
+
+        def on_done(payload):
+            status, value = payload
+            if status == "error":
+                self._set_competitor(self._competitor_state(
+                    appId=app_id, competitorAppId=competitor_app_id,
+                    country=country, lang=lang,
+                ))
+                self.errorMessage.emit(value)
+                return
+            self._set_competitor({**value, "running": False})
+
+        self._run(work, on_done, label=label, busy=False)
+
+    @Slot(str, str, str, str)
     def fetchReviews(self, app_id: str, country: str, lang: str, sort: str) -> None:
         app_id = app_id.strip()
         if not app_id:
@@ -1307,9 +1448,11 @@ class QmlBridge(QObject):
         }
         self._reviews_items = []
         self._reviews_token = None
+        self._reviews_request_id += 1
+        context = self._reviews_context
         self._run(
-            lambda: self._review_controller.fetch_page(self._reviews_context, None),
-            self._set_reviews_result,
+            lambda: self._review_controller.fetch_page(context, None),
+            self._guarded("_reviews_request_id", self._reviews_request_id, self._set_reviews_result),
             label="正在获取评论...",
         )
 
@@ -1320,9 +1463,13 @@ class QmlBridge(QObject):
         if not ctx.get("app_id") or token is None:
             self.errorMessage.emit("没有更多评论可加载。")
             return
+        # Same counter as fetchReviews: a new fetch (or platform switch) makes any
+        # in-flight load-more page stale — its items belong to the old listing.
         self._run(
             lambda: self._review_controller.fetch_page(ctx, token),
-            self._append_reviews_result,
+            self._guarded(
+                "_reviews_request_id", self._reviews_request_id, self._append_reviews_result
+            ),
             label="正在加载更多评论...",
         )
 
@@ -1470,8 +1617,11 @@ class QmlBridge(QObject):
         )
         self._after_mutation(message)
 
-    def _after_detail_saved(self, detail) -> None:
-        self._set_detail_result(detail)
+    def _after_detail_saved(self, detail, gen: int) -> None:
+        # The save succeeded either way, but only refresh the on-screen detail if
+        # the user is still looking at the same app (guards navigate-away races).
+        if gen == self._detail_gen:
+            self._set_detail_result(detail)
         self._after_mutation("快照已保存。")
 
     def _collect_dashboard(self) -> dict[str, Any]:
@@ -1796,6 +1946,18 @@ class QmlBridge(QObject):
             "hasMore": self._reviews_token is not None and len(self._reviews_items) > 0,
         }
         self.reviewsChanged.emit()
+
+    def _guarded(self, counter_attr: str, request_id: int, applier):
+        """Wrap a result applier so it only runs if its request is still the latest.
+
+        Guards against a slow, older fetch landing after a newer one (or after a
+        platform switch bumped the counter) and overwriting the fresher state."""
+
+        def apply(result):
+            if getattr(self, counter_attr) == request_id:
+                applier(result)
+
+        return apply
 
     def _item_at(self, items: list[Any], index: int, message: str) -> Any | None:
         if index < 0 or index >= len(items):

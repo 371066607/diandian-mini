@@ -88,6 +88,7 @@ ApplicationWindow {
         { key: "charts", label: "榜单", subtitle: "Top Free / Paid / Grossing 榜单抓取" },
         { key: "keywords", label: "关键词", subtitle: "关键词排名查询与历史保存" },
         { key: "coverage", label: "覆盖词", subtitle: "发现哪些关键词能搜到你的 App（覆盖关键词）" },
+        { key: "competitor_gap", label: "竞品词", subtitle: "反查任意 App 靠哪些词被搜到，对比竞品发现机会词" },
         { key: "tracking", label: "监控", subtitle: "管理监控对象，查看后端每日同步结果" },
         { key: "history", label: "历史", subtitle: "本地快照和排名历史" },
         { key: "alerts", label: "提醒", subtitle: "全部监控告警与筛选" },
@@ -126,10 +127,17 @@ ApplicationWindow {
 
     function showToast(message, isError) {
         toast.text = message
+        toast.sticky = isError === true
         toast.color = isError ? "#5A1A18" : "#1F2937"
         toast.opacity = 1
         toast.visible = true
-        toastTimer.restart()
+        // Errors stay until dismissed — a 2.6s flash is too easy to miss, and a
+        // missed failure looks identical to "empty data". Status toasts auto-hide.
+        if (toast.sticky) {
+            toastTimer.stop()
+        } else {
+            toastTimer.restart()
+        }
     }
 
     function openAlertDetail(rowData) {
@@ -422,9 +430,10 @@ ApplicationWindow {
         font.pixelSize: 13
     }
 
-    // Text field with a per-platform input-history dropdown. Built on a plain TextField
-    // (NOT ComboBox) so the typed text survives a model change — submitting a search
-    // appends to history, which would otherwise reset a ComboBox's editText to blank.
+    // Text field with a per-platform input-history dropdown and as-you-type completion.
+    // Built on a plain TextField (NOT ComboBox) so the typed text survives a model
+    // change — submitting a search appends to history, which would otherwise reset a
+    // ComboBox's editText to blank.
     component HistoryField: FocusScope {
         id: hf
         property string historyKey: ""
@@ -434,6 +443,29 @@ ApplicationWindow {
         height: 38
         implicitWidth: 180
         implicitHeight: 38
+
+        property var suggestions: []
+
+        // Typing filters history to substring matches; an empty field offers all of it.
+        function updateSuggestions() {
+            var typed = hfInput.text.trim().toLowerCase()
+            var all = root.history(hf.historyKey)
+            hf.suggestions = !typed ? all : all.filter(function(v) {
+                var lv = v.toLowerCase()
+                return lv !== typed && lv.indexOf(typed) !== -1
+            })
+            if (hf.suggestions.length > 0 && hfInput.activeFocus) {
+                hlist.currentIndex = -1
+                hpopup.open()
+            } else {
+                hpopup.close()
+            }
+        }
+        function applySuggestion(value) {
+            hf.text = value
+            hpopup.close()
+            hfInput.forceActiveFocus()
+        }
 
         Rectangle {
             anchors.fill: parent
@@ -447,7 +479,7 @@ ApplicationWindow {
             id: hfInput
             anchors.fill: parent
             leftPadding: 12
-            rightPadding: 30
+            rightPadding: toggleZone.visible ? 34 : 12
             selectByMouse: true
             color: root.cInk
             selectedTextColor: root.cInk
@@ -458,20 +490,68 @@ ApplicationWindow {
             verticalAlignment: Text.AlignVCenter
             background: null
             onAccepted: hf.accepted()
+            onTextEdited: hf.updateSuggestions()
+            onActiveFocusChanged: {
+                if (activeFocus && !text && root.history(hf.historyKey).length > 0)
+                    hf.updateSuggestions()
+                else if (!activeFocus)
+                    hpopup.close()
+            }
+            Keys.onDownPressed: {
+                if (!hpopup.visible) hf.updateSuggestions()
+                if (hpopup.visible && hlist.count > 0)
+                    hlist.currentIndex = Math.min(hlist.currentIndex + 1, hlist.count - 1)
+            }
+            Keys.onUpPressed: {
+                if (hpopup.visible && hlist.currentIndex >= 0)
+                    hlist.currentIndex = hlist.currentIndex - 1
+            }
+            Keys.onReturnPressed: function(event) {
+                if (hpopup.visible && hlist.currentIndex >= 0)
+                    hf.applySuggestion(hf.suggestions[hlist.currentIndex])
+                else
+                    event.accepted = false
+            }
+            Keys.onEnterPressed: function(event) {
+                if (hpopup.visible && hlist.currentIndex >= 0)
+                    hf.applySuggestion(hf.suggestions[hlist.currentIndex])
+                else
+                    event.accepted = false
+            }
+            Keys.onEscapePressed: function(event) {
+                if (hpopup.visible) hpopup.close()
+                else event.accepted = false
+            }
         }
 
-        // history dropdown toggle (only when this field has remembered values)
-        Label {
+        // history dropdown toggle (only when this field has remembered values);
+        // full-height hit zone, not just the glyph
+        Item {
+            id: toggleZone
             anchors.right: parent.right
-            anchors.rightMargin: 11
-            anchors.verticalCenter: parent.verticalCenter
-            text: "▾"
-            color: hpopup.visible ? root.cBlue : root.cFaint
-            font.pixelSize: 11
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 34
             visible: root.history(hf.historyKey).length > 0
             TapHandler {
                 cursorShape: Qt.PointingHandCursor
-                onTapped: hpopup.visible ? hpopup.close() : hpopup.open()
+                onTapped: {
+                    if (hpopup.visible) {
+                        hpopup.close()
+                    } else {
+                        hf.suggestions = root.history(hf.historyKey)
+                        hlist.currentIndex = -1
+                        hpopup.open()
+                        hfInput.forceActiveFocus()
+                    }
+                }
+            }
+            HoverHandler { id: toggleHover }
+            Label {
+                anchors.centerIn: parent
+                text: "▾"
+                color: hpopup.visible ? root.cBlue : (toggleHover.hovered ? root.cBody : root.cFaint)
+                font.pixelSize: 12
             }
         }
 
@@ -490,10 +570,12 @@ ApplicationWindow {
                 id: hlist
                 clip: true
                 implicitHeight: contentHeight
-                model: root.history(hf.historyKey)
+                model: hf.suggestions
+                currentIndex: -1
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollIndicator.vertical: ScrollIndicator {}
                 delegate: ItemDelegate {
+                    id: hitem
                     width: ListView.view ? ListView.view.width : hf.width
                     height: 32
                     contentItem: Label {
@@ -506,13 +588,9 @@ ApplicationWindow {
                     }
                     background: Rectangle {
                         radius: 6
-                        color: hovered ? root.cBlueSoft : "transparent"
+                        color: (hitem.hovered || hitem.ListView.isCurrentItem) ? root.cBlueSoft : "transparent"
                     }
-                    onClicked: {
-                        hf.text = modelData
-                        hpopup.close()
-                        hfInput.forceActiveFocus()
-                    }
+                    onClicked: hf.applySuggestion(modelData)
                 }
             }
         }
@@ -608,6 +686,37 @@ ApplicationWindow {
     component ToolbarFlow: Flow {
         Layout.fillWidth: true
         spacing: 10
+    }
+
+    // Empty-state filler for a trend card: explains why there is no chart and
+    // links to the tracking page. Same height as SparkLine so the card doesn't jump.
+    component TrendEmptyHint: ColumnLayout {
+        id: hint
+        property string text: ""
+        Layout.fillWidth: true
+        Layout.preferredHeight: 152
+        spacing: 6
+        Item { Layout.fillHeight: true }
+        Label {
+            text: hint.text
+            color: root.cMuted
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        Label {
+            text: "去「监控」页添加 →"
+            color: root.cBlue
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            Layout.fillWidth: true
+            TapHandler {
+                cursorShape: Qt.PointingHandCursor
+                onTapped: root.currentPage = "tracking"
+            }
+        }
+        Item { Layout.fillHeight: true }
     }
 
     component SparkLine: Canvas {
@@ -1549,6 +1658,7 @@ ApplicationWindow {
                     ChartsPage {}
                     KeywordsPage {}
                     CoveragePage {}
+                    CompetitorPage {}
                     TrackingPage {}
                     HistoryPage {}
                     AlertsPage {}
@@ -1759,20 +1869,37 @@ ApplicationWindow {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 28
-        width: Math.min(toastText.implicitWidth + 36, root.width - 80)
+        width: Math.min(toastText.implicitWidth + (sticky ? 64 : 36), root.width - 80)
         height: toastText.implicitHeight + 20
         property alias text: toastText.text
+        property bool sticky: false
         property real slideOffset: opacity === 0 ? 12 : 0
 
         Label {
             id: toastText
             anchors.centerIn: parent
-            width: parent.width - 28
+            width: parent.width - (toast.sticky ? 52 : 28)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             color: "#EFF3F8"
             font.pixelSize: 13
             font.weight: Font.DemiBold
+        }
+
+        Label {
+            visible: toast.sticky
+            text: "✕"
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            color: "#EFF3F8"
+            font.pixelSize: 13
+        }
+
+        TapHandler {
+            enabled: toast.sticky
+            cursorShape: Qt.PointingHandCursor
+            onTapped: toast.opacity = 0
         }
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
@@ -1784,6 +1911,64 @@ ApplicationWindow {
         id: toastTimer
         interval: 2600
         onTriggered: toast.opacity = 0
+    }
+
+    // --- generic destructive-action confirm dialog ---
+    // Usage: root.confirmAction("确认删除？", function() { ... })
+    function confirmAction(message, action) {
+        confirmDialog.message = message
+        confirmDialog.action = action
+        confirmDialog.open()
+    }
+
+    Dialog {
+        id: confirmDialog
+        property string message: ""
+        property var action: null
+        anchors.centerIn: parent
+        modal: true
+        padding: 22
+        width: Math.min(420, root.width - 80)
+        header: null
+        Overlay.modal: Rectangle { color: "#660F172A" }
+        background: Rectangle { radius: 12; color: root.cSurface; border.color: root.cLine }
+        contentItem: ColumnLayout {
+            spacing: 14
+            Label {
+                text: "确认操作"
+                color: root.cInk
+                font.pixelSize: 16
+                font.weight: Font.Bold
+            }
+            Label {
+                text: confirmDialog.message
+                color: root.cSlate
+                font.pixelSize: 13
+                lineHeight: 1.35
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Layout.topMargin: 4
+                spacing: 10
+                SecondaryButton {
+                    text: "取消"
+                    implicitWidth: 96
+                    onClicked: { confirmDialog.action = null; confirmDialog.close() }
+                }
+                PrimaryButton {
+                    text: "确认"
+                    implicitWidth: 96
+                    onClicked: {
+                        var run = confirmDialog.action
+                        confirmDialog.action = null
+                        confirmDialog.close()
+                        if (run) run()
+                    }
+                }
+            }
+        }
     }
 
     // --- update confirm dialog (Yes/No) ---
@@ -1940,12 +2125,30 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 18
                 Card {
-                    title: "评分 / 评论趋势"
-                    SparkLine { values: root.rows(root.bridge.dashboard, "ratingValues") }
+                    title: root.bridge.dashboard.ratingAppName ? "评分趋势 ·「" + root.bridge.dashboard.ratingAppName + "」" : "评分趋势"
+                    subtitle: root.bridge.dashboard.ratingAppName ? "监控对象的每日快照" : ""
+                    SparkLine {
+                        visible: root.bridge.dashboard.ratingAppName ? true : false
+                        values: root.rows(root.bridge.dashboard, "ratingValues")
+                        labels: root.rows(root.bridge.dashboard, "ratingLabels")
+                    }
+                    TrendEmptyHint {
+                        visible: !root.bridge.dashboard.ratingAppName
+                        text: "暂无监控 App，添加后开始积累评分趋势"
+                    }
                 }
                 Card {
                     title: root.bridge.dashboard.keywordName ? "关键词「" + root.bridge.dashboard.keywordName + "」排名" : "关键词排名变化"
-                    SparkLine { values: root.rows(root.bridge.dashboard, "keywordValues") }
+                    subtitle: root.bridge.dashboard.keywordName ? "监控关键词的每日排名" : ""
+                    SparkLine {
+                        visible: root.bridge.dashboard.keywordName ? true : false
+                        values: root.rows(root.bridge.dashboard, "keywordValues")
+                        labels: root.rows(root.bridge.dashboard, "keywordLabels")
+                    }
+                    TrendEmptyHint {
+                        visible: !root.bridge.dashboard.keywordName
+                        text: "暂无监控关键词，添加后开始积累排名趋势"
+                    }
                 }
             }
 
@@ -2029,13 +2232,15 @@ ApplicationWindow {
         function loadSeries() {
             if (!monPage.cur.kind) return
             var d = monPage.monRange === "all" ? 0 : parseInt(monPage.monRange)
-            monPage.monDetail = root.bridge.monitorSeries(monPage.cur.kind, monPage.cur.appId,
-                                                          monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, d)
+            root.bridge.requestMonitorSeries(monPage.cur.kind, monPage.cur.appId,
+                                             monPage.cur.ctry, monPage.cur.lang, monPage.cur.key, d)
         }
-        Component.onCompleted: monPage.monTree = root.bridge.monitorTree()
+        Component.onCompleted: root.bridge.requestMonitorTree()
         Connections {
             target: root.bridge
-            function onTrackingChanged() { monPage.monTree = root.bridge.monitorTree() }
+            function onTrackingChanged() { root.bridge.requestMonitorTree() }
+            function onMonitorTreeReady(tree) { monPage.monTree = tree }
+            function onMonitorSeriesReady(series) { monPage.monDetail = series }
         }
         ColumnLayout {
             width: parent.width
@@ -2281,7 +2486,10 @@ ApplicationWindow {
                             }
                             SecondaryButton {
                                 text: "删除选中"
-                                onClicked: root.bridge.removeMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key)
+                                onClicked: root.confirmAction(
+                                    "确认删除该监控对象？删除后将停止同步，其历史趋势也不再展示。",
+                                    function() { root.bridge.removeMonitor(monPage.cur.kind, monPage.cur.appId, monPage.cur.ctry, monPage.cur.lang, monPage.cur.key) }
+                                )
                             }
                         }
                         Repeater {
@@ -2661,6 +2869,7 @@ ApplicationWindow {
                 }
                 Card {
                     title: "评分趋势"
+                    subtitle: "来自服务端每日快照"
                     Layout.preferredWidth: 3
                     SparkLine {
                         values: detailPage.d.ratingValues || []
@@ -2669,6 +2878,7 @@ ApplicationWindow {
                 }
                 Card {
                     title: "评论数趋势"
+                    subtitle: "来自服务端每日快照"
                     Layout.preferredWidth: 3
                     SparkLine {
                         values: detailPage.d.reviewsValues || []
@@ -2679,6 +2889,7 @@ ApplicationWindow {
 
             Card {
                 title: "安装量趋势（真实安装数）"
+                subtitle: "来自服务端每日快照"
                 visible: detailPage.d.loaded === true && !root.isAppStore
                 SparkLine {
                     values: detailPage.d.installsValues || []
@@ -3101,6 +3312,175 @@ ApplicationWindow {
         }
     }
 
+    component CompetitorPage: ScrollView {
+        id: compPage
+        clip: true
+        contentWidth: availableWidth
+        property var comp: root.bridge.competitor
+        property string selKeyword: ""
+        // A new query (or the results it lands) replaces `comp` wholesale — the
+        // previously selected keyword no longer refers to a row in the new
+        // result set, so it must not survive to be attached to the wrong
+        // app/country/lang via "加入监控".
+        onCompChanged: selKeyword = ""
+
+        function clearOtherSelections(exceptTable) {
+            if (exceptTable !== serpTable) serpTable.selectedIndex = -1
+            if (exceptTable !== gapTable) gapTable.selectedIndex = -1
+            if (exceptTable !== overlapTable) overlapTable.selectedIndex = -1
+            if (exceptTable !== exclusiveTable) exclusiveTable.selectedIndex = -1
+        }
+
+        ColumnLayout {
+            width: parent.width
+            spacing: 18
+
+            Card {
+                ToolbarFlow {
+                    HistoryField {
+                        id: gapTarget
+                        historyKey: "app_id"
+                        placeholderText: root.isAppStore ? "目标 App ID（必填，如 310633997）" : "目标 App ID（必填，如 com.whatsapp）"
+                        width: 260
+                        enabled: !compPage.comp.running
+                        onAccepted: if (!compPage.comp.running) root.bridge.analyzeCompetitor(text, gapCompetitor.text, gapCountry.text, gapLang.text)
+                    }
+                    QuietCombo {
+                        id: gapTargetPick
+                        implicitWidth: 160
+                        displayText: "从监控 App 选…"
+                        enabled: !compPage.comp.running
+                        model: (root.bridge.tracking.apps || []).map(function(a) { return (a.title || a.appId) + " · " + a.appId })
+                        onActivated: function(index) {
+                            var apps = root.bridge.tracking.apps || []
+                            if (index >= 0 && index < apps.length) gapTarget.text = apps[index].appId
+                            currentIndex = -1
+                        }
+                    }
+                    SecondaryButton {
+                        text: "⇄ 交换"
+                        enabled: gapCompetitor.text.length > 0 && !compPage.comp.running
+                        ToolTip.text: "对调目标与竞品 App ID"
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 400
+                        onClicked: { var t = gapTarget.text; gapTarget.text = gapCompetitor.text; gapCompetitor.text = t }
+                    }
+                    HistoryField {
+                        id: gapCompetitor
+                        historyKey: "app_id"
+                        placeholderText: "竞品 App ID（留空 = 只反查目标 App）"
+                        width: 260
+                        enabled: !compPage.comp.running
+                        onAccepted: if (!compPage.comp.running) root.bridge.analyzeCompetitor(gapTarget.text, text, gapCountry.text, gapLang.text)
+                    }
+                    QuietCombo {
+                        id: gapCompetitorPick
+                        implicitWidth: 160
+                        displayText: "从监控 App 选…"
+                        enabled: !compPage.comp.running
+                        model: (root.bridge.tracking.apps || []).map(function(a) { return (a.title || a.appId) + " · " + a.appId })
+                        onActivated: function(index) {
+                            var apps = root.bridge.tracking.apps || []
+                            if (index >= 0 && index < apps.length) gapCompetitor.text = apps[index].appId
+                            currentIndex = -1
+                        }
+                    }
+                    Field { id: gapCountry; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.country : "", "us"); width: 90; enabled: !compPage.comp.running }
+                    Field { id: gapLang; text: textOr(root.bridge.tracking.defaults ? root.bridge.tracking.defaults.lang : "", "en"); width: 90; enabled: !compPage.comp.running }
+                    PrimaryButton {
+                        text: compPage.comp.running ? "查询中..." : (gapCompetitor.text.trim().length > 0 ? "对比竞品差集" : "反查关键词覆盖")
+                        enabled: !compPage.comp.running
+                        onClicked: root.bridge.analyzeCompetitor(gapTarget.text, gapCompetitor.text, gapCountry.text, gapLang.text)
+                    }
+                    SecondaryButton {
+                        text: "加入监控（选中词）"
+                        enabled: compPage.selKeyword.length > 0 && !compPage.comp.running
+                        onClicked: root.bridge.addKeywordTracking(compPage.selKeyword, compPage.comp.appId, compPage.comp.country, compPage.comp.lang)
+                    }
+                }
+                Label {
+                    text: "原理：反查服务器积累的历史搜索观测数据（「关键词」「覆盖词」查询和每日监控留下的搜索结果快照），看一个 App 曾在哪些词的结果页出现过、排第几。即查即回、不实时抓取——观测越多结果越全，冷门 App 可能暂时查不到记录。"
+                    color: root.cFaint
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            DataTable {
+                id: serpTable
+                visible: compPage.comp.mode === "single"
+                title: "关键词覆盖 · " + compPage.comp.summary
+                subtitle: root.platformLabel + " · 该 App 曾出现在这些词的搜索结果里，按排名升序；选中某行可「加入监控」"
+                rows: root.rows(compPage.comp, "rows")
+                tableHeight: 520
+                emptyText: compPage.comp.queried
+                    ? "该 App 在当前国家/语言下还没有搜索观测记录。数据来自「关键词」「覆盖词」查询与每日监控的积累——先跑一次覆盖词分析，或把它加入监控。"
+                    : "暂无数据，输入目标 App ID 后点「反查关键词覆盖」"
+                columns: [
+                    { label: "排名", key: "rank", width: 90 },
+                    { label: "关键词（能搜到该 App 的词）", key: "keyword", fill: true },
+                    { label: "最后观测时间", key: "lastSeen", width: 170 }
+                ]
+                onSelectionChanged: function(rowIndex, rowData) { compPage.selKeyword = rowData ? rowData.keyword : ""; compPage.clearOtherSelections(serpTable) }
+            }
+
+            DataTable {
+                id: gapTable
+                visible: compPage.comp.mode === "gap"
+                Layout.fillWidth: true
+                title: "机会词（竞品有、你没有）· " + compPage.comp.gapTotal + " 个"
+                subtitle: "竞品 " + compPage.comp.competitorAppId + " 覆盖而 " + compPage.comp.appId + " 未覆盖的词，按竞品排名升序；蓝条 = 竞品排进前 10 的高价值词"
+                rows: root.rows(compPage.comp, "gapRows")
+                tableHeight: 380
+                highlightKey: "hot"
+                emptyText: "没有发现机会词：竞品覆盖的词你都已覆盖，或双方的观测数据还太少。"
+                columns: [
+                    { label: "竞品排名", key: "competitorRank", width: 100 },
+                    { label: "关键词", key: "keyword", fill: true }
+                ]
+                onSelectionChanged: function(rowIndex, rowData) { compPage.selKeyword = rowData ? rowData.keyword : ""; compPage.clearOtherSelections(gapTable) }
+            }
+
+            RowLayout {
+                visible: compPage.comp.mode === "gap"
+                Layout.fillWidth: true
+                spacing: 18
+                DataTable {
+                    id: overlapTable
+                    Layout.fillWidth: true
+                    title: "重合词（双方都有）· " + compPage.comp.overlapTotal + " 个"
+                    subtitle: "按落后幅度降序，加粗 = 你排名落后于竞品"
+                    rows: root.rows(compPage.comp, "overlapRows")
+                    tableHeight: 260
+                    emphasizeKey: "behind"
+                    emptyText: "双方没有共同覆盖的词。"
+                    columns: [
+                        { label: "关键词", key: "keyword", fill: true },
+                        { label: "我的排名", key: "targetRank", width: 88 },
+                        { label: "竞品排名", key: "competitorRank", width: 88 },
+                        { label: "差距", key: "delta", width: 96 }
+                    ]
+                    onSelectionChanged: function(rowIndex, rowData) { compPage.selKeyword = rowData ? rowData.keyword : ""; compPage.clearOtherSelections(overlapTable) }
+                }
+                DataTable {
+                    id: exclusiveTable
+                    Layout.fillWidth: true
+                    title: "独有词（你有、竞品没有）· " + compPage.comp.exclusiveTotal + " 个"
+                    subtitle: "你的护城河词，按我的排名升序"
+                    rows: root.rows(compPage.comp, "exclusiveRows")
+                    tableHeight: 260
+                    emptyText: "没有你独有的词——竞品覆盖了你的全部关键词。"
+                    columns: [
+                        { label: "我的排名", key: "targetRank", width: 88 },
+                        { label: "关键词", key: "keyword", fill: true }
+                    ]
+                    onSelectionChanged: function(rowIndex, rowData) { compPage.selKeyword = rowData ? rowData.keyword : ""; compPage.clearOtherSelections(exclusiveTable) }
+                }
+            }
+        }
+    }
+
     component ReviewsPage: ScrollView {
         clip: true
         contentWidth: availableWidth
@@ -3196,7 +3576,13 @@ ApplicationWindow {
                         onActivated: root.bridge.loadHistoryIndex(currentIndex)
                     }
                     SecondaryButton { text: "刷新历史"; onClicked: root.bridge.refreshHistory() }
-                    SecondaryButton { text: "清理历史"; onClicked: root.bridge.cleanupHistory() }
+                    SecondaryButton {
+                        text: "清理历史"
+                        onClicked: root.confirmAction(
+                            "确认清理历史数据？将按保留策略删除过期的快照、排名和告警记录，且不可恢复。",
+                            function() { root.bridge.cleanupHistory() }
+                        )
+                    }
                     Label {
                         text: root.bridge.history.selected ? "当前：" + root.bridge.history.selected : "暂无监控 App"
                         color: root.cSlate

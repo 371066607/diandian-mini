@@ -22,6 +22,11 @@ from app.schemas.review_schema import ReviewItem
 
 DEFAULT_USER_AGENT = "CatchRadar/desktop"
 
+# Transient-network retry budget for idempotent GETs (see _request): one flaky
+# hop shouldn't fail a read that would succeed 500ms later.
+_TRANSIENT_RETRIES = 2
+_TRANSIENT_BACKOFF_SECONDS = 0.5
+
 
 class StoreIntelApiError(RuntimeError):
     pass
@@ -432,6 +437,50 @@ class StoreIntelApiClient:
         )
         return self._namespace(data)
 
+    def list_app_keyword_serp(
+        self,
+        app_id: str,
+        country: str = "us",
+        lang: str = "en",
+        limit: int = 200,
+        platform: str = "google_play",
+    ) -> SimpleNamespace:
+        data = self._request(
+            "GET",
+            "/api/store-intel/keyword-serp/app",
+            query={
+                "app_id": app_id,
+                "country": country,
+                "lang": lang,
+                "limit": limit,
+                "platform": platform,
+            },
+        )
+        return self._namespace(data)
+
+    def analyze_keyword_gap(
+        self,
+        app_id: str,
+        competitor_app_id: str,
+        country: str = "us",
+        lang: str = "en",
+        limit: int = 200,
+        platform: str = "google_play",
+    ) -> SimpleNamespace:
+        data = self._request(
+            "GET",
+            "/api/store-intel/keyword-gap",
+            query={
+                "app_id": app_id,
+                "competitor_app_id": competitor_app_id,
+                "country": country,
+                "lang": lang,
+                "limit": limit,
+                "platform": platform,
+            },
+        )
+        return self._namespace(data)
+
     def analyze_coverage_stream(
         self,
         app_id: str,
@@ -820,7 +869,7 @@ class StoreIntelApiClient:
             "/api/store-intel/tracking/apps/sync",
             body={"app_id": app_id, "country": country, "lang": lang, "platform": platform},
         )
-        return AppDetail(**data.get("detail", {}))
+        return AppDetail(**(data.get("detail") or {}))
 
     def sync_all(self, due_only: bool = False) -> dict[str, int]:
         data = self._request(
@@ -1070,7 +1119,11 @@ class StoreIntelApiClient:
             )
 
         auth_epoch = self._auth_epoch
-        for attempt in range(2):
+        auth_attempt = 0
+        # Only idempotent GETs retry on transient network failures — retrying a
+        # POST could double-apply a mutation the server actually processed.
+        transient_left = _TRANSIENT_RETRIES if method.upper() == "GET" else 0
+        while True:
             request = Request(
                 url,
                 data=payload,
@@ -1086,7 +1139,8 @@ class StoreIntelApiClient:
                 status = getattr(exc, "code", None)
                 raw = exc.read().decode("utf-8", errors="replace")
                 raw_response = self._text_preview(raw)
-                if self._should_reauth_retry(path, status, attempt):
+                if self._should_reauth_retry(path, status, auth_attempt):
+                    auth_attempt += 1
                     try:
                         self._reauthenticate(auth_epoch)
                     except StoreIntelApiError as auth_exc:
@@ -1097,14 +1151,23 @@ class StoreIntelApiClient:
                 error = self._error_message(raw, exc.reason)
                 emit_log()
                 raise StoreIntelApiError(error) from exc
-            except URLError as exc:
-                error = f"StoreIntel API 请求失败：{exc.reason}"
+            except OSError as exc:
+                # URLError, ssl.SSLError, socket timeouts and connection resets all
+                # derive from OSError — transient by nature, so back off and retry
+                # idempotent requests before surfacing a clean error.
+                if transient_left > 0:
+                    transient_left -= 1
+                    time.sleep(
+                        _TRANSIENT_BACKOFF_SECONDS * (_TRANSIENT_RETRIES - transient_left)
+                    )
+                    continue
+                error = f"StoreIntel API 请求失败：{getattr(exc, 'reason', None) or exc}"
                 emit_log()
                 raise StoreIntelApiError(error) from exc
             except Exception as exc:
-                error = str(exc)
+                error = f"StoreIntel API 请求异常：{exc}"
                 emit_log()
-                raise
+                raise StoreIntelApiError(error) from exc
         try:
             envelope = json.loads(raw or "{}")
         except json.JSONDecodeError as exc:
@@ -1183,13 +1246,17 @@ class StoreIntelApiClient:
             raw = exc.read().decode("utf-8", errors="replace")
             error = self._error_message(raw, exc.reason)
             raise StoreIntelApiError(error) from exc
-        except URLError as exc:
-            error = f"StoreIntel API 请求失败：{exc.reason}"
+        except StoreIntelApiError:
+            raise
+        except OSError as exc:
+            # Covers URLError plus mid-stream stalls (socket timeout / reset),
+            # which are NOT URLError subclasses once bytes started flowing.
+            error = f"StoreIntel API 请求失败：{getattr(exc, 'reason', None) or exc}"
             raise StoreIntelApiError(error) from exc
         except Exception as exc:
             if not error:
                 error = str(exc)
-            raise
+            raise StoreIntelApiError(f"StoreIntel API 流式请求异常：{exc}") from exc
         finally:
             self._emit_log(
                 method=method,
