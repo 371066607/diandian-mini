@@ -17,8 +17,6 @@ hiddenimports = [
     "PySide6.QtQml",
     "PySide6.QtQuick",
     "PySide6.QtQuickControls2",
-    "PySide6.QtOpenGL",
-    "PySide6.QtOpenGLWidgets",
     "PySide6.QtWidgets",
 ]
 binaries = []
@@ -41,6 +39,7 @@ excludes = [
     "PySide6.QtDataVisualization",
     "PySide6.QtGraphs",
     "PySide6.QtMultimedia",
+    "PySide6.QtOpenGLWidgets",
     "PySide6.QtPdf",
     "PySide6.QtPdfWidgets",
     "PySide6.QtQuick3D",
@@ -110,13 +109,58 @@ _excluded_bundle_parts = (
     "QtSensors",
     "QtTest",
     "QtTextToSpeech",
+    # QtOpenGLWidgets Python binding: nothing imports it (PySide6.QtQuick's import
+    # chain needs PySide6.QtOpenGL, so that binding must stay bundled).
+    "QtOpenGLWidgets.abi3",
+    # qml_app.py hardcodes QQuickStyle.setStyle("Fusion"); every other Quick
+    # Controls style (and the native-style machinery only they use) is dead weight.
+    "Controls2Material",
+    "Controls2Universal",
+    "Controls2Imagine",
+    "Controls2IOS",
+    "Controls2MacOS",
+    "Controls2FluentWinUI3",
+    "Controls2Windows",
+    "QtQuick/Controls/Material",
+    "QtQuick/Controls/Universal",
+    "QtQuick/Controls/Imagine",
+    "QtQuick/Controls/iOS",
+    "QtQuick/Controls/macOS",
+    "QtQuick/Controls/FluentWinUI3",
+    "QtQuick/Controls/Windows",
+    "QtQuick/NativeStyle",
+    # QML modules the app never imports (app/qml uses only QtQuick, Controls,
+    # Effects, Layouts) plus debug-only tooling.
+    "QtQuick/VirtualKeyboard",
+    "QtQuickDialogs2",
+    "QtQuick/Dialogs",
+    "QtQuickParticles",
+    "QtQuick/Particles",
+    "QtQuickTimeline",
+    "QtQuick/Timeline",
+    "QtQuickVectorImage",
+    "QtQuick/VectorImage",
+    "QtQuick/Scene2D",
+    "QtQuick/Scene3D",
+    "QtQmlLocalStorage",
+    "QtQuick/LocalStorage",
+    "QtSql",
+    "Qt5Compat",
+    "QtLabs",
+    "Qt/labs",
+    "QtQuickTest",
+    "QtSpatialAudio",
+    "QtStateMachine",
+    "qmltooling",
 )
 
 
 def _keep_qt_entry(entry):
     dest = entry[0] if entry else ""
     src = entry[1] if len(entry) > 1 else ""
-    text = f"{dest} {src}"
+    # Normalize so path-based patterns ("QtQuick/Controls/Material") also match
+    # the backslash-separated dests produced on the Windows CI build.
+    text = f"{dest} {src}".replace("\\", "/")
     return not any(part in text for part in _excluded_bundle_parts)
 
 
