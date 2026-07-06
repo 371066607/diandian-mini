@@ -388,13 +388,15 @@ class FakeApi:
         return rows[:limit]
 
     def latest_keyword_rank_label(self, keyword, app_id, country="us", lang="en", platform="google_play"):
-        self.calls.append(("latest_keyword_rank_label", keyword, app_id, country, lang))
+        self.calls.append(("latest_keyword_rank_label", keyword, app_id, country, lang, platform))
         return "#1"
 
     def latest_chart_rank_label(
         self, app_id, collection, category, country="us", lang="en", platform="google_play"
     ):
-        self.calls.append(("latest_chart_rank_label", app_id, collection, category, country, lang))
+        self.calls.append(
+            ("latest_chart_rank_label", app_id, collection, category, country, lang, platform)
+        )
         return "#2"
 
     def list_chart_rank_history(
@@ -1231,15 +1233,15 @@ def test_qml_bridge_add_chart_app_rejects_numeric_id_on_google_play_platform():
     assert not any(call[0] == "add_tracked_chart_app" for call in api.calls)
 
 
-def test_qml_bridge_dashboard_ignores_optional_recent_keyword_api_error():
+def test_qml_bridge_dashboard_ignores_optional_keyword_history_api_error():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
 
-    def fail_recent_keywords(*, app_id="", country="", lang="", limit=8):
-        api.calls.append(("list_recent_keyword_ranks", app_id, country, lang, limit))
+    def fail_keyword_history(keyword, app_id, country="us", lang="en", limit=0, platform="google_play"):
+        api.calls.append(("list_keyword_rank_history", keyword, app_id, country, lang, limit))
         raise RuntimeError("internal error (STORE_INTEL_INTERNAL_ERROR)")
 
-    api.list_recent_keyword_ranks = fail_recent_keywords
+    api.list_keyword_rank_history = fail_keyword_history
     bridge = QmlBridge(
         database=None,
         services={
@@ -1260,7 +1262,8 @@ def test_qml_bridge_dashboard_ignores_optional_recent_keyword_api_error():
 
     assert not errors
     assert bridge.dashboard["stats"][0]["value"] == 1
-    assert bridge.dashboard["keywordName"] == ""
+    # tracked keyword still names the card; only the series is empty
+    assert bridge.dashboard["keywordName"] == "notes"
     assert bridge.dashboard["keywordValues"] == []
 
 
@@ -1268,20 +1271,20 @@ def test_qml_bridge_dashboard_tolerates_snapshot_without_rating():
     app = QApplication.instance() or QApplication([])
     api = FakeApi()
 
-    def list_recent_app_snapshots(limit=8):
-        api.calls.append(("list_recent_app_snapshots", limit))
+    def list_app_snapshots(app_id, country="us", lang="en", limit=80, platform="google_play"):
+        api.calls.append(("list_app_snapshots", app_id, country, lang, limit))
         return [
             SimpleNamespace(
                 platform="google_play",
-                app_id="com.remote",
-                country="us",
-                lang="en",
+                app_id=app_id,
+                country=country,
+                lang=lang,
                 captured_at="2026-06-18T00:00:00Z",
                 title="Remote App",
             )
         ]
 
-    api.list_recent_app_snapshots = list_recent_app_snapshots
+    api.list_app_snapshots = list_app_snapshots
     bridge = QmlBridge(
         database=None,
         services={
@@ -1303,6 +1306,189 @@ def test_qml_bridge_dashboard_tolerates_snapshot_without_rating():
     assert not errors
     assert bridge.dashboard["ratingLabels"] == ["06-18 00:00"]
     assert bridge.dashboard["ratingValues"] == [0]
+
+
+def test_qml_bridge_async_monitor_tree_and_series():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+    trees = []
+    series = []
+    bridge.monitorTreeReady.connect(trees.append)
+    bridge.monitorSeriesReady.connect(series.append)
+
+    bridge.requestMonitorTree()
+    bridge.requestMonitorSeries("app", "com.remote", "us", "en", "", 30)
+    _wait_idle(app, bridge)
+
+    assert not errors
+    assert trees and trees[-1]["apps"][0]["appId"] == "com.remote"
+    assert trees[-1]["apps"][0]["keywords"][0]["rank"] == "#1"
+    assert series and series[-1]["charts"][0]["current"] == "4.60"
+
+
+def test_qml_bridge_guarded_applier_drops_stale_results():
+    QApplication.instance() or QApplication([])
+    api = FakeApi()
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+
+    applied = []
+    guard = bridge._guarded("_reviews_request_id", bridge._reviews_request_id, applied.append)
+    guard("fresh")
+    assert applied == ["fresh"]
+
+    stale_guard = bridge._guarded("_reviews_request_id", bridge._reviews_request_id, applied.append)
+    bridge._reviews_request_id += 1  # a newer fetch supersedes the in-flight one
+    stale_guard("stale")
+    assert applied == ["fresh"]
+
+    # switching platform must invalidate every in-flight fetch
+    before = (
+        bridge._search_request_id,
+        bridge._chart_request_id,
+        bridge._keyword_request_id,
+        bridge._reviews_request_id,
+    )
+    bridge.setPlatform("app_store")
+    after = (
+        bridge._search_request_id,
+        bridge._chart_request_id,
+        bridge._keyword_request_id,
+        bridge._reviews_request_id,
+    )
+    assert all(now > prev for now, prev in zip(after, before))
+
+
+def test_qml_bridge_tracking_rank_labels_use_tracked_item_platform():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def app_store_keywords(enabled=None, platform=""):
+        api.calls.append(("list_tracked_keywords",))
+        return [
+            SimpleNamespace(
+                platform="app_store",
+                keyword="notes",
+                app_id="310633997",
+                country="us",
+                lang="en",
+                frequency="daily",
+                enabled=True,
+                last_synced_at="",
+                consecutive_failures=0,
+            )
+        ]
+
+    def app_store_charts(enabled=None, platform=""):
+        api.calls.append(("list_tracked_chart_apps",))
+        return [
+            SimpleNamespace(
+                platform="app_store",
+                app_id="310633997",
+                collection="top_free",
+                category="6014",
+                country="us",
+                lang="en",
+                frequency="daily",
+                enabled=True,
+                last_synced_at="",
+                consecutive_failures=0,
+            )
+        ]
+
+    api.list_tracked_keywords = app_store_keywords
+    api.list_tracked_chart_apps = app_store_charts
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshTracking()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    kw_calls = [call for call in api.calls if call[0] == "latest_keyword_rank_label"]
+    chart_calls = [call for call in api.calls if call[0] == "latest_chart_rank_label"]
+    assert kw_calls and all(call[-1] == "app_store" for call in kw_calls)
+    assert chart_calls and all(call[-1] == "app_store" for call in chart_calls)
+
+
+def test_qml_bridge_dashboard_trends_empty_without_tracked_items():
+    app = QApplication.instance() or QApplication([])
+    api = FakeApi()
+
+    def no_tracked_apps(enabled=None, platform=""):
+        api.calls.append(("list_tracked_apps",))
+        return []
+
+    def no_tracked_keywords(enabled=None, platform=""):
+        api.calls.append(("list_tracked_keywords",))
+        return []
+
+    api.list_tracked_apps = no_tracked_apps
+    api.list_tracked_keywords = no_tracked_keywords
+    bridge = QmlBridge(
+        database=None,
+        services={
+            "settings_service": FakeSettings(),
+            "store_intel_api_client": api,
+            "google_play_service": FakeGooglePlay(),
+            "tracking_service": FakeTracking(),
+            "alert_service": FakeAlerts(),
+            "review_service": FakeReviews(),
+        },
+        logger=logging.getLogger("qml-api-test"),
+    )
+    errors = []
+    bridge.errorMessage.connect(errors.append)
+
+    bridge.refreshDashboard()
+    _wait_idle(app, bridge)
+
+    assert not errors
+    # nothing tracked -> no trend at all, and no global /recent fallback
+    assert bridge.dashboard["ratingAppName"] == ""
+    assert bridge.dashboard["ratingValues"] == []
+    assert bridge.dashboard["keywordName"] == ""
+    assert bridge.dashboard["keywordValues"] == []
+    assert not any(call[0] == "list_app_snapshots" for call in api.calls)
+    assert not any(call[0] == "list_keyword_rank_history" for call in api.calls)
+    assert not any(call[0] == "list_recent_app_snapshots" for call in api.calls)
+    assert not any(call[0] == "list_recent_keyword_ranks" for call in api.calls)
 
 
 def test_qml_bridge_tracking_tolerates_app_without_tag():
@@ -1389,7 +1575,8 @@ def test_qml_bridge_detail_ignores_optional_extra_api_errors():
     assert bridge.detail["title"] == "Remote Detail"
     assert bridge.detail["recentAlerts"] == []
     assert bridge.detail["recentReviews"] == []
-    assert bridge.detail["ratingValues"] == [4.6]
+    # history fetch failed -> empty trend, not a synthetic single-point series
+    assert bridge.detail["ratingValues"] == []
 
 
 def test_qml_bridge_history_ignores_optional_recent_keyword_api_error():
@@ -1796,9 +1983,19 @@ def test_qml_bridge_prefers_store_intel_api_for_tracking_settings_and_alerts():
     bridge.refreshHistory()
     _wait_idle(app, bridge)
     assert bridge.dashboard["stats"][3]["value"] == 2
+    # trend series come from the user's own tracked app/keyword, not the
+    # backend's global /recent endpoints
+    assert bridge.dashboard["ratingAppName"] == "Remote App"
     assert bridge.dashboard["ratingValues"] == [4.5, 4.6]
     assert bridge.dashboard["keywordName"] == "notes"
     assert bridge.dashboard["keywordValues"] == [3, 1]
+    assert any(call == ("list_app_snapshots", "com.remote", "us", "en", 8) for call in api.calls)
+    assert not any(call[0] == "list_recent_app_snapshots" for call in api.calls)
+    # the history page still queries recent keyword ranks, but always scoped to
+    # a selected app — no unscoped (global) call may remain
+    assert not any(
+        call[0] == "list_recent_keyword_ranks" and not call[1] for call in api.calls
+    )
     assert bridge.tracking["apps"][0]["appId"] == "com.remote"
     assert bridge.tracking["keywords"][0]["rank"] == "#1"
     assert bridge.tracking["charts"][0]["rank"] == "#2"

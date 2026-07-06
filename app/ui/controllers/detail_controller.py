@@ -313,10 +313,11 @@ class DetailController:
             getattr(snap, "real_installs", None) or getattr(snap, "min_installs", None) or 0
             for snap in history
         ]
-        # Append today's freshly-fetched values so the charts show something
-        # even before any snapshot is saved (mirrors the widgets detail page).
+        # Keep an existing trend current by appending today's freshly-fetched
+        # values — but never fabricate a one-point "trend" when there is no
+        # snapshot history at all (the SparkLine then shows its empty state).
         today = now_iso()[5:10]
-        if not labels or labels[-1] != today:
+        if labels and labels[-1] != today:
             labels.append(today)
             rating_values.append(getattr(item, "rating", None) or 0)
             reviews_values.append(getattr(item, "reviews_count", None) or 0)

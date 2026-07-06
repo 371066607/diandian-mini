@@ -4,6 +4,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -912,3 +913,88 @@ def test_store_intel_api_client_treats_cached_false_detail_as_miss(api_server):
 
     with pytest.raises(StoreIntelApiError, match="暂无应用详情缓存"):
         client.cached_app_detail("com.miss", country="us", lang="en")
+
+
+class _FakeHttpResponse:
+    def __init__(self, payload):
+        self._raw = json.dumps(payload).encode("utf-8")
+        self.status = 200
+
+    def read(self):
+        return self._raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_store_intel_api_client_retries_transient_get_failures(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("http://store.test")
+    attempts = []
+
+    def flaky_urlopen(request, timeout=None):
+        attempts.append(request.get_method())
+        if len(attempts) < 3:
+            raise URLError("connection reset")
+        return _FakeHttpResponse({"code": 200, "data": {"total": 7}})
+
+    sleeps = []
+    monkeypatch.setattr(mod, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+
+    assert client.count_app_snapshots() == 7
+    assert attempts == ["GET", "GET", "GET"]
+    assert sleeps == [0.5, 1.0]
+
+
+def test_store_intel_api_client_get_retries_exhaust_into_clean_error(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("http://store.test")
+    attempts = []
+
+    def failing_urlopen(request, timeout=None):
+        attempts.append(request.get_method())
+        raise URLError("no route to host")
+
+    monkeypatch.setattr(mod, "urlopen", failing_urlopen)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+
+    with pytest.raises(StoreIntelApiError, match="请求失败"):
+        client.count_app_snapshots()
+    assert len(attempts) == 3  # 1 + _TRANSIENT_RETRIES
+
+
+def test_store_intel_api_client_does_not_retry_mutations(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("http://store.test")
+    attempts = []
+
+    def failing_urlopen(request, timeout=None):
+        attempts.append(request.get_method())
+        raise URLError("connection reset")
+
+    monkeypatch.setattr(mod, "urlopen", failing_urlopen)
+
+    with pytest.raises(StoreIntelApiError, match="请求失败"):
+        client.sync_all(due_only=False)
+    assert attempts == ["POST"]  # a mutation must never be replayed
+
+
+def test_store_intel_api_client_wraps_unexpected_exceptions(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("http://store.test")
+
+    def broken_urlopen(request, timeout=None):
+        raise ValueError("totally unexpected")
+
+    monkeypatch.setattr(mod, "urlopen", broken_urlopen)
+
+    with pytest.raises(StoreIntelApiError, match="请求异常"):
+        client.count_app_snapshots()

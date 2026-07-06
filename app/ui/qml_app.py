@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
+from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
@@ -78,9 +79,23 @@ def _make_window_immersive(window) -> None:
         pass
 
 
+def _app_icon_path() -> Path | None:
+    # Packaged builds get their Dock icon from the bundle's Info.plist; this is
+    # for source runs, where the Dock would otherwise show the Python rocket.
+    root = Path(__file__).resolve().parents[2]
+    for name in ("catchradar.icns", "catchradar-logo.png", "catchradar.ico"):
+        candidate = root / "assets" / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def run_qml_app(database, services, logger, argv: list[str]) -> int:
     app = QApplication(argv)
     app.setApplicationName("catch-radar")
+    icon_path = _app_icon_path()
+    if icon_path is not None:
+        app.setWindowIcon(QIcon(str(icon_path)))
     QQuickStyle.setStyle("Fusion")
 
     bridge = QmlBridge(database=database, services=services, logger=logger)

@@ -446,6 +446,14 @@ class DashboardController:
             ],
         }
 
+    @staticmethod
+    def _primary_tracked(items) -> Any | None:
+        """The user's "main" tracked item: the most recently synced enabled one."""
+        pool = [item for item in items if getattr(item, "enabled", False)] or list(items)
+        if not pool:
+            return None
+        return max(pool, key=lambda item: getattr(item, "last_synced_at", "") or "")
+
     def _collect_dashboard_api(self, api) -> dict[str, Any]:
         tracked_apps = api.list_tracked_apps()
         tracked_keywords = api.list_tracked_keywords()
@@ -453,23 +461,36 @@ class DashboardController:
         alerts = api.list_alerts(limit=6)
         unread = api.unread_count()
         snapshots_count = api.count_app_snapshots()
-        recent_snapshots = list(reversed(api.list_recent_app_snapshots(limit=8)))
-        try:
-            latest_kw = api.list_recent_keyword_ranks(limit=1)
-        except Exception:
-            latest_kw = []
+        # Trend cards only show the user's own tracked items. The backend's
+        # /recent endpoints are global (no user filter), so charting them draws
+        # other users' apps/keywords — a "trend" even with nothing tracked.
+        primary_app = self._primary_tracked(tracked_apps)
+        rating_history = []
+        rating_app_name = ""
+        if primary_app is not None:
+            rating_app_name = getattr(primary_app, "title", "") or primary_app.app_id
+            try:
+                rating_history = api.list_app_snapshots(
+                    primary_app.app_id,
+                    country=getattr(primary_app, "country", "us") or "us",
+                    lang=getattr(primary_app, "lang", "en") or "en",
+                    limit=8,
+                    platform=getattr(primary_app, "platform", "google_play") or "google_play",
+                )
+            except Exception:
+                rating_history = []
+        primary_kw = self._primary_tracked(tracked_keywords)
         keyword_history = []
         keyword_name = ""
-        if latest_kw:
-            top = latest_kw[0]
-            keyword_name = top.keyword
+        if primary_kw is not None:
+            keyword_name = primary_kw.keyword
             try:
                 keyword_history = api.list_keyword_rank_history(
-                    top.keyword,
-                    top.app_id,
-                    top.country,
-                    top.lang,
-                    platform=getattr(top, "platform", "google_play") or "google_play",
+                    primary_kw.keyword,
+                    primary_kw.app_id,
+                    getattr(primary_kw, "country", "us") or "us",
+                    getattr(primary_kw, "lang", "en") or "en",
+                    platform=getattr(primary_kw, "platform", "google_play") or "google_play",
                 )
             except Exception:
                 keyword_history = []
@@ -483,16 +504,17 @@ class DashboardController:
                 },
                 {"label": "关键词监控", "value": len(tracked_keywords), "meta": "后端排名历史"},
                 {"label": "榜单监控", "value": len(chart_apps), "meta": "Go 后端榜单"},
-                {"label": "历史快照", "value": snapshots_count, "meta": "Go 后端数据"},
+                {"label": "历史快照", "value": snapshots_count, "meta": "后端全局累计"},
                 {"label": "未读提醒", "value": unread, "meta": "评分 / 版本 / 排名变化"},
             ],
             "latestSync": short_time(latest_sync) if latest_sync else "-",
             "alerts": [alert_row(alert) for alert in alerts],
             "health": [self.health_row_from_tracked(item) for item in tracked_apps if item.enabled],
-            "ratingLabels": [short_time(item.captured_at) for item in recent_snapshots],
+            "ratingAppName": rating_app_name,
+            "ratingLabels": [short_time(item.captured_at) for item in rating_history],
             "ratingValues": [
                 getattr(item, "rating", None) or getattr(item, "latest_rating", None) or 0
-                for item in recent_snapshots
+                for item in rating_history
             ],
             "keywordName": keyword_name,
             "keywordLabels": [short_time(item.captured_at) for item in keyword_history],
@@ -601,6 +623,7 @@ class DashboardController:
                         getattr(item, "app_id", ""),
                         getattr(item, "country", "us"),
                         getattr(item, "lang", "en"),
+                        getattr(item, "platform", "google_play") or "google_play",
                     ),
                     "country": getattr(item, "country", "us"),
                     "frequency": frequency_label(getattr(item, "frequency", "daily")),
@@ -626,6 +649,7 @@ class DashboardController:
                         getattr(item, "category", None),
                         getattr(item, "country", "us"),
                         getattr(item, "lang", "en"),
+                        getattr(item, "platform", "google_play") or "google_play",
                     ),
                     "lastSynced": fmt_dt(getattr(item, "last_synced_at", "")),
                     "failures": fail_label(item),

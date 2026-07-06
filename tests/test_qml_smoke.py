@@ -214,8 +214,9 @@ def test_qml_loads_and_detail_exposes_full_field_set(tmp_path):
     assert any(p["value"] == "US" for p in detail["devPlain"])
     assert detail["dataSafety"] == "位置、个人信息"
     assert len(detail["screenshots"]) == 2
-    # async extras landed: history series has today's point, similar resolved
-    assert detail["ratingValues"][-1] == 4.4
+    # async extras landed: no snapshot history yet -> empty trend (no synthetic
+    # single-point series), similar resolved
+    assert detail["ratingValues"] == []
     assert detail["similarLoading"] is False
     assert detail["similar"][0]["appId"] == "com.signal"
     assert detail["recentReviews"] == []  # nothing cached yet
