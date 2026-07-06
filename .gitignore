@@ -29,3 +29,12 @@ _*.png
 
 # Claude Code local-only settings
 .claude/settings.local.json
+
+# Editor/tool caches and local artifacts (machine-specific, not source)
+.codegraph/
+.cursor/
+logs/
+verification/
+
+# Proxy subscription export — contains live node URLs/credentials, never commit
+shadowrocket_nodes_export.json
