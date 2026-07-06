@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,7 @@ class UpdateResult:
     changelog: str = ""
     can_patch: bool = False
     error: str | None = None
+    sha256: str = ""  # expected SHA-256 of app-code.zip, from the release body
 
     @property
     def local_label(self) -> str:
@@ -156,18 +158,33 @@ class UpdateService:
             changelog=changelog.group(1).strip() if changelog else "",
             up_to_date=local > 0 and latest > 0 and latest <= local,
             can_patch=latest > local,
+            sha256=self._parse_sha256(body),
         )
+
+    @staticmethod
+    def _parse_sha256(body: str) -> str:
+        match = re.search(r"sha256:([0-9a-fA-F]{64})", body or "")
+        return match.group(1).lower() if match else ""
 
     # --- apply ---------------------------------------------------------------
 
     def patch_zip_url(self) -> str:
         return f"https://github.com/{self.repo}/releases/download/{CODE_TAG}/app-code.zip"
 
-    def download_and_apply_patch(self, progress=None) -> None:
+    def download_and_apply_patch(self, progress=None, expected_sha256: str | None = None) -> None:
         """Download the code patch, verify it, and atomically replace the override dir."""
         zip_path = os.path.join(tempfile.gettempdir(), "catch_radar_code.zip")
         staging = os.path.join(tempfile.gettempdir(), "catch_radar_code_stage")
         override = bootstrap.code_override_dir()
+
+        if expected_sha256 is None:
+            # None = caller didn't carry the checksum from check() — re-read the
+            # release body so a corrupted download can still be rejected. An empty
+            # string means the caller already knows the release publishes none.
+            try:
+                expected_sha256 = self._parse_sha256(self._fetch_code_release().get("body") or "")
+            except Exception:  # noqa: BLE001 - metadata refetch is best-effort
+                expected_sha256 = ""
 
         if progress:
             progress("正在下载更新补丁…", None)
@@ -194,6 +211,22 @@ class UpdateService:
             with open(zip_path, "wb") as fh:
                 fh.write(data)
 
+        # Integrity gate: the release publishes "sha256:<hex>" in its body. A zip
+        # that doesn't match (truncated download, CDN corruption, tampering) must
+        # never be extracted over the code override dir. Releases published before
+        # this convention carry no checksum — those proceed unverified.
+        if expected_sha256:
+            actual = self._file_sha256(zip_path)
+            if actual != expected_sha256.lower():
+                try:
+                    os.remove(zip_path)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise RuntimeError(
+                    f"补丁校验失败：SHA-256 不匹配（期望 {expected_sha256[:12]}…，"
+                    f"实际 {actual[:12]}…），已中止更新。"
+                )
+
         if progress:
             progress("正在应用补丁…", None)
         if os.path.isdir(staging):
@@ -210,6 +243,14 @@ class UpdateService:
             os.remove(zip_path)
         except Exception:
             pass
+
+    @staticmethod
+    def _file_sha256(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def git_pull(self) -> tuple[bool, str]:
         try:

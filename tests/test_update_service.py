@@ -131,8 +131,73 @@ def test_download_and_apply_patch(tmp_path, monkeypatch):
         "app.services.update_service.urlopen", lambda url, timeout=60: FakeResponse(payload)
     )
 
-    UpdateService().download_and_apply_patch()
+    # "" = the release is known to publish no checksum (skips the metadata refetch)
+    UpdateService().download_and_apply_patch(expected_sha256="")
 
     assert (override / "code_version.txt").read_text() == "999"
     assert (override / "app" / "marker.txt").read_text() == "patched"
     assert bootstrap.read_code_version(str(override)) == 999
+
+
+def _fake_patch_env(tmp_path, monkeypatch):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("code_version.txt", "999")
+        zf.writestr("app/marker.txt", "patched")
+    payload = buf.getvalue()
+
+    override = tmp_path / "app_override"
+    monkeypatch.setattr(bootstrap, "code_override_dir", lambda: str(override))
+
+    class FakeResponse:
+        def __init__(self, data):
+            self._data = data
+            self._sent = False
+
+        def read(self, _n=-1):
+            if self._sent:
+                return b""
+            self._sent = True
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(
+        "app.services.update_service.urlopen", lambda url, timeout=60: FakeResponse(payload)
+    )
+    return payload, override
+
+
+def test_download_and_apply_patch_verifies_matching_sha256(tmp_path, monkeypatch):
+    import hashlib
+
+    payload, override = _fake_patch_env(tmp_path, monkeypatch)
+
+    UpdateService().download_and_apply_patch(
+        expected_sha256=hashlib.sha256(payload).hexdigest().upper()  # case-insensitive
+    )
+
+    assert (override / "code_version.txt").read_text() == "999"
+
+
+def test_download_and_apply_patch_rejects_sha256_mismatch(tmp_path, monkeypatch):
+    _, override = _fake_patch_env(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="SHA-256 不匹配"):
+        UpdateService().download_and_apply_patch(expected_sha256="0" * 64)
+
+    assert not override.exists()  # nothing may reach the code override dir
+
+
+def test_check_patch_parses_sha256_from_release_body(monkeypatch):
+    service = UpdateService()
+    monkeypatch.setattr(service, "current_version", lambda: 100)
+    digest = "a" * 64
+    service._fetch_code_release = lambda: {"body": f"codever:200\nsha256:{digest}"}
+    result = service._check_patch()
+    assert result.sha256 == digest
+    assert result.can_patch

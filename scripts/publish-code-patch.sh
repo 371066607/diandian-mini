@@ -52,8 +52,11 @@ PYEOF
 # Release body 格式必须与 UpdateService._check_patch() 的正则对应：
 #   codever:<integer>
 #   changelog:<text>
+#   sha256:<hex64>   ← 客户端 download_and_apply_patch() 用它校验 zip 完整性
+ZIP_SHA256=$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')
 RELEASE_BODY="codever:${CODEVER}
-changelog:${CHANGELOG}"
+changelog:${CHANGELOG}
+sha256:${ZIP_SHA256}"
 
 echo "▶ 正在上传到 GitHub release (tag=code)…"
 

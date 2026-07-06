@@ -41,7 +41,8 @@ jobs:
           d=$(git show -s --date=format:'%Y.%m.%d.%H%M' --format=%cd HEAD)
           cl="${{ github.event.inputs.changelog }}"
           [ -z "$cl" ] && cl="优化与修复"
-          notes=$(printf 'codever:%s\nchangelog:%s\n\n（v%s 代码补丁，客户端检查更新会自动热更新）' "$ver" "$cl" "$d")
+          sha=$(sha256sum app-code.zip | awk '{print $1}')
+          notes=$(printf 'codever:%s\nchangelog:%s\nsha256:%s\n\n（v%s 代码补丁，客户端检查更新会自动热更新）' "$ver" "$cl" "$sha" "$d")
           gh release create code app-code.zip --title "代码补丁 · v$d" --notes "$notes" 2>/dev/null || true
           gh release upload code app-code.zip --clobber
           gh release edit code --title "代码补丁 · v$d" --notes "$notes"
