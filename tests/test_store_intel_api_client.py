@@ -935,6 +935,62 @@ class _FakeHttpResponse:
         return False
 
 
+class _FakeRequestsResponse:
+    def __init__(self, payload, status_code=200, reason="OK"):
+        self.text = json.dumps(payload)
+        self.status_code = status_code
+        self.reason = reason
+
+
+def test_store_intel_api_client_uses_requests_for_https(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("https://store.test")
+    calls = []
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return _FakeRequestsResponse({"code": 200, "data": {"total": 7}})
+
+    monkeypatch.setattr(mod, "_HTTP_SESSION", FakeSession())
+    monkeypatch.setattr(
+        mod,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("https requests must not use urllib"),
+    )
+
+    assert client.count_app_snapshots() == 7
+    assert calls[0][0] == "GET"
+    assert calls[0][1] == "https://store.test/api/store-intel/app-snapshots/count"
+
+
+def test_store_intel_api_client_retries_https_tls_failure_without_error_log(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    logs = []
+    client = StoreIntelApiClient("https://store.test", log_sink=logs.append)
+    calls = []
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if len(calls) == 1:
+                raise mod.requests.exceptions.SSLError("curl: (35) TLS connect error")
+            return _FakeRequestsResponse({"code": 200, "data": {"total": 7}})
+
+    sleeps = []
+    monkeypatch.setattr(mod, "_HTTP_SESSION", FakeSession())
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+
+    assert client.count_app_snapshots() == 7
+    assert len(calls) == 2
+    assert sleeps == [0.5]
+    assert len(logs) == 1
+    assert logs[0]["ok"] is True
+    assert logs[0]["error"] == ""
+
+
 def test_store_intel_api_client_retries_transient_get_failures(monkeypatch):
     import app.services.store_intel_api_client as mod
 

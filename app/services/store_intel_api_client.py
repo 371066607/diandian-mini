@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from curl_cffi import requests as curl_requests
+import requests
 from pydantic import BaseModel
 
 from app.schemas.app_schema import AppDetail, AppSummary
@@ -33,11 +33,12 @@ _TRANSIENT_BACKOFF_SECONDS = 0.5
 # when shell proxy env vars are empty, which can route localhost tests and
 # Cloudflare API reads through a flaky local proxy.
 urlopen = build_opener(ProxyHandler({})).open
-_CURL_IMPERSONATE = "chrome"
+_HTTP_SESSION = requests.Session()
+_HTTP_SESSION.trust_env = False
 _TRANSIENT_EXCEPTIONS = (
     OSError,
     HTTPException,
-    curl_requests.exceptions.RequestException,
+    requests.exceptions.RequestException,
 )
 
 
@@ -1151,14 +1152,13 @@ class StoreIntelApiClient:
         while True:
             headers = self._request_headers("application/json", has_body=body is not None)
             try:
-                if self._use_curl_transport():
-                    response = curl_requests.request(
+                if self._use_requests_transport():
+                    response = _HTTP_SESSION.request(
                         method,
                         url,
                         data=payload,
                         headers=headers,
                         timeout=timeout or self.timeout,
-                        impersonate=_CURL_IMPERSONATE,
                     )
                     status = response.status_code
                     raw = response.text
@@ -1262,29 +1262,65 @@ class StoreIntelApiClient:
         try:
             auth_epoch = self._auth_epoch
             for attempt in range(2):
-                request = Request(
-                    self.base_url + path,
-                    data=payload,
-                    headers=self._request_headers(
-                        "application/x-ndjson",
-                        has_body=body is not None,
-                    ),
-                    method=method,
+                headers = self._request_headers(
+                    "application/x-ndjson",
+                    has_body=body is not None,
                 )
                 try:
-                    with urlopen(request, timeout=timeout or self.timeout) as response:
-                        status = getattr(response, "status", None)
-                        for raw_line in response:
-                            line = raw_line.decode("utf-8", errors="replace").strip()
-                            if not line:
-                                continue
-                            try:
-                                yield json.loads(line)
-                            except json.JSONDecodeError as exc:
-                                error = "StoreIntel API 返回了无效流式 JSON。"
-                                raise StoreIntelApiError(error) from exc
-                        ok = True
+                    if self._use_requests_transport():
+                        with _HTTP_SESSION.request(
+                            method,
+                            self.base_url + path,
+                            data=payload,
+                            headers=headers,
+                            timeout=timeout or self.timeout,
+                            stream=True,
+                        ) as response:
+                            status = response.status_code
+                            if status >= 400:
+                                raise _HTTPStatusError(status, response.text, response.reason)
+                            for line in response.iter_lines(decode_unicode=True):
+                                line = (line or "").strip()
+                                if not line:
+                                    continue
+                                try:
+                                    yield json.loads(line)
+                                except json.JSONDecodeError as exc:
+                                    error = "StoreIntel API 返回了无效流式 JSON。"
+                                    raise StoreIntelApiError(error) from exc
+                            ok = True
+                    else:
+                        request = Request(
+                            self.base_url + path,
+                            data=payload,
+                            headers=headers,
+                            method=method,
+                        )
+                        with urlopen(request, timeout=timeout or self.timeout) as response:
+                            status = getattr(response, "status", None)
+                            for raw_line in response:
+                                line = raw_line.decode("utf-8", errors="replace").strip()
+                                if not line:
+                                    continue
+                                try:
+                                    yield json.loads(line)
+                                except json.JSONDecodeError as exc:
+                                    error = "StoreIntel API 返回了无效流式 JSON。"
+                                    raise StoreIntelApiError(error) from exc
+                            ok = True
                     break
+                except _HTTPStatusError as exc:
+                    status = exc.status
+                    raw = exc.raw
+                    if self._should_reauth_retry(path, status, attempt):
+                        try:
+                            self._reauthenticate(auth_epoch)
+                        except StoreIntelApiError as auth_exc:
+                            error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
+                            raise StoreIntelApiError(error) from exc
+                        continue
+                    error = self._error_message(raw, exc.reason)
+                    raise StoreIntelApiError(error) from exc
                 except HTTPError as exc:
                     status = getattr(exc, "code", None)
                     raw = exc.read().decode("utf-8", errors="replace")
@@ -1346,7 +1382,7 @@ class StoreIntelApiClient:
             headers["Authorization"] = f"Bearer {self._access_token}"
         return headers
 
-    def _use_curl_transport(self) -> bool:
+    def _use_requests_transport(self) -> bool:
         return self.base_url.lower().startswith("https://")
 
     def _should_reauth_retry(self, path: str, status: int | None, attempt: int) -> bool:
@@ -1416,13 +1452,12 @@ class StoreIntelApiClient:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers = self._request_headers("application/json", has_body=True, include_auth=False)
         try:
-            if self._use_curl_transport():
-                response = curl_requests.post(
+            if self._use_requests_transport():
+                response = _HTTP_SESSION.post(
                     self.base_url + path,
                     data=payload,
                     headers=headers,
                     timeout=self.timeout,
-                    impersonate=_CURL_IMPERSONATE,
                 )
                 raw = response.text
                 if response.status_code >= 400:
