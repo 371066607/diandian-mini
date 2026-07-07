@@ -38,8 +38,7 @@ def main() -> int:
 
     if args.widgets and getattr(store_intel_api_client, "enabled", False):
         print(
-            "旧 Qt Widgets 界面仅允许在 CATCH_RADAR_LEGACY_LOCAL_MODE=true "
-            "或 CATCH_RADAR_OFFLINE_MODE=true 下启动。",
+            "旧 Qt Widgets 界面已不作为启动入口；请使用默认 QML 远端 API 模式。",
             file=sys.stderr,
         )
         return 2

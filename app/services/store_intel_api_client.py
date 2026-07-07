@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import json
 import hashlib
+from http.client import HTTPException
 import platform
 import threading
 import time
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
+from curl_cffi import requests as curl_requests
 from pydantic import BaseModel
 
 from app.schemas.app_schema import AppDetail, AppSummary
@@ -27,9 +29,32 @@ DEFAULT_USER_AGENT = "CatchRadar/desktop"
 _TRANSIENT_RETRIES = 2
 _TRANSIENT_BACKOFF_SECONDS = 0.5
 
+# Backend API calls should be direct. urllib reads macOS system proxies even
+# when shell proxy env vars are empty, which can route localhost tests and
+# Cloudflare API reads through a flaky local proxy.
+urlopen = build_opener(ProxyHandler({})).open
+_CURL_IMPERSONATE = "chrome"
+_TRANSIENT_EXCEPTIONS = (
+    OSError,
+    HTTPException,
+    curl_requests.exceptions.RequestException,
+)
+
 
 class StoreIntelApiError(RuntimeError):
     pass
+
+
+class StoreIntelApiCacheMiss(StoreIntelApiError):
+    pass
+
+
+class _HTTPStatusError(Exception):
+    def __init__(self, status: int | None, raw: str, reason: str = "") -> None:
+        super().__init__(reason or str(status or ""))
+        self.status = status
+        self.raw = raw
+        self.reason = reason
 
 
 class StoreIntelApiClient:
@@ -127,7 +152,7 @@ class StoreIntelApiClient:
             query={"country": country, "lang": lang, "platform": platform},
         )
         if (data or {}).get("cached") is False or not (data or {}).get("detail"):
-            raise StoreIntelApiError("暂无应用详情缓存。")
+            raise StoreIntelApiCacheMiss("暂无应用详情缓存。")
         return AppDetail(**(data.get("detail") or {}))
 
     def similar_apps(
@@ -1124,17 +1149,48 @@ class StoreIntelApiClient:
         # POST could double-apply a mutation the server actually processed.
         transient_left = _TRANSIENT_RETRIES if method.upper() == "GET" else 0
         while True:
-            request = Request(
-                url,
-                data=payload,
-                headers=self._request_headers("application/json", has_body=body is not None),
-                method=method,
-            )
+            headers = self._request_headers("application/json", has_body=body is not None)
             try:
-                with urlopen(request, timeout=timeout or self.timeout) as response:
-                    status = getattr(response, "status", None)
-                    raw = response.read().decode("utf-8")
+                if self._use_curl_transport():
+                    response = curl_requests.request(
+                        method,
+                        url,
+                        data=payload,
+                        headers=headers,
+                        timeout=timeout or self.timeout,
+                        impersonate=_CURL_IMPERSONATE,
+                    )
+                    status = response.status_code
+                    raw = response.text
+                    if status >= 400:
+                        raise _HTTPStatusError(status, raw, response.reason)
+                else:
+                    request = Request(
+                        url,
+                        data=payload,
+                        headers=headers,
+                        method=method,
+                    )
+                    with urlopen(request, timeout=timeout or self.timeout) as response:
+                        status = getattr(response, "status", None)
+                        raw = response.read().decode("utf-8")
                 break
+            except _HTTPStatusError as exc:
+                status = exc.status
+                raw = exc.raw
+                raw_response = self._text_preview(raw)
+                if self._should_reauth_retry(path, status, auth_attempt):
+                    auth_attempt += 1
+                    try:
+                        self._reauthenticate(auth_epoch)
+                    except StoreIntelApiError as auth_exc:
+                        error = f"{self._error_message(raw, exc.reason)}；{auth_exc}"
+                        emit_log()
+                        raise StoreIntelApiError(error) from exc
+                    continue
+                error = self._error_message(raw, exc.reason)
+                emit_log()
+                raise StoreIntelApiError(error) from exc
             except HTTPError as exc:
                 status = getattr(exc, "code", None)
                 raw = exc.read().decode("utf-8", errors="replace")
@@ -1151,10 +1207,10 @@ class StoreIntelApiClient:
                 error = self._error_message(raw, exc.reason)
                 emit_log()
                 raise StoreIntelApiError(error) from exc
-            except OSError as exc:
-                # URLError, ssl.SSLError, socket timeouts and connection resets all
-                # derive from OSError — transient by nature, so back off and retry
-                # idempotent requests before surfacing a clean error.
+            except _TRANSIENT_EXCEPTIONS as exc:
+                # URLError, ssl.SSLError, socket timeouts, connection resets,
+                # RemoteDisconnected and IncompleteRead are transient for reads.
+                # Retry idempotent GETs before surfacing a clean error.
                 if transient_left > 0:
                     transient_left -= 1
                     time.sleep(
@@ -1290,6 +1346,9 @@ class StoreIntelApiClient:
             headers["Authorization"] = f"Bearer {self._access_token}"
         return headers
 
+    def _use_curl_transport(self) -> bool:
+        return self.base_url.lower().startswith("https://")
+
     def _should_reauth_retry(self, path: str, status: int | None, attempt: int) -> bool:
         return status == 401 and attempt == 0 and path not in (
             "/api/auth/guest",
@@ -1355,22 +1414,41 @@ class StoreIntelApiClient:
         """POST to an auth endpoint (guest login or token refresh) and return
         the (access_token, refresh_token) pair from a successful response."""
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        request = Request(
-            self.base_url + path,
-            data=payload,
-            headers=self._request_headers("application/json", has_body=True, include_auth=False),
-            method="POST",
-        )
+        headers = self._request_headers("application/json", has_body=True, include_auth=False)
         try:
-            with urlopen(request, timeout=self.timeout) as response:
-                raw = response.read().decode("utf-8")
+            if self._use_curl_transport():
+                response = curl_requests.post(
+                    self.base_url + path,
+                    data=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                    impersonate=_CURL_IMPERSONATE,
+                )
+                raw = response.text
+                if response.status_code >= 400:
+                    raise _HTTPStatusError(response.status_code, raw, response.reason)
+            else:
+                request = Request(
+                    self.base_url + path,
+                    data=payload,
+                    headers=headers,
+                    method="POST",
+                )
+                with urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read().decode("utf-8")
+        except _HTTPStatusError as exc:
+            raise StoreIntelApiError(
+                f"StoreIntel API {context}失败：{self._error_message(exc.raw, exc.reason)}"
+            ) from exc
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
             raise StoreIntelApiError(
                 f"StoreIntel API {context}失败：{self._error_message(raw, exc.reason)}"
             ) from exc
-        except URLError as exc:
-            raise StoreIntelApiError(f"StoreIntel API {context}失败：{exc.reason}") from exc
+        except _TRANSIENT_EXCEPTIONS as exc:
+            raise StoreIntelApiError(
+                f"StoreIntel API {context}失败：{getattr(exc, 'reason', None) or exc}"
+            ) from exc
 
         try:
             envelope = json.loads(raw or "{}")

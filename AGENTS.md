@@ -9,18 +9,15 @@ intelligence (Google Play + App Store): app details, reviews, ranking charts, ke
 keyword-coverage analysis, and tracked-app/keyword monitoring with alerts. UI strings, log
 messages, and error text are in Chinese.
 
-**Two modes, decided once at startup** (`app/composition.py:_store_intel_api_url()`):
-- **API mode (default).** The desktop client is a thin client: `app/services/store_intel_api_client.py`
+**Remote API mode is the product path** (`app/composition.py:_store_intel_api_url()`):
+- **API mode (default and enforced).** The desktop client is a thin client: `app/services/store_intel_api_client.py`
   is the *only* data path, talking REST to the Go backend's CatchRadar module
   (`internal/project/catchradar/` in the sibling repo `/Volumes/DevSpace/services/modular-go-backend`).
   The backend owns MySQL (source of truth), scraping, scheduling, and the Redis-backed refresh-job
-  queue. Contract: `FRONTEND_AGENT_API.md`. Source-run (not a packaged/frozen build) with no env vars
-  set defaults to the local dev backend `http://127.0.0.1:8081`, never production — set
-  `CATCH_RADAR_STOREINTEL_API_URL` explicitly to point elsewhere (packaged builds default to
-  production `https://catchradar.meshub.ai`).
-- **Legacy/offline mode**, explicit opt-in only (`CATCH_RADAR_LEGACY_LOCAL_MODE=true` or
-  `CATCH_RADAR_OFFLINE_MODE=true`), only reachable via the `--widgets` (legacy Qt Widgets UI)
-  flag. **This path is frozen AND its live-network write capability has been retired** (P1-5
+  queue. Contract: `FRONTEND_AGENT_API.md`. Source-run and packaged builds both default to
+  production `https://catchradar.meshub.ai`; localhost API overrides and legacy/offline env flags
+  are ignored.
+- **Legacy/offline code path** is frozen and not a startup configuration target. **This path is frozen AND its live-network write capability has been retired** (P1-5
   Phase 2): it can still fetch app details/reviews/charts via `google_play_scraper`/`gplay_scraper`
   library calls and display already-synced local SQLite history, but every action that used to
   scrape-then-persist (save a snapshot, save reviews, sync a tracked app/keyword/chart-rank now,
@@ -36,7 +33,7 @@ python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirem
 
 python main.py                 # run the GUI app (QML by default, API mode)
 python main.py --smoke-test    # init DB + services, print "smoke-ok", exit (no GUI — use for CI / headless checks)
-python main.py --widgets       # legacy Qt Widgets UI — only starts in legacy/offline mode
+python main.py --widgets       # disabled for normal startup; use the QML remote API app
 
 pytest                                                         # all tests
 pytest -m "not legacy"                                         # skip the frozen legacy-path tests

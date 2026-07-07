@@ -1,12 +1,10 @@
-"""FROZEN — legacy/offline-diagnostic scraper only, not the product data path.
+"""FROZEN — old diagnostic scraper only, not the product data path.
 
 The default (API mode) desktop client reads/writes exclusively through
 StoreIntelApiClient against the Go backend, which does its own Google Play
 scraping in internal/project/catchradar/upstream/googleplay. This module is
-a shadow implementation only exercised when CATCH_RADAR_LEGACY_LOCAL_MODE or
-CATCH_RADAR_OFFLINE_MODE is set — kept for local diagnostics, not maintained
-for new stores/features. If Google changes page structure, fix the Go-side
-client; only patch this file for diagnostic-mode-breaking regressions.
+a shadow implementation for old diagnostic code, not maintained for new
+stores/features. If Google changes page structure, fix the Go-side client.
 """
 
 from __future__ import annotations

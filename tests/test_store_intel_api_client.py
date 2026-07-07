@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from http.client import IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.error import URLError
@@ -10,7 +11,11 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from app.schemas.review_schema import ReviewItem
-from app.services.store_intel_api_client import StoreIntelApiClient, StoreIntelApiError
+from app.services.store_intel_api_client import (
+    StoreIntelApiCacheMiss,
+    StoreIntelApiClient,
+    StoreIntelApiError,
+)
 
 
 class StoreIntelHandler(BaseHTTPRequestHandler):
@@ -911,7 +916,7 @@ def test_store_intel_api_client_treats_null_items_as_empty_list(api_server):
 def test_store_intel_api_client_treats_cached_false_detail_as_miss(api_server):
     client = StoreIntelApiClient(f"http://127.0.0.1:{api_server.server_port}")
 
-    with pytest.raises(StoreIntelApiError, match="暂无应用详情缓存"):
+    with pytest.raises(StoreIntelApiCacheMiss, match="暂无应用详情缓存"):
         client.cached_app_detail("com.miss", country="us", lang="en")
 
 
@@ -949,6 +954,27 @@ def test_store_intel_api_client_retries_transient_get_failures(monkeypatch):
     assert client.count_app_snapshots() == 7
     assert attempts == ["GET", "GET", "GET"]
     assert sleeps == [0.5, 1.0]
+
+
+def test_store_intel_api_client_retries_incomplete_read_on_get(monkeypatch):
+    import app.services.store_intel_api_client as mod
+
+    client = StoreIntelApiClient("http://store.test")
+    attempts = []
+
+    def flaky_urlopen(request, timeout=None):
+        attempts.append(request.get_method())
+        if len(attempts) == 1:
+            raise IncompleteRead(b"")
+        return _FakeHttpResponse({"code": 200, "data": {"total": 7}})
+
+    sleeps = []
+    monkeypatch.setattr(mod, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+
+    assert client.count_app_snapshots() == 7
+    assert attempts == ["GET", "GET"]
+    assert sleeps == [0.5]
 
 
 def test_store_intel_api_client_get_retries_exhaust_into_clean_error(monkeypatch):

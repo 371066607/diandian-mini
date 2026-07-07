@@ -1,7 +1,7 @@
 # catch-radar
 
-基于 PySide6/QML 的桌面客户端，用于查看和追踪应用商店情报。默认通过 Go 后端
-（`internal/project/catchradar`）的 API 读写数据；本地 SQLite 仅用于诊断/离线 fallback 模式。
+基于 PySide6/QML 的桌面客户端，用于查看和追踪应用商店情报。默认且固定通过远端
+Go 后端（`https://catchradar.meshub.ai`）的 API 读写数据。
 
 ## 运行环境
 
@@ -22,9 +22,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-源码直跑时，若未设置任何 API 相关环境变量，默认连本地后端
-`http://127.0.0.1:8081`（不会误连生产）。要连生产，显式设置
-`CATCH_RADAR_STOREINTEL_API_URL=https://catchradar.meshub.ai`。
+源码直跑和打包版本都默认连接远端 API：
+`https://catchradar.meshub.ai`。本地 `127.0.0.1:8081` 配置会被忽略。
 
 ## 测试 / 代码检查
 

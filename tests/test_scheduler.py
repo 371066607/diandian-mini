@@ -4,7 +4,6 @@ from app.composition import build_services
 from app.constants import (
     AUTH_DEVICE_ID_SETTING,
     DEFAULT_STOREINTEL_API_URL,
-    DEV_STOREINTEL_API_URL,
 )
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
@@ -44,7 +43,7 @@ def test_scheduler_malformed_sync_time_does_not_crash(tmp_path):
     sched.shutdown()
 
 
-def test_build_services_defaults_to_dev_url_when_running_from_source(tmp_path, monkeypatch):
+def test_build_services_defaults_to_remote_url_when_running_from_source(tmp_path, monkeypatch):
     monkeypatch.delenv("CATCH_RADAR_STOREINTEL_API_URL", raising=False)
     monkeypatch.delenv("STOREINTEL_API_URL", raising=False)
     monkeypatch.delenv("CATCH_RADAR_LEGACY_LOCAL_MODE", raising=False)
@@ -57,7 +56,7 @@ def test_build_services_defaults_to_dev_url_when_running_from_source(tmp_path, m
 
     client = services["store_intel_api_client"]
     assert client.enabled is True
-    assert client.base_url == DEV_STOREINTEL_API_URL
+    assert client.base_url == DEFAULT_STOREINTEL_API_URL
     stored_device_id = SettingsService(db).get(AUTH_DEVICE_ID_SETTING)
     assert stored_device_id == client.device_id
     assert stored_device_id.startswith("desktop-")
@@ -88,7 +87,7 @@ def test_build_services_defaults_to_production_url_when_frozen(tmp_path, monkeyp
 
 
 def test_build_services_honors_api_url_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("CATCH_RADAR_STOREINTEL_API_URL", "http://127.0.0.1:18080")
+    monkeypatch.setenv("CATCH_RADAR_STOREINTEL_API_URL", "https://staging.catchradar.example")
     db = Database(str(tmp_path / "api-mode.sqlite3"))
     db.create_all()
 
@@ -96,7 +95,7 @@ def test_build_services_honors_api_url_override(tmp_path, monkeypatch):
 
     client = services["store_intel_api_client"]
     assert client.enabled is True
-    assert client.base_url == "http://127.0.0.1:18080"
+    assert client.base_url == "https://staging.catchradar.example"
     scheduler = services["scheduler"]
     assert isinstance(scheduler, RemoteSchedulerProxy)
     scheduler.start()
@@ -104,7 +103,7 @@ def test_build_services_honors_api_url_override(tmp_path, monkeypatch):
     scheduler.shutdown()
 
 
-def test_build_services_uses_local_scheduler_only_in_explicit_legacy_mode(
+def test_build_services_ignores_local_mode_env_and_uses_remote_scheduler(
     tmp_path, monkeypatch
 ):
     monkeypatch.delenv("CATCH_RADAR_STOREINTEL_API_URL", raising=False)
@@ -115,8 +114,22 @@ def test_build_services_uses_local_scheduler_only_in_explicit_legacy_mode(
 
     services = build_services(db)
 
-    assert services["store_intel_api_client"].enabled is False
-    assert SettingsService(db).get(AUTH_DEVICE_ID_SETTING) is None
+    client = services["store_intel_api_client"]
+    assert client.enabled is True
+    assert client.base_url == DEFAULT_STOREINTEL_API_URL
+    assert SettingsService(db).get(AUTH_DEVICE_ID_SETTING) == client.device_id
     scheduler = services["scheduler"]
-    assert isinstance(scheduler, AppScheduler)
+    assert isinstance(scheduler, RemoteSchedulerProxy)
     scheduler.shutdown()
+
+
+def test_build_services_ignores_localhost_api_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("CATCH_RADAR_STOREINTEL_API_URL", "http://127.0.0.1:8081")
+    db = Database(str(tmp_path / "localhost-ignored.sqlite3"))
+    db.create_all()
+
+    services = build_services(db)
+
+    client = services["store_intel_api_client"]
+    assert client.enabled is True
+    assert client.base_url == DEFAULT_STOREINTEL_API_URL

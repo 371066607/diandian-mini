@@ -7,8 +7,8 @@
 
 - 本仓库是 CatchRadar 桌面端，根路径：`/Volumes/DevSpace/myData——destop`。
 - 桌面入口仍是 `main.py`，默认 UI 是 QML/PySide6。
-- 当前方向是 API mode：桌面端通过 StoreIntel 后端读 MySQL 缓存和提交刷新任务，不再由前端同步阻塞抓取。
-- 本地旧 SQLite/本地抓取模式只作为诊断 fallback，不是默认产品路径。
+- 当前方向是远端 API mode：桌面端通过 StoreIntel 后端读 MySQL 缓存和提交刷新任务，不再由前端同步阻塞抓取。
+- 本地旧 SQLite/本地抓取模式不再作为启动配置入口；产品路径以远端 API 为准。
 
 ## 相关仓库与文档
 
@@ -26,12 +26,7 @@ cd "/Volumes/DevSpace/myData——destop"
 CATCH_RADAR_STOREINTEL_API_URL="https://catchradar.meshub.ai" .venv/bin/python3.12 main.py
 ```
 
-本地后端 API：
-
-```bash
-cd "/Volumes/DevSpace/myData——destop"
-CATCH_RADAR_STOREINTEL_API_URL="http://127.0.0.1:8081" .venv/bin/python3.12 main.py
-```
+不再使用本地 `127.0.0.1:8081` 作为桌面端 API 配置；本地覆盖会回落到远端。
 
 无界面冒烟：
 

@@ -18,6 +18,7 @@ from app.schemas.app_schema import AppDetail, AppSummary
 from app.schemas.chart_schema import ChartItem
 from app.schemas.keyword_schema import KeywordRankResult
 from app.schemas.review_schema import ReviewItem
+from app.services.store_intel_api_client import StoreIntelApiCacheMiss
 from app.ui.qml_bridge import QmlBridge
 from app.utils.time_utils import now_iso
 
@@ -965,7 +966,7 @@ def test_qml_bridge_refreshes_app_detail_cache_on_miss():
         cache_reads["count"] += 1
         api.calls.append(("cached_app_detail", app_id, country, lang))
         if cache_reads["count"] == 1:
-            raise RuntimeError("cache miss")
+            raise StoreIntelApiCacheMiss("暂无应用详情缓存。")
         return AppDetail(
             app_id=app_id,
             title="Synced Cache Detail",

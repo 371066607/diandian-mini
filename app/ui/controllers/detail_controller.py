@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.store_intel_api_client import StoreIntelApiCacheMiss
 from app.ui.formatting import alert_row, fmt_count, fmt_size, review_row, yes_no
 from app.utils.time_utils import now_iso
 
@@ -222,7 +223,7 @@ class DetailController:
             cached = api.cached_app_detail(
                 app_id, country=ctx["country"], lang=ctx["lang"], platform=platform
             )
-        except Exception:
+        except StoreIntelApiCacheMiss:
             self.bridge._request_api_refresh(
                 api, "app", app_id=app_id, country=ctx["country"], lang=ctx["lang"], platform=platform
             )

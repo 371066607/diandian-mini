@@ -7,25 +7,19 @@ notably ADDING A NEW SERVICE to the registry — has to live here, under ``app/`
 is just a thin launcher that imports and calls ``build_services``. Add new services here and
 thread them through, same as before.
 
-``build_services`` is a small dispatcher: it always builds the API-mode services via
-``build_api_services``, and only additionally builds the local-scraping service stack via
-``build_legacy_services`` when the StoreIntel API client is disabled (explicit legacy/offline
-mode). This keeps API-mode startup from constructing scrapers, keyword/chart/tracking
-services, etc. that API mode never calls. New services should go into whichever of the two
-builders matches where they're actually used; only add to ``build_services`` itself if the
-service genuinely depends on the mode decision (like ``scheduler`` does).
+``build_services`` builds the remote API-mode services used by the product path. The old
+local-scraping service stack remains in this file for frozen diagnostic code, but normal
+startup no longer exposes a local/offline configuration switch.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 import uuid
 
 from app.constants import (
     AUTH_DEVICE_ID_SETTING,
     DEFAULT_STOREINTEL_API_URL,
-    DEV_STOREINTEL_API_URL,
 )
 from app.db.database import Database
 from app.jobs.scheduler import AppScheduler, RemoteSchedulerProxy
@@ -50,33 +44,20 @@ from app.utils.normalize import safe_float
 
 
 _DISABLED_API_VALUES = {"", "0", "false", "no", "off", "none", "local", "legacy"}
-_LOCAL_MODE_ENV_KEYS = ("CATCH_RADAR_LEGACY_LOCAL_MODE", "CATCH_RADAR_OFFLINE_MODE")
-
-
-def _env_truthy(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+_LOCAL_API_PREFIXES = ("http://127.0.0.1", "http://localhost", "http://[::1]")
 
 
 def _store_intel_api_url() -> str | None:
-    if any(_env_truthy(os.environ.get(key)) for key in _LOCAL_MODE_ENV_KEYS):
-        return None
-
     for key in ("CATCH_RADAR_STOREINTEL_API_URL", "STOREINTEL_API_URL"):
         if key in os.environ:
             value = (os.environ.get(key) or "").strip()
             if value.lower() in _DISABLED_API_VALUES:
-                return None
+                return DEFAULT_STOREINTEL_API_URL
+            if value.lower().startswith(_LOCAL_API_PREFIXES):
+                return DEFAULT_STOREINTEL_API_URL
             return value
 
-    # No explicit env var set: packaged builds (PyInstaller sets sys.frozen)
-    # default to production, since that's what real users run. Running from
-    # source defaults to the local dev backend instead, so a plain
-    # `python main.py` during development never talks to production by
-    # accident — connecting to production still requires explicitly setting
-    # CATCH_RADAR_STOREINTEL_API_URL.
-    if getattr(sys, "frozen", False):
-        return DEFAULT_STOREINTEL_API_URL
-    return DEV_STOREINTEL_API_URL
+    return DEFAULT_STOREINTEL_API_URL
 
 
 def _store_intel_device_id(settings_service: SettingsService) -> str:
@@ -175,13 +156,11 @@ def build_legacy_services(database: Database, shared: dict) -> dict[str, object]
 
 
 def build_services(database: Database) -> dict[str, object]:
-    """Mode dispatcher: always builds API-mode services, and additionally builds the
-    local-scraping stack only when running in legacy/offline mode.
+    """Build the remote API-mode service graph.
 
     API mode is the default desktop shape: the Go backend owns scheduled sync, refresh
     workers, persistence, and scraping, so ``services`` in API mode intentionally lacks keys
-    like ``google_play_service``/``tracking_service``/etc. Local scheduling and the local
-    service stack are kept only for explicit legacy/offline mode.
+    like ``google_play_service``/``tracking_service``/etc.
     """
     services = build_api_services(database)
     if not services["store_intel_api_client"].enabled:

@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+
+from app.services.store_intel_api_client import StoreIntelApiCacheMiss
 from app.ui.controllers import detail_controller as dc
 
 
@@ -171,7 +174,7 @@ class FakeApi:
     def cached_app_detail(self, app_id, country="us", lang="en", platform="google_play"):
         self.calls += 1
         if self.raise_first and self.calls == 1:
-            raise RuntimeError("boom")
+            raise StoreIntelApiCacheMiss("暂无应用详情缓存。")
         return self.cached
 
     def list_cached_reviews(self, app_id, limit=10, platform="google_play"):
@@ -235,6 +238,22 @@ def test_fetch_api_mode_refreshes_on_incomplete_cache():
 
     assert bridge.refresh_calls and bridge.refresh_calls[0][0] == "app"
     assert payload["partial"] is True
+
+
+def test_fetch_api_mode_does_not_refresh_on_network_error():
+    api = FakeApi(cached=None)
+
+    def fail_cached_detail(*_args, **_kwargs):
+        raise RuntimeError("IncompleteRead(0 bytes read)")
+
+    api.cached_app_detail = fail_cached_detail
+    bridge = FakeBridge(api=api)
+    controller = dc.DetailController(bridge)
+
+    with pytest.raises(RuntimeError, match="IncompleteRead"):
+        controller.fetch("com.demo", {"country": "us", "lang": "en"}, "google_play", 1)
+
+    assert bridge.refresh_calls == []
 
 
 def test_list_cached_reviews_refreshes_on_empty_cache():
