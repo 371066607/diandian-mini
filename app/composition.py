@@ -45,6 +45,7 @@ from app.utils.normalize import safe_float
 
 _DISABLED_API_VALUES = {"", "0", "false", "no", "off", "none", "local", "legacy"}
 _LOCAL_API_PREFIXES = ("http://127.0.0.1", "http://localhost", "http://[::1]")
+_ALLOW_LOCAL_API_ENV = "CATCH_RADAR_ALLOW_LOCAL_API"
 
 
 def _store_intel_api_url() -> str | None:
@@ -53,7 +54,11 @@ def _store_intel_api_url() -> str | None:
             value = (os.environ.get(key) or "").strip()
             if value.lower() in _DISABLED_API_VALUES:
                 return DEFAULT_STOREINTEL_API_URL
-            if value.lower().startswith(_LOCAL_API_PREFIXES):
+            if (
+                value.lower().startswith(_LOCAL_API_PREFIXES)
+                and (os.environ.get(_ALLOW_LOCAL_API_ENV) or "").strip().lower()
+                not in {"1", "true", "yes", "on"}
+            ):
                 return DEFAULT_STOREINTEL_API_URL
             return value
 

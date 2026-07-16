@@ -125,6 +125,7 @@ def test_build_services_ignores_local_mode_env_and_uses_remote_scheduler(
 
 def test_build_services_ignores_localhost_api_override(tmp_path, monkeypatch):
     monkeypatch.setenv("CATCH_RADAR_STOREINTEL_API_URL", "http://127.0.0.1:8081")
+    monkeypatch.delenv("CATCH_RADAR_ALLOW_LOCAL_API", raising=False)
     db = Database(str(tmp_path / "localhost-ignored.sqlite3"))
     db.create_all()
 
@@ -133,3 +134,20 @@ def test_build_services_ignores_localhost_api_override(tmp_path, monkeypatch):
     client = services["store_intel_api_client"]
     assert client.enabled is True
     assert client.base_url == DEFAULT_STOREINTEL_API_URL
+
+
+def test_build_services_allows_localhost_api_override_when_explicitly_enabled(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CATCH_RADAR_STOREINTEL_API_URL", "http://127.0.0.1:18082")
+    monkeypatch.setenv("CATCH_RADAR_ALLOW_LOCAL_API", "true")
+    db = Database(str(tmp_path / "localhost-enabled.sqlite3"))
+    db.create_all()
+
+    services = build_services(db)
+
+    client = services["store_intel_api_client"]
+    assert client.enabled is True
+    assert client.base_url == "http://127.0.0.1:18082"
+    assert isinstance(services["scheduler"], RemoteSchedulerProxy)
+    services["scheduler"].shutdown()

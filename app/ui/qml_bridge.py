@@ -70,6 +70,7 @@ class QmlBridge(QObject):
     updatePrompt = Signal(str, str)  # (title, message) -> QML confirm dialog
     updateApplied = Signal(str)  # (message) -> QML restart dialog
     coverageChanged = Signal()
+    coverageTrendChanged = Signal()
     coverageProgress = Signal(str, float)  # (message, fraction 0..1) during a scan
     competitorChanged = Signal()
     monitorTreeReady = Signal("QVariant")  # async result of requestMonitorTree()
@@ -92,6 +93,8 @@ class QmlBridge(QObject):
         self._pending_update: Any | None = None
         self._last_update_prompt_key = ""
         self._coverage: dict[str, Any] = self._coverage_state()
+        self._coverage_trend: dict[str, Any] = self._coverage_trend_state()
+        self._coverage_trend_request_id = 0
         self._competitor: dict[str, Any] = self._competitor_state()
         # Candidate pools from finished scans, keyed by (platform, app_id, country, lang, deep)
         # — a re-scan of the same identity reuses them instead of re-paying the detail +
@@ -289,6 +292,29 @@ class QmlBridge(QObject):
     def _set_coverage(self, **kwargs) -> None:
         self._coverage = self._coverage_state(**kwargs)
         self.coverageChanged.emit()
+
+    @staticmethod
+    def _coverage_trend_state(
+        *,
+        keyword: str = "",
+        loading: bool = False,
+        error: str = "",
+        labels: list | None = None,
+        values: list | None = None,
+        current: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "keyword": keyword,
+            "loading": loading,
+            "error": error,
+            "labels": labels or [],
+            "values": values or [],
+            "current": current,
+        }
+
+    def _set_coverage_trend(self, **kwargs) -> None:
+        self._coverage_trend = self._coverage_trend_state(**kwargs)
+        self.coverageTrendChanged.emit()
 
     @staticmethod
     def _competitor_state(**overrides) -> dict:
@@ -1290,6 +1316,58 @@ class QmlBridge(QObject):
     def coverage(self) -> dict[str, Any]:
         return self._coverage
 
+    @Property("QVariant", notify=coverageTrendChanged)
+    def coverageTrend(self) -> dict[str, Any]:
+        return self._coverage_trend
+
+    @Slot()
+    def clearCoverageTrend(self) -> None:
+        self._coverage_trend_request_id += 1
+        self._set_coverage_trend()
+
+    @Slot(str)
+    def loadCoverageTrend(self, keyword: str) -> None:
+        keyword = (keyword or "").strip()
+        app_id = str(self._coverage.get("appId", "") or "").strip()
+        country = str(self._coverage.get("country", "") or "").strip() or "us"
+        lang = str(self._coverage.get("lang", "") or "").strip() or "en"
+        if not keyword or not app_id:
+            self.clearCoverageTrend()
+            return
+
+        self._coverage_trend_request_id += 1
+        request_id = self._coverage_trend_request_id
+        platform = self._platform
+        self._set_coverage_trend(keyword=keyword, loading=True, current="正在加载...")
+
+        def work():
+            try:
+                return (
+                    "ok",
+                    self._coverage_controller.load_trend(
+                        self._store_intel_api(platform),
+                        keyword=keyword,
+                        app_id=app_id,
+                        country=country,
+                        lang=lang,
+                        platform=platform,
+                    ),
+                )
+            except Exception as exc:
+                return ("error", str(exc))
+
+        def done(payload) -> None:
+            if request_id != self._coverage_trend_request_id:
+                return
+            status, value = payload
+            if status == "error":
+                self._set_coverage_trend(keyword=keyword, error=value or "趋势加载失败。")
+                return
+            self._coverage_trend = value
+            self.coverageTrendChanged.emit()
+
+        self._run(work, done, label="正在加载关键词趋势...", busy=False)
+
     @Property("QVariant", notify=competitorChanged)
     def competitor(self) -> dict[str, Any]:
         return self._competitor
@@ -1307,6 +1385,7 @@ class QmlBridge(QObject):
         country = country.strip() or "us"
         lang = lang.strip() or "en"
         platform = self._platform
+        self.clearCoverageTrend()
         # deep scans expand autocomplete one level further, so they build a different
         # (larger) candidate set — cache them separately from shallow scans.
         pool_key = (platform, normalize_app_id(app_id), country, lang, deep)

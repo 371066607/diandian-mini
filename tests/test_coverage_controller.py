@@ -39,6 +39,16 @@ class FakeApi:
         self.calls.append("wait_refresh_job")
         return SimpleNamespace(status=self.job_status, error="boom" if self.job_status == "failed" else "")
 
+    def list_keyword_rank_history(
+        self, keyword, app_id, country="us", lang="en", limit=0, platform="google_play"
+    ):
+        self.calls.append(("list_keyword_rank_history", keyword, app_id, country, lang, limit, platform))
+        return [
+            SimpleNamespace(rank=4, captured_at="2026-07-12T09:00:00Z"),
+            SimpleNamespace(rank=None, captured_at="2026-07-12T12:00:00Z"),
+            SimpleNamespace(rank=2, captured_at="2026-07-13T09:00:00Z"),
+        ]
+
 
 class FakeBridge:
     def __init__(self, services=None):
@@ -74,6 +84,33 @@ def test_concurrency_clamps_between_1_and_16():
 
     bridge3 = FakeBridge(services={"settings_service": FakeSettingsService("8")})
     assert CoverageController(bridge3).concurrency() == 8
+
+
+def test_load_trend_uses_real_ranked_points_and_scan_identity():
+    api = FakeApi()
+    controller = CoverageController(FakeBridge())
+
+    result = controller.load_trend(
+        api,
+        keyword="notes",
+        app_id="com.demo",
+        country="us",
+        lang="en",
+        platform="google_play",
+    )
+
+    assert result["values"] == [4, 2]
+    assert result["labels"] == ["07-12 09:00", "07-13 09:00"]
+    assert result["current"] == "当前 #2"
+    assert api.calls[-1] == (
+        "list_keyword_rank_history",
+        "notes",
+        "com.demo",
+        "us",
+        "en",
+        90,
+        "google_play",
+    )
 
 
 def test_analyze_api_mode_returns_cache_hit_without_refresh():

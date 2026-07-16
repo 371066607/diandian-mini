@@ -11,8 +11,8 @@ when no API base env var is provided. API mode must keep `RemoteSchedulerProxy`;
 the backend owns scheduled sync, background refresh execution, persistence, and
 scraping.
 
-Localhost API overrides and legacy/offline env flags are ignored in normal
-startup; remote API mode is the product path.
+Localhost API overrides are ignored unless the developer explicitly sets
+`CATCH_RADAR_ALLOW_LOCAL_API=true`; remote API mode remains the product path.
 
 ## Frontend Rule
 

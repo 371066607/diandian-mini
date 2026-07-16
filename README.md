@@ -23,7 +23,13 @@ python main.py
 ```
 
 源码直跑和打包版本都默认连接远端 API：
-`https://catchradar.meshub.ai`。本地 `127.0.0.1:8081` 配置会被忽略。
+`https://catchradar.meshub.ai`。本地开发需要显式开启 localhost API：
+
+```bash
+CATCH_RADAR_ALLOW_LOCAL_API=true \
+CATCH_RADAR_STOREINTEL_API_URL=http://127.0.0.1:18082 \
+python main.py
+```
 
 ## 测试 / 代码检查
 

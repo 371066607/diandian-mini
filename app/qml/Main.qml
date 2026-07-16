@@ -995,13 +995,20 @@ ApplicationWindow {
         property int tableHeight: 260
         property int rowHeight: 44
         property int selectedIndex: -1
+        property int expandedIndex: -1
+        property bool expandable: false
+        property int expandedHeight: 194
+        property Component expandedDelegate: null
         property int minContentWidth: 0
         // row[emphasizeKey] truthy -> bold text; row[highlightKey] truthy -> tinted row + accent bar
         property string emphasizeKey: ""
         property string highlightKey: ""
         signal activated(int rowIndex, var rowData)
         signal selectionChanged(int rowIndex, var rowData)
-        onRowsChanged: selectedIndex = -1
+        onRowsChanged: {
+            selectedIndex = -1
+            expandedIndex = -1
+        }
         function naturalContentWidth() {
             var total = 0
             var cols = tableCard.columns || []
@@ -1064,10 +1071,11 @@ ApplicationWindow {
                         id: rowDelegate
                         property var rowData: modelData
                         property int rowNumber: index
+                        property bool expanded: tableCard.expandable && tableCard.expandedIndex === rowNumber
                         property bool emphasized: tableCard.emphasizeKey.length > 0 && rowData[tableCard.emphasizeKey] === true
                         property bool highlighted: tableCard.highlightKey.length > 0 && rowData[tableCard.highlightKey] === true
                         width: ListView.view.width
-                        height: tableCard.rowHeight
+                        height: tableCard.rowHeight + (expanded ? tableCard.expandedHeight : 0)
                         color: tableCard.selectedIndex === rowNumber
                                ? root.cBlueSoft
                                : (rowHover.hovered ? root.cBlueSoft
@@ -1079,6 +1087,9 @@ ApplicationWindow {
                             acceptedButtons: Qt.LeftButton
                             onTapped: {
                                 tableCard.selectedIndex = rowDelegate.rowNumber
+                                if (tableCard.expandable) {
+                                    tableCard.expandedIndex = rowDelegate.expanded ? -1 : rowDelegate.rowNumber
+                                }
                                 tableCard.selectionChanged(rowDelegate.rowNumber, rowDelegate.rowData)
                             }
                             onDoubleTapped: {
@@ -1090,12 +1101,16 @@ ApplicationWindow {
                         Rectangle {
                             visible: rowDelegate.highlighted
                             width: 3
-                            height: parent.height
+                            height: tableCard.rowHeight
                             color: root.cBlue
                         }
 
                         RowLayout {
-                            anchors.fill: parent
+                            id: rowContent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: tableCard.rowHeight
                             anchors.leftMargin: 0
                             anchors.rightMargin: 0
                             spacing: 0
@@ -1121,6 +1136,17 @@ ApplicationWindow {
                                         verticalAlignment: Text.AlignVCenter
                                         leftPadding: 8
                                         rightPadding: 8
+                                    }
+
+                                    Label {
+                                        visible: cell.cellType === "expand"
+                                        anchors.fill: parent
+                                        text: rowDelegate.expanded ? "收起" : "趋势"
+                                        color: root.cBlue
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                        verticalAlignment: Text.AlignVCenter
+                                        horizontalAlignment: Text.AlignHCenter
                                     }
 
                                     MouseArea {
@@ -1184,6 +1210,17 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                        }
+
+                        Loader {
+                            id: expandedLoader
+                            active: rowDelegate.expanded && tableCard.expandedDelegate !== null
+                            sourceComponent: tableCard.expandedDelegate
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: rowContent.bottom
+                            height: rowDelegate.expanded ? tableCard.expandedHeight : 0
+                            onLoaded: if (item) item.rowData = rowDelegate.rowData
                         }
                     }
 
@@ -1534,6 +1571,7 @@ ApplicationWindow {
                                 }
                             }
                         }
+
                     }
                 }
 
@@ -3228,6 +3266,44 @@ ApplicationWindow {
         clip: true
         contentWidth: availableWidth
         property var cov: root.bridge.coverage
+        property var trend: root.bridge.coverageTrend
+
+        Component {
+            id: coverageTrendPanel
+            Item {
+                property var rowData: ({})
+                anchors.margins: 8
+
+                BusyIndicator {
+                    anchors.centerIn: parent
+                    running: coveragePage.trend.keyword === String(parent.rowData.keyword || "")
+                             && coveragePage.trend.loading
+                    visible: running
+                }
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: coveragePage.trend.keyword === String(parent.rowData.keyword || "")
+                             && !coveragePage.trend.loading
+                             && String(coveragePage.trend.error || "").length > 0
+                    text: coveragePage.trend.error || "趋势加载失败。"
+                    color: root.cRed
+                    font.pixelSize: 12
+                }
+
+                TrendChart {
+                    anchors.fill: parent
+                    visible: coveragePage.trend.keyword === String(parent.rowData.keyword || "")
+                             && !coveragePage.trend.loading
+                             && String(coveragePage.trend.error || "").length === 0
+                    name: "关键词排名趋势 · " + String(parent.rowData.keyword || "")
+                    current: coveragePage.trend.current || ""
+                    values: coveragePage.trend.values || []
+                    labels: coveragePage.trend.labels || []
+                    invert: true
+                }
+            }
+        }
         ColumnLayout {
             width: parent.width
             spacing: 18
@@ -3300,13 +3376,20 @@ ApplicationWindow {
                 id: covTable
                 title: "覆盖关键词 · " + coveragePage.cov.summary
                 subtitle: root.platformLabel
-                          + " · 按排名升序，选中某行可「加入监控」长期追踪覆盖变化"
+                          + " · 点击任意行展开排名趋势，选中后可加入监控"
                 rows: root.rows(coveragePage.cov, "rows")
                 tableHeight: 520
+                expandable: true
+                expandedDelegate: coverageTrendPanel
+                onSelectionChanged: function(rowIndex, rowData) {
+                    if (expandedIndex === rowIndex) root.bridge.loadCoverageTrend(rowData.keyword)
+                    else root.bridge.clearCoverageTrend()
+                }
                 emptyText: coveragePage.cov.running ? "正在分析覆盖关键词..." : "暂无数据，输入 App 后点「发现覆盖关键词」"
                 columns: [
                     { label: "排名", key: "rank", width: 90 },
-                    { label: "关键词（能搜到你 App 的词）", key: "keyword", fill: true }
+                    { label: "关键词（能搜到你 App 的词）", key: "keyword", fill: true },
+                    { label: "", key: "trend", width: 64, type: "expand" }
                 ]
             }
         }

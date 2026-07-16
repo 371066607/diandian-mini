@@ -764,6 +764,20 @@ def test_qml_bridge_prefers_store_intel_api_for_google_play_core_pages():
     assert bridge.coverage["rows"][0]["rank"] == 1
     assert ("覆盖检测 1/1：notes", 1.0) not in progress_events
 
+    bridge.loadCoverageTrend("notes")
+    _wait_idle(app, bridge)
+    assert bridge.coverageTrend["keyword"] == "notes"
+    assert bridge.coverageTrend["values"] == [3, 1]
+    assert bridge.coverageTrend["current"] == "当前 #1"
+    assert (
+        "list_keyword_rank_history",
+        "notes",
+        "com.remote",
+        "us",
+        "en",
+        90,
+    ) in api.calls
+
     call_names = [call[0] for call in api.calls]
     for expected in (
         "search_cached",

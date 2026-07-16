@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from app.ui.formatting import short_time
 from app.utils.normalize import safe_int
 
 
@@ -36,6 +37,56 @@ class CoverageController:
         """Max parallel workers for a proxy-backed coverage scan (clamped 1..16)."""
         raw = self.bridge.services["settings_service"].get("coverage_concurrency", "6")
         return max(1, min(16, safe_int(raw, 6)))
+
+    def load_trend(
+        self,
+        api,
+        *,
+        keyword: str,
+        app_id: str,
+        country: str,
+        lang: str,
+        platform: str,
+    ) -> dict[str, Any]:
+        """Load real rank observations for one expanded coverage row.
+
+        Coverage rows are keyed to the completed scan's canonical app identity,
+        not to the editable input fields. Missing/non-ranked observations are not
+        converted into synthetic ranks: the chart only plots positions the store
+        actually returned.
+        """
+        if api is not None:
+            history = api.list_keyword_rank_history(
+                keyword,
+                app_id,
+                country,
+                lang,
+                limit=90,
+                platform=platform,
+            )
+        else:
+            service = self.bridge.services.get("keyword_service")
+            if service is None:
+                raise RuntimeError("当前模式不支持读取关键词趋势。")
+            history = service.history(keyword, app_id, country, lang)
+
+        points = []
+        for item in sorted(history or [], key=lambda row: getattr(row, "captured_at", "")):
+            rank = safe_int(getattr(item, "rank", 0), 0)
+            if rank <= 0:
+                continue
+            captured_at = str(getattr(item, "captured_at", "") or "")
+            points.append((captured_at, rank))
+
+        values = [rank for _, rank in points]
+        return {
+            "keyword": keyword,
+            "loading": False,
+            "error": "",
+            "labels": [short_time(captured_at) for captured_at, _ in points],
+            "values": values,
+            "current": f"当前 #{values[-1]}" if values else "暂无排名历史",
+        }
 
     def analyze(
         self,
